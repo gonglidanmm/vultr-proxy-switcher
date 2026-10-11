@@ -8,6 +8,9 @@ on:
       - "client/**"
       - ".github/workflows/build-windows.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     name: Windows x86-64
