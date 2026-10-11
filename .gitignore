@@ -38,3 +38,4 @@ tmp/
 # 二进制产物（构建/部署用，体积大，不提交）
 client/bin/
 bin/
+client/src-tauri/binaries/

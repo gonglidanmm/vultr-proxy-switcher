@@ -29,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/sing-box"
+    ],
     "icon": [
       "icons/icon.icns",
       "icons/icon.ico",

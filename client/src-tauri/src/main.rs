@@ -58,6 +58,39 @@ fn check_udp(host: String, port: u16) -> Result<f64, String> {
     }
 }
 
+/// Windows 系统代理：WinINet 只支持 HTTP 代理，指向 sing-box 的 mixed 入站（HTTP+SOCKS5 同端口）。
+#[cfg(target_os = "windows")]
+fn set_windows_proxy(enable: bool, host: &str, port: u16) -> Result<(), String> {
+    use windows_sys::Win32::Networking::WinInet::{
+        InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+    };
+    let ps = format!("{}:{}", host, port);
+    let reg_key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    if enable {
+        let _ = Command::new("reg")
+            .args(["add", reg_key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f"])
+            .output();
+        let _ = Command::new("reg")
+            .args(["add", reg_key, "/v", "ProxyServer", "/t", "REG_SZ", "/d", &ps, "/f"])
+            .output();
+    } else {
+        let _ = Command::new("reg")
+            .args(["add", reg_key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])
+            .output();
+    }
+    // 通知 WinINet 刷新（否则浏览器不立即生效）
+    unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            std::ptr::null(),
+            0,
+        );
+        InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_REFRESH, std::ptr::null(), 0);
+    }
+    Ok(())
+}
+
 /// 设置/关闭 macOS 系统代理（HTTP/HTTPS/SOCKS），指向 host:port。
 #[tauri::command]
 fn set_system_proxy(enable: bool, host: String, port: u16) -> Result<(), String> {
@@ -103,10 +136,14 @@ fn set_system_proxy(enable: bool, host: String, port: u16) -> Result<(), String>
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        set_windows_proxy(enable, &host, port)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (enable, host, port);
-        Err("仅支持 macOS".to_string())
+        Err("不支持的系统".to_string())
     }
 }
 
@@ -120,7 +157,17 @@ fn config_dir() -> PathBuf {
 }
 
 fn sing_box_path() -> PathBuf {
-    // dev 模式：CARGO_MANIFEST_DIR = client/src-tauri，../bin/sing-box = client/bin/sing-box
+    // 打包后：sidecar 二进制在主程序同目录（Tauri 打包时重命名为 sing-box[.exe]，去掉 target triple）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let name = if cfg!(windows) { "sing-box.exe" } else { "sing-box" };
+            let p = dir.join(name);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    // dev 模式 fallback：CARGO_MANIFEST_DIR = client/src-tauri，../bin/sing-box = client/bin/sing-box
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bin/sing-box")
 }
 
@@ -159,6 +206,16 @@ fn stop_proxy(state: State<ProxyState>) -> Result<(), String> {
 }
 
 fn main() {
+    // Windows 高 DPI：Per-Monitor V2（否则 125%/150% 缩放屏上界面模糊）
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+    }
     tauri::Builder::default()
         .manage(ProxyState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![

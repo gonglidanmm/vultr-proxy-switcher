@@ -33,6 +33,16 @@ jobs:
         run: npm install
         working-directory: client
 
+      - name: Download sing-box sidecar (Windows x86-64)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path client/src-tauri/binaries | Out-Null
+          $zip = "$env:TEMP\sing-box-win.zip"
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:TEMP\sing-box-win" -Force
+          Copy-Item "$env:TEMP\sing-box-win\sing-box-1.14.2-windows-amd64\sing-box.exe" "client/src-tauri/binaries/sing-box-x86_64-pc-windows-msvc.exe" -Force
+          Get-ChildItem client/src-tauri/binaries
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
