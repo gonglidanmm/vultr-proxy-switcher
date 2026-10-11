@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>代理客户端</title>
+  <link rel="stylesheet" href="style.css?v=25" />
+</head>
+<body>
+  <!-- ===== 登录页 ===== -->
+  <div id="login-view" class="login-view">
+    <div class="login-card">
+      <div class="login-logo">🛰️</div>
+      <h1>代理客户端</h1>
+      <div class="login-sub">多上游 IP 代理平台</div>
+      <div class="field">
+        <label>用户名</label>
+        <input id="username" type="text" placeholder="请输入用户名" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input id="password" type="password" placeholder="请输入密码" autocomplete="current-password" />
+      </div>
+      <div class="error" id="login-error"></div>
+      <button id="login-btn" class="primary">登录</button>
+    </div>
+  </div>
+
+  <!-- ===== 主界面 ===== -->
+  <div id="main-view" class="main-view" style="display:none;">
+    <aside class="sidebar">
+      <div class="logo-box">
+        <div class="logo-icon">🛰️</div>
+        <div class="logo-title">代理客户端</div>
+        <div class="logo-sub">多上游 IP 代理平台</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-item active" data-view="nodes">我的节点</div>
+        <div class="nav-item" data-view="account">账户</div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-box">
+          <span class="user-name" id="user-name">—</span>
+          <button class="link-btn" id="logout-btn">退出</button>
+        </div>
+        <div class="version">v0.1.0</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="view active" id="nodes-view">
+        <div class="page-head">
+          <div>
+            <h2 class="page-title">我的节点</h2>
+            <div class="page-sub">已分配给你的代理线路</div>
+          </div>
+          <div class="page-actions">
+            <span class="expiry" id="user-expiry"></span>
+            <button class="ghost" id="refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <div class="proxy-card">
+          <div class="proxy-row">
+            <span class="proxy-label">代理模式</span>
+            <div class="seg" id="sys-mode">
+              <button class="seg-btn" data-mode="off">不代理</button>
+              <button class="seg-btn" data-mode="local">本地代理</button>
+              <button class="seg-btn" data-mode="global">全局代理</button>
+            </div>
+          </div>
+          <div class="proxy-row">
+            <span class="proxy-label">协议</span>
+            <div class="seg" id="proto-seg">
+              <button class="seg-btn" data-proto="ss">SS</button>
+              <button class="seg-btn" data-proto="reality">Reality</button>
+              <button class="seg-btn" data-proto="hysteria2">Hysteria2</button>
+            </div>
+          </div>
+          <div class="proxy-status" id="proxy-status">未设置上游</div>
+          <div class="op-msg" id="op-msg"></div>
+        </div>
+
+        <div class="nodes-table-wrap">
+          <table class="nodes-table">
+            <thead>
+              <tr>
+                <th class="col-idx">序号</th>
+                <th>类型</th>
+                <th>名称</th>
+                <th>位置</th>
+                <th>IP</th>
+                <th>域名</th>
+                <th>状态</th>
+                <th>分配时间</th>
+                <th>到期时间</th>
+                <th>切换次数</th>
+                <th>流量</th>
+                <th>备注</th>
+                <th class="col-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody id="nodes-content">
+              <tr><td colspan="13" class="empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="log-panel">
+          <div class="log-head">
+            <span class="log-title">操作日志</span>
+            <button class="link-btn" id="log-clear-btn">清空</button>
+          </div>
+          <div class="log-body" id="log-body"></div>
+        </div>
+      </section>
+
+      <section class="view" id="account-view">
+        <div class="page-head">
+          <div>
+            <h2 class="page-title">账户</h2>
+            <div class="page-sub">修改登录信息</div>
+          </div>
+        </div>
+        <div class="account-card">
+          <div class="account-row">
+            <span class="account-label">当前用户名</span>
+            <span class="account-val" id="account-username">—</span>
+          </div>
+          <div class="field">
+            <label>当前密码</label>
+            <input id="cur-password" type="password" placeholder="验证身份（必填）" autocomplete="current-password" />
+          </div>
+          <div class="field">
+            <label>新密码</label>
+            <input id="new-password" type="password" placeholder="请输入新密码" autocomplete="new-password" />
+          </div>
+          <div class="error" id="account-error"></div>
+          <div class="account-success" id="account-success"></div>
+          <button class="primary" id="account-save-btn">保存修改</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="main.js?v=25"></script>
+
+<!-- 复制节点弹窗 -->
+<div class="modal-backdrop" id="share-modal" style="display:none">
+  <div class="modal share-modal">
+    <div class="modal-head">
+      <span class="modal-title">复制节点 — <span id="share-node-name"></span></span>
+      <button class="modal-close" id="share-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" id="share-body"></div>
+    <div class="modal-footer">
+      <button class="btn" id="share-close-btn">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 切换 IP 地区选择弹窗 -->
+<div class="modal-backdrop" id="region-modal" style="display:none">
+  <div class="modal region-modal">
+    <div class="modal-head">
+      <span class="modal-title" id="region-title">选择目标地区</span>
+      <button class="modal-close" id="region-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="region-grid" id="region-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="region-random">随机</button>
+      <button class="btn primary" id="region-cancel">取消切换</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

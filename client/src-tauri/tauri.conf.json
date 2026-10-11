@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "proxy-client",
+  "version": "0.1.0",
+  "identifier": "com.yduas.proxy-client",
+  "build": {
+    "frontendDist": "https://user.yduas.cc/",
+    "devUrl": "http://localhost:1424",
+    "beforeDevCommand": "python3 dev_server.py",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "代理客户端",
+        "width": 1080,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 600,
+        "resizable": true,
+        "maximized": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://user.yduas.cc; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "category": "Utility",
+    "shortDescription": "代理节点客户端",
+    "longDescription": "登录查看管理员分配的代理节点"
+  }
+}

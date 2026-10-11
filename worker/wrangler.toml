@@ -1,0 +1,9 @@
+name = "vultr-proxy-users"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vultr-proxy-users"
+database_id = "d06a9a46-2158-441b-acee-46c8a7053b16"

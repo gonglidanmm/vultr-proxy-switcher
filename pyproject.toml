@@ -1,0 +1,33 @@
+[project]
+name = "vultr-proxy-switcher"
+version = "0.1.0"
+description = "Vultr SOCKS5 代理切换器（跨平台 PySide6 桌面 App，Windows/Mac 通用）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyside6>=6.6",
+    "requests>=2.31",
+    "pysocks>=1.7",
+    "paramiko>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+    "pyinstaller>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100

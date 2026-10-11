@@ -1,0 +1,40 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Rust / Tauri
+client/src-tauri/target/
+client/src-tauri/gen/schemas/capabilities.json
+
+# Cloudflare Worker
+worker/.wrangler/
+
+# macOS
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+
+# 本地凭据/密钥（绝不提交）
+*.key
+*.pem
+config.local.json
+worker_url.txt
+
+# 个人文件/无关文件（不提交到公开仓库）
+AX3000T_8SSID_分流清单.md
+openclash_config.yaml
+screenshot.png
+
+# 临时/本地生成（含凭据）
+tmp/
+
+# 二进制产物（构建/部署用，体积大，不提交）
+client/bin/
+bin/
