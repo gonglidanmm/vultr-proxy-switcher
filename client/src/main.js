@@ -605,6 +605,7 @@ function availableProtos(n) {
 function buildSingBoxConfig(n, proto) {
   const host = n.host || n.ip || n.domain || "";
   const config = {
+    log: { level: "error", timestamp: false },
     inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: LOCAL_PROXY_PORT }],
     outbounds: [{ type: "direct", tag: "direct" }],
   };

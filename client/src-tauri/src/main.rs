@@ -185,8 +185,15 @@ fn start_proxy(config_json: String, state: State<ProxyState>) -> Result<(), Stri
         let _ = c.kill();
         let _ = c.wait();
     }
-    let child = Command::new(sing_box_path())
-        .args(["-c", cfg.to_str().unwrap_or_default(), "run"])
+    let mut cmd = Command::new(sing_box_path());
+    cmd.args(["-c", cfg.to_str().unwrap_or_default(), "run"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000：sing-box 后台静默运行，不弹黑色控制台窗口
+        cmd.creation_flags(0x08000000);
+    }
+    let child = cmd
         .spawn()
         .map_err(|e| format!("启动 sing-box 失败: {e}"))?;
     eprintln!("[start_proxy] spawn ok, pid={}", child.id());
