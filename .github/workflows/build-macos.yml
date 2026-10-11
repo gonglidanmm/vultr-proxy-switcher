@@ -55,8 +55,17 @@ jobs:
 
       - name: Ad-hoc 签名（让 Gatekeeper 显示「仍要打开」而非「已损坏」）
         run: |
-          codesign --force --deep --sign - client/src-tauri/target/release/bundle/macos/proxy-client.app
-          codesign -dv client/src-tauri/target/release/bundle/macos/proxy-client.app 2>&1 | grep -E "Signature|Info.plist|Sealed"
+          APP="client/src-tauri/target/release/bundle/macos/proxy-client.app"
+          codesign --force --deep --sign - "$APP"
+          codesign -dv "$APP" 2>&1 | grep -E "Signature|Info.plist|Sealed"
+
+      - name: 重新打包 dmg（用签好名的 .app）
+        run: |
+          APP="client/src-tauri/target/release/bundle/macos/proxy-client.app"
+          DMG="client/src-tauri/target/release/bundle/dmg/proxy-client_0.1.0_aarch64.dmg"
+          mkdir -p "client/src-tauri/target/release/bundle/dmg"
+          hdiutil create -volname "proxy-client" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          ls -la client/src-tauri/target/release/bundle/dmg/
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
