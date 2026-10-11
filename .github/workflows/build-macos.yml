@@ -36,9 +36,9 @@ jobs:
       - name: Download sing-box sidecar (macOS arm64)
         run: |
           mkdir -p client/src-tauri/binaries
-          curl -sL -o /tmp/sing-box-macos.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-darwin-arm64.tar.gz"
+          curl -sfL -o /tmp/sing-box-macos.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-darwin-arm64.tar.gz"
           tar -xzf /tmp/sing-box-macos.tar.gz -C /tmp/
-          find /tmp -name "sing-box" -path "*darwin-arm64*" -exec cp {} client/src-tauri/binaries/sing-box-aarch64-apple-darwin \;
+          cp /tmp/sing-box-1.14.2-darwin-arm64/sing-box client/src-tauri/binaries/sing-box-aarch64-apple-darwin
           chmod +x client/src-tauri/binaries/sing-box-aarch64-apple-darwin
           ls -la client/src-tauri/binaries
 
