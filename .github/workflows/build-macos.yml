@@ -1,0 +1,63 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "client/**"
+      - ".github/workflows/build-macos.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install frontend deps
+        run: npm install
+        working-directory: client
+
+      - name: Download sing-box sidecar (macOS arm64)
+        run: |
+          mkdir -p client/src-tauri/binaries
+          curl -sL -o /tmp/sing-box-macos.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-darwin-arm64.tar.gz"
+          tar -xzf /tmp/sing-box-macos.tar.gz -C /tmp/
+          find /tmp -name "sing-box" -path "*darwin-arm64*" -exec cp {} client/src-tauri/binaries/sing-box-aarch64-apple-darwin \;
+          chmod +x client/src-tauri/binaries/sing-box-aarch64-apple-darwin
+          ls -la client/src-tauri/binaries
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tagName: mac-v__VERSION__
+          releaseName: "代理客户端 macOS v__VERSION__"
+          releaseDraft: false
+          prerelease: false
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: |
+            client/src-tauri/target/release/bundle/dmg/*.dmg
+            client/src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: warn
