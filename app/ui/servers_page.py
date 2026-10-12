@@ -605,15 +605,20 @@ class ServersPage(QWidget):
         added = sorted(current_ids - cached_ids)
         if not gone or not added:
             return
-        # 从 Worker 读最近完成的切换记录（销毁旧机前抓的 old_used_gb，Vultr 不保留已销毁实例流量）
+        # 从 Worker 读切换记录（old_id → new_id 精确映射，避免 gone/added 排序错配把配置迁到错误实例）
         try:
             flow_data = api_client.list_switch_flow()
             self._switch_old_flow = {s.get("old_id"): float(s.get("old_used_gb", 0) or 0) for s in flow_data.get("switches", [])}
+            flow_map = {s.get("old_id"): s.get("new_id") for s in flow_data.get("switches", []) if s.get("old_id") and s.get("new_id")}
         except Exception:
             self._switch_old_flow = {}
-        if len(gone) == 1 and len(added) == 1:
-            old_id, new_id = gone[0], added[0]
-            # 迁移前：优先用 Worker 销毁旧机前抓的流量，fallback 本地带宽缓存
+            flow_map = {}
+        # 用切换记录精确迁移（gone 里的旧机 → flow_map 里对应的新机）
+        migrated = 0
+        for old_id in gone:
+            new_id = flow_map.get(old_id)
+            if not new_id or new_id not in current_ids:
+                continue
             old_used = self._switch_old_flow.get(old_id, 0)
             if old_used <= 0:
                 old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
@@ -624,9 +629,14 @@ class ServersPage(QWidget):
                 config.set_value("server_cumulative_used", cumulative)
             self._migrate_server_config(old_id, new_id)
             self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {new_id[:8]}，已同步域名/配置/流量")
-        else:
-            # 切换瞬态（销毁旧机+创建新机）或缓存基准差异，配置已由切换流程自动迁移
-            self._log(f"ℹ️ 检测到实例变化（消失 {len(gone)} 台，新增 {len(added)} 台），配置已自动处理")
+            migrated += 1
+        # 切换记录里匹配不到的，只在 gone/added 各 1 个时保守迁移；否则跳过（宁可不同步也不乱迁）
+        if migrated == 0 and len(gone) == 1 and len(added) == 1:
+            old_id, new_id = gone[0], added[0]
+            self._migrate_server_config(old_id, new_id)
+            self._log(f"🔄 检测到实例变化：{old_id[:8]} → {new_id[:8]}，已同步配置")
+        elif migrated == 0:
+            self._log(f"ℹ️ 检测到实例变化（消失 {len(gone)} 台，新增 {len(added)} 台），无匹配切换记录，跳过迁移以防错配")
 
     def _bw_refresh(self) -> None:
         """低频刷新流量列（compute_bandwidth 较耗 API 调用，5 分钟一次）。"""
