@@ -765,6 +765,12 @@ class _UserDetailDialog(QDialog):
         self.quota_edit.setPlaceholderText("留空=不限额")
         layout.addWidget(self.quota_edit)
 
+        # 重置流量（客户续费时清零已用，重新给满配额）
+        flow_btn = QPushButton("重置流量")
+        flow_btn.setToolTip("清空该服务器的已用流量，重新给满配额（客户续费用）；重置前会提示账户剩余额度")
+        flow_btn.clicked.connect(self._reset_flow)
+        layout.addWidget(flow_btn)
+
         # 服务器到期（只读，在「服务器」页双击「到期时间」列设置）
         srv_expiry = config.get("server_expiry", {}).get(str(self.resource_id), "") or ""
         if not srv_expiry:
@@ -822,6 +828,45 @@ class _UserDetailDialog(QDialog):
             api_client.reset_user_switch(self._user["id"], self.resource_id)
             self._echo(f"✅ 已重置节点 {domain} 的切换次数")
             self._load_switch_count()
+        except ApiError as e:
+            QMessageBox.warning(self, "重置失败", e.message)
+
+    def _reset_flow(self) -> None:
+        """重置当前服务器的已用流量（清零），客户续费时重新给满配额。
+
+        重置前提示 Vultr 账户剩余额度，让管理员判断风险（超出账户额度的部分收 $0.01/GB）。
+        """
+        domain = self.node_data.get("domain", "") or self.resource_id
+        # 查账户剩余额度
+        tip = ""
+        try:
+            from ..vultr import VultrAPI, compute_account_bandwidth
+            api = VultrAPI(config.get("vultr_api_key", ""))
+            account = compute_account_bandwidth(api.get_account_bandwidth())
+            remaining = float(account.get("remaining_gb", 0) or 0)
+            if remaining > 0:
+                tip = (
+                    f"\n\n当前 Vultr 账户剩余额度：{remaining:.0f} GB（约 {remaining/1024:.1f} TB）\n"
+                    "重置后客户可继续用流量；客户实际出站超出账户额度部分收 $0.01/GB。"
+                )
+        except Exception:
+            pass
+        ret = QMessageBox.question(
+            self,
+            "确认重置流量",
+            f"确定重置节点 {domain} 的已用流量吗？\n\n已用流量将清零，客户重新拿到满额配额。{tip}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            # 清空本地累计 + D1 used_gb
+            cumulative = dict(config.get("server_cumulative_used", {}) or {})
+            cumulative[str(self.resource_id)] = 0.0
+            config.set_value("server_cumulative_used", cumulative)
+            api_client.reset_flow(self.resource_id)
+            self._echo(f"✅ 已重置节点 {domain} 的流量（已用清零，配额重新给满）")
         except ApiError as e:
             QMessageBox.warning(self, "重置失败", e.message)
 

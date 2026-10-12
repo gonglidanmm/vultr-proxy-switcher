@@ -874,6 +874,18 @@ async function syncFlow(request, env) {
   return json({ ok: true, updated });
 }
 
+async function resetFlow(request, env) {
+  // 重置该服务器的已用流量（used_gb = 0），客户续费时重新给满配额。
+  // body: { resource_id }
+  const body = await request.json().catch(() => ({}));
+  const resourceId = String(body.resource_id || "").trim();
+  if (!resourceId) return json({ error: "resource_id 必填" }, 400);
+  const result = await env.DB.prepare(
+    "UPDATE assignments SET used_gb = 0 WHERE resource_id = ?",
+  ).bind(resourceId).run();
+  return json({ ok: true, updated: (result.meta && result.meta.changes) || 0 });
+}
+
 async function switchFlow(env) {
   // 返回最近完成的切换记录（含 old_id → new_id 及销毁旧机前抓取的 old_used_gb），供服务端累加流量。
   const rows = await env.DB.prepare(
@@ -1047,6 +1059,7 @@ export default {
       if (path === "/admin/switch/status" && method === "GET") return await adminSwitchStatus(env);
       if (path === "/admin/all-assignments" && method === "GET") return await listAllAssignments(env);
       if (path === "/admin/sync-flow" && method === "POST") return await syncFlow(request, env);
+      if (path === "/admin/reset-flow" && method === "POST") return await resetFlow(request, env);
       if (path === "/admin/switch-flow" && method === "GET") return await switchFlow(env);
 
       if (path === "/admin/resource-assignments" && method === "GET") {

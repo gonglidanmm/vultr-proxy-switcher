@@ -179,6 +179,11 @@ def sync_flow(updates: list[dict]) -> dict:
     return _request("POST", "/admin/sync-flow", {"updates": updates})
 
 
+def reset_flow(resource_id: str) -> dict:
+    """重置某台服务器的已用流量（D1 used_gb 归零），客户续费时重新给满配额。"""
+    return _request("POST", "/admin/reset-flow", {"resource_id": resource_id})
+
+
 # ---------------- 统计 ----------------
 
 def stats() -> dict:
