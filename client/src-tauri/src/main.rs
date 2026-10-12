@@ -310,7 +310,7 @@ fn main() {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 已有实例在运行：聚焦它的主窗口，不再开第二个
             if let Some(window) = app.get_webview_window("main") {
@@ -327,6 +327,20 @@ fn main() {
             start_proxy,
             stop_proxy
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        // 退出时杀掉 sing-box 子进程，避免残留占用文件（导致 Windows 重装报「Error opening file for writing」）
+        if let tauri::RunEvent::Exit = event {
+            if let Some(state) = app_handle.try_state::<ProxyState>() {
+                if let Ok(mut guard) = state.0.lock() {
+                    if let Some(mut c) = guard.take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+            }
+        }
+    });
 }
