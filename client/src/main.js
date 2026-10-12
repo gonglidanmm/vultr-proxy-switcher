@@ -726,7 +726,10 @@ async function setUpstream(n, btn) {
       return;
     }
     upstreamNode = n;
-    proxyState.proto = protos[0];
+    // 保持用户已选协议；未选或当前节点不支持时优先 reality（Reality 走 xray 常驻，比 SS/gost 更稳）
+    if (!protos.includes(proxyState.proto)) {
+      proxyState.proto = protos.includes("reality") ? "reality" : protos[0];
+    }
     proxyState.mode = "local";
     renderProxyUI();
     try {

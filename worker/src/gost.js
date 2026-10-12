@@ -202,7 +202,11 @@ systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/nul
 ufw --force enable 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 if [ ! -x /usr/local/bin/gost ]; then
-  wget -q -O /usr/local/bin/gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+  # 下载加重试（cloud-init 时 GitHub 下载常因网络抖动失败，导致 gost 服务起不来、SS/SOCKS5 端口不通）
+  for i in 1 2 3 4 5; do
+    wget -q -O /usr/local/bin/gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz && break
+    sleep 10
+  done
   gunzip -f /usr/local/bin/gost.gz
   chmod +x /usr/local/bin/gost
 fi
