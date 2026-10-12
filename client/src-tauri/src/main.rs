@@ -58,7 +58,94 @@ fn check_udp(host: String, port: u16) -> Result<f64, String> {
     }
 }
 
-/// Windows 系统代理：WinINet 只支持 HTTP 代理，指向 sing-box 的 mixed 入站（HTTP+SOCKS5 同端口）。
+/// 用真实 DNS（8.8.8.8:53，UDP）解析域名 A 记录，绕过本机翻墙的 fake-ip 劫持。
+fn resolve_a_real(domain: &str) -> Result<Vec<String>, String> {
+    let mut query = Vec::with_capacity(64);
+    query.extend_from_slice(&[0x12, 0x34]); // Transaction ID
+    query.extend_from_slice(&[0x01, 0x00]); // Flags: RD=1（标准递归查询）
+    query.extend_from_slice(&[0x00, 0x01]); // QDCOUNT = 1
+    query.extend_from_slice(&[0x00, 0x00]); // ANCOUNT = 0
+    query.extend_from_slice(&[0x00, 0x00]); // NSCOUNT = 0
+    query.extend_from_slice(&[0x00, 0x00]); // ARCOUNT = 0
+    for label in domain.split('.') {
+        let b = label.as_bytes();
+        if b.is_empty() {
+            return Err(format!("非法域名: {domain}"));
+        }
+        query.push(b.len() as u8);
+        query.extend_from_slice(b);
+    }
+    query.push(0);
+    query.extend_from_slice(&[0x00, 0x01]); // QTYPE = A
+    query.extend_from_slice(&[0x00, 0x01]); // QCLASS = IN
+
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("绑定失败: {e}"))?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .ok();
+    socket
+        .connect("8.8.8.8:53")
+        .map_err(|e| format!("连接 DNS 失败: {e}"))?;
+    socket.send(&query).map_err(|e| format!("发送失败: {e}"))?;
+    let mut buf = [0u8; 512];
+    let n = socket.recv(&mut buf).map_err(|e| format!("接收失败: {e}"))?;
+
+    if n < 12 {
+        return Err("DNS 响应过短".to_string());
+    }
+    let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
+    // 跳过 header(12) + question（QNAME + QTYPE + QCLASS）
+    let mut pos = 12;
+    while pos < n && buf[pos] != 0 {
+        pos += 1 + buf[pos] as usize;
+    }
+    pos += 1; // 终止 0
+    pos += 4; // QTYPE + QCLASS
+
+    let mut ips = Vec::new();
+    for _ in 0..ancount {
+        if pos >= n {
+            break;
+        }
+        // 跳过 NAME（处理压缩指针 0xC0）
+        if buf[pos] & 0xC0 == 0xC0 {
+            pos += 2;
+        } else {
+            while pos < n && buf[pos] != 0 {
+                pos += 1 + buf[pos] as usize;
+            }
+            pos += 1;
+        }
+        if pos + 10 > n {
+            break;
+        }
+        let rtype = u16::from_be_bytes([buf[pos], buf[pos + 1]]);
+        let rdlength = u16::from_be_bytes([buf[pos + 8], buf[pos + 9]]) as usize;
+        pos += 10;
+        if rtype == 1 && rdlength == 4 && pos + 4 <= n {
+            ips.push(format!(
+                "{}.{}.{}.{}",
+                buf[pos],
+                buf[pos + 1],
+                buf[pos + 2],
+                buf[pos + 3]
+            ));
+        }
+        pos += rdlength;
+    }
+    if ips.is_empty() {
+        Err("未解析到 A 记录".to_string())
+    } else {
+        Ok(ips)
+    }
+}
+
+/// 域名解析检查：返回域名当前（真实 DNS）解析到的 IP，供客户端对比 node_data 的真实 IP。
+#[tauri::command]
+fn resolve_domain(domain: String) -> Result<String, String> {
+    let ips = resolve_a_real(&domain)?;
+    Ok(ips.join(", "))
+}
 #[cfg(target_os = "windows")]
 fn set_windows_proxy(enable: bool, host: &str, port: u16) -> Result<(), String> {
     use windows_sys::Win32::Networking::WinInet::{
@@ -235,6 +322,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_connectivity,
             check_udp,
+            resolve_domain,
             set_system_proxy,
             start_proxy,
             stop_proxy

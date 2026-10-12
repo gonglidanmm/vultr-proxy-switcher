@@ -803,6 +803,18 @@ async function checkNode(n, btn) {
       const label = p === "hysteria2" && v > 0 ? "（端口通，证书以服务端为准）" : "";
       logMsg(`   ${protoName(p)}：${v > 0 ? v + "ms" + label : "不可达"}`, v > 0 ? "ok" : "err");
     }
+    // 域名解析检查：显示域名当前（真实 DNS）解析到的 IP，对比节点真实 IP
+    const domain = (n.domain && n.domain.includes(".")) ? n.domain : "";
+    if (domain) {
+      try {
+        const resolved = await invokeRust("resolve_domain", { domain });
+        const ips = resolved.split(",").map((s) => s.trim());
+        const matched = n.ip && ips.some((ip) => ip === n.ip);
+        logMsg(`   域名 ${domain} → ${resolved}${matched ? "（与节点 IP 一致）" : "（⚠ 与节点 IP 不一致，DNS 可能未同步）"}`, matched ? "ok" : "warn");
+      } catch (e) {
+        logMsg(`   域名 ${domain} 解析失败：${e}`, "warn");
+      }
+    }
   } catch (e) {
     btn.textContent = "✗ 不可达";
     logMsg(`检测失败：${e.message || e}`, "err");
