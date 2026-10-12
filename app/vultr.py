@@ -21,15 +21,13 @@ BASE = "https://api.vultr.com/v2"
 # 东京/大阪等区域的 plan -> 名称（阶梯套餐，跟旧脚本一致）
 PLAN_NAMES = {
     "vc2-1c-1gb": "$5 Regular (1GB)",
-    "vhf-1c-1gb": "$6 High Frequency (1GB)",
-    "vhp-1c-2gb": "$12 High Performance (2GB)",
+    "vhp-1c-1gb-amd": "$6 High Performance AMD (2TB)",
 }
 
 # 套餐月价（美元/月），用于「剩余可分配天数」预算
 PLAN_MONTHLY_PRICE = {
     "vc2-1c-1gb": 5.0,
-    "vhf-1c-1gb": 6.0,
-    "vhp-1c-2gb": 12.0,
+    "vhp-1c-1gb-amd": 6.0,
     "vc2-1c-0.5gb-v6": 2.5,
 }
 

@@ -18,7 +18,7 @@ DEFAULTS: dict = {
     "vultr_api_key": "",
     "label": "vultr-proxy-node",
     "regions": ["nrt", "osa"],
-    "plans": ["vc2-1c-1gb", "vhf-1c-1gb", "vhp-1c-2gb"],
+    "plans": ["vc2-1c-1gb", "vhp-1c-1gb-amd"],
     # 远端 gost 代理的账号密码端口（cloud-init 安装时写入）
     "proxy_user": "yduas4980",
     "proxy_pass": "a9966996",
