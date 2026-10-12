@@ -497,7 +497,20 @@ class ServersPage(QWidget):
                         "plan": "",
                     }
                 )
-            return servers, api_error, billing, bandwidth, account_bw, account_expiry
+            # 加载分配关系（判断哪些服务器已分配给用户，供「已分配」按钮 + 悬停显示用户名）
+            assigned: dict[str, list[str]] = {}
+            try:
+                assigns = api_client.list_all_assignments().get("assignments", [])
+                for a in assigns:
+                    if a.get("resource_type") != "vultr":
+                        continue
+                    rid = a.get("resource_id", "")
+                    uname = a.get("username", "")
+                    if rid and uname:
+                        assigned.setdefault(rid, []).append(uname)
+            except Exception:
+                pass
+            return servers, api_error, billing, bandwidth, account_bw, account_expiry, assigned
 
         w = CallWorker(_do)
         w.done.connect(self._on_servers)
@@ -782,11 +795,12 @@ class ServersPage(QWidget):
         }
 
     def _on_servers(self, result) -> None:
-        servers, api_error, billing, bandwidth, account_bw, account_expiry = result
+        servers, api_error, billing, bandwidth, account_bw, account_expiry, assigned = result
         self._servers = servers
         self._bandwidth = bandwidth
         self._account_bw = account_bw
         self._account_expiry = account_expiry
+        self._assigned = assigned
         self._populate_table()
         self._update_billing(billing)
         self._update_account_bw(account_bw)
@@ -1041,6 +1055,24 @@ class ServersPage(QWidget):
         label = config.get("label", "vultr-proxy-node")
         return not (srv.get("label", "") or "").startswith(label)
 
+    def _assign_btn(self, srv: dict) -> QPushButton:
+        """分配用户按钮：已分配则显示「已分配」+ 禁用 + 悬停用户名；否则「分配用户」可点击。"""
+        rid = srv["id"]
+        users = (getattr(self, "_assigned", {}) or {}).get(rid, [])
+        if users:
+            btn = QPushButton("已分配")
+            btn.setProperty("compact", True)
+            btn.setFixedHeight(30)
+            btn.setEnabled(False)
+            btn.setToolTip("已分配给：" + "、".join(users) + "（在用户管理里取消分配后恢复）")
+            btn.setStyleSheet("color:#98989d;")
+            return btn
+        btn = QPushButton("分配用户")
+        btn.setProperty("compact", True)
+        btn.setFixedHeight(30)
+        btn.clicked.connect(lambda _=False, s=srv: self._assign_user(s))
+        return btn
+
     def _op_cell(self, srv: dict) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
@@ -1053,11 +1085,7 @@ class ServersPage(QWidget):
             ctl_lbl = QLabel("控制机")
             ctl_lbl.setStyleSheet("color:#98989d;font-size:12px;")
             lay.addWidget(ctl_lbl)
-            assign_btn = QPushButton("分配用户")
-            assign_btn.setProperty("compact", True)
-            assign_btn.setFixedHeight(30)
-            assign_btn.clicked.connect(lambda _=False, s=srv: self._assign_user(s))
-            lay.addWidget(assign_btn)
+            lay.addWidget(self._assign_btn(srv))
             return w
 
         active_id = config.get("active_upstream_id", "")
@@ -1093,10 +1121,7 @@ class ServersPage(QWidget):
         share_btn.clicked.connect(lambda _=False, s=srv: self._open_share(s))
         lay.addWidget(share_btn)
 
-        assign_btn = QPushButton("分配用户")
-        assign_btn.setProperty("compact", True)
-        assign_btn.setFixedHeight(30)
-        assign_btn.clicked.connect(lambda _=False, s=srv: self._assign_user(s))
+        assign_btn = self._assign_btn(srv)
         lay.addWidget(assign_btn)
 
         restart_btn = QPushButton("重启")
