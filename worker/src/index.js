@@ -541,6 +541,18 @@ async function adminSwitch(request, env) {
   const country = REGION_COUNTRY[oldRegion] || "";
   const targetRegion = (body.region || "").trim();
 
+  // 换套餐（管理员显式指定不同 plan）时，查新套餐带宽，切换完成后自动同步客户配额
+  let newBandwidth = 0;
+  if ((body.plan || "").trim() && (body.plan || "").trim() !== (oldInst.plan || "")) {
+    try {
+      const planResp = await fetch(`${apiBase(env, "vultr")}/v2/plans/${plan}`, { headers });
+      if (planResp.ok) {
+        const planData = await planResp.json();
+        newBandwidth = Number((planData.plan && planData.plan.bandwidth) || 0);
+      }
+    } catch (_) {}
+  }
+
   let newRegion = targetRegion;
   if (!newRegion) {
     let candidates = Object.keys(REGION_COUNTRY).filter((r) => r !== oldRegion && REGION_COUNTRY[r] === country);
@@ -585,8 +597,8 @@ async function adminSwitch(request, env) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, actor_type, domain, created_at, old_used_gb) VALUES (0, 0, ?, ?, 'pending', 'admin', ?, ?, ?)",
-  ).bind(resourceId, newId, domain, new Date().toISOString(), oldUsedGb).run();
+    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, actor_type, domain, created_at, old_used_gb, new_bandwidth) VALUES (0, 0, ?, ?, 'pending', 'admin', ?, ?, ?, ?)",
+  ).bind(resourceId, newId, domain, new Date().toISOString(), oldUsedGb, newBandwidth).run();
 
   return json({ ok: true, status: "pending", old_id: resourceId, new_id: newId });
 }
@@ -627,10 +639,14 @@ async function adminSwitchStatus(env) {
       if (countryName && cityName) nodeData.location = `${countryName}·${cityName}`;
     }
     domain = nodeData.domain || "";
+    // 换套餐：同步客户配额到新套餐带宽（node_data.quota_gb + assignments.quota_gb，限流依据）
+    if (Number(req.new_bandwidth) > 0) {
+      nodeData.quota_gb = Number(req.new_bandwidth);
+    }
     if (domain) await updateDns(env, domain, newIp);
     await env.DB.prepare(
-      "UPDATE assignments SET resource_id = ?, node_data = ? WHERE id = ?",
-    ).bind(req.new_id, JSON.stringify(nodeData), assign.id).run();
+      "UPDATE assignments SET resource_id = ?, node_data = ?, quota_gb = ? WHERE id = ?",
+    ).bind(req.new_id, JSON.stringify(nodeData), Number(req.new_bandwidth) > 0 ? Number(req.new_bandwidth) : Number(assign.quota_gb) || 0, assign.id).run();
   } else if (req.domain) {
     domain = req.domain;
     await updateDns(env, req.domain, newIp);
