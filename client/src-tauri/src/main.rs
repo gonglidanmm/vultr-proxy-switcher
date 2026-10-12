@@ -7,7 +7,7 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 联通性检测：TCP 连接到 host:port，返回延迟毫秒数（超时/失败返回 Err）。
 #[tauri::command]
