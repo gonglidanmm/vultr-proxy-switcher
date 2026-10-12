@@ -485,3 +485,14 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
   border-color: var(--accent);
   background: var(--card2);
 }
+
+/* 节点拖拽排序 */
+#nodes-content tr[draggable="true"] {
+  cursor: grab;
+}
+#nodes-content tr.dragging {
+  opacity: 0.35;
+}
+#nodes-content tr.drag-over td {
+  border-top: 2px solid var(--accent);
+}

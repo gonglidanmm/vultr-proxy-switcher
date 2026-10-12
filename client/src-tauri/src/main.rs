@@ -224,6 +224,13 @@ fn main() {
         }
     }
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 已有实例在运行：聚焦它的主窗口，不再开第二个
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(ProxyState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             check_connectivity,

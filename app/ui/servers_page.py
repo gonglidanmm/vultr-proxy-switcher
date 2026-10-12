@@ -137,6 +137,12 @@ class ServersPage(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 行拖拽排序（持久化到 config server_order）
+        self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
+        self.table.setDragEnabled(True)
+        self.table.setAcceptDrops(True)
+        self.table.setDropIndicatorShown(True)
+        self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(52)
         header = self.table.horizontalHeader()
@@ -167,6 +173,7 @@ class ServersPage(QWidget):
         QApplication.instance().installEventFilter(self)
         self.table.itemChanged.connect(self._on_note_changed)
         self.table.cellDoubleClicked.connect(self._on_cell_dblclick)
+        self.table.model().rowsMoved.connect(self._on_rows_moved)
         root.addWidget(self.table, 1)
 
         # 切换IP 日志回显
@@ -598,13 +605,22 @@ class ServersPage(QWidget):
         added = sorted(current_ids - cached_ids)
         if not gone or not added:
             return
+        # 从 Worker 读最近完成的切换记录（销毁旧机前抓的 old_used_gb，Vultr 不保留已销毁实例流量）
+        try:
+            flow_data = api_client.list_switch_flow()
+            self._switch_old_flow = {s.get("old_id"): float(s.get("old_used_gb", 0) or 0) for s in flow_data.get("switches", [])}
+        except Exception:
+            self._switch_old_flow = {}
         if len(gone) == 1 and len(added) == 1:
             old_id, new_id = gone[0], added[0]
-            # 迁移前：把旧实例的累计已用流量记到服务器名下（切换后随服务器迁移，已用不清零）
-            old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
+            # 迁移前：优先用 Worker 销毁旧机前抓的流量，fallback 本地带宽缓存
+            old_used = self._switch_old_flow.get(old_id, 0)
+            if old_used <= 0:
+                old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
             if old_used > 0:
                 cumulative = dict(config.get("server_cumulative_used", {}) or {})
-                cumulative[old_id] = old_used
+                # 累加（不是覆盖）：历史累计 + 这次旧实例出站
+                cumulative[old_id] = float(cumulative.get(old_id, 0) or 0) + old_used
                 config.set_value("server_cumulative_used", cumulative)
             self._migrate_server_config(old_id, new_id)
             self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {new_id[:8]}，已同步域名/配置/流量")
@@ -782,10 +798,18 @@ class ServersPage(QWidget):
         self.table.setRowCount(0)
         active_id = config.get("active_upstream_id")
         notes = config.get("server_notes", {})
+        # 按保存的拖拽顺序排序服务器（未出现在 order 里的放末尾，保持相对稳定）
+        order = config.get("server_order", []) or []
+        if order:
+            order_map = {sid: i for i, sid in enumerate(order)}
+            self._servers.sort(key=lambda s: order_map.get(s["id"], len(order) + 9999))
         for srv in self._servers:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self._set_text(r, 0, str(r + 1))
+            idx_item = QTableWidgetItem(str(r + 1))
+            idx_item.setData(Qt.ItemDataRole.UserRole, srv["id"])
+            idx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(r, 0, idx_item)
             name_item = QTableWidgetItem(srv["name"])
             if srv["id"] == active_id:
                 name_item.setForeground(Qt.GlobalColor.green)
@@ -823,6 +847,25 @@ class ServersPage(QWidget):
             self.table.setItem(r, 8, note_item)
             self.table.setCellWidget(r, 9, self._op_cell(srv))
         self._suppress_note = False
+
+    def _on_rows_moved(self, parent, start, end, dest, row) -> None:
+        """行拖拽后：按表格当前顺序重排 self._servers + 持久化 + 重填序号。"""
+        order = []
+        id_to_srv = {s["id"]: s for s in self._servers}
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            sid = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if sid and sid in id_to_srv:
+                order.append(sid)
+        if len(order) != len(self._servers):
+            return  # 顺序读不完整（异常），不保存
+        self._servers = [id_to_srv[sid] for sid in order]
+        config.set_value("server_order", order)
+        # 重填序号列（1,2,3...）
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item:
+                item.setText(str(r + 1))
 
     def _on_note_changed(self, item: QTableWidgetItem) -> None:
         if self._suppress_note:
@@ -1343,11 +1386,22 @@ class ServersPage(QWidget):
             if changed:
                 config.set_value("relays", relays)
                 self._log(f"  已迁移中转节点到新实例，记得点「中转」→「应用到服务器」重新下发")
-            # 切换前：把旧实例的累计已用流量记到服务器名下（切换后随服务器迁移，已用不清零）
-            old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
+            # 切换前：优先用 Worker 销毁旧机前抓的流量，fallback 本地带宽缓存
+            old_used = 0
+            try:
+                flow_data = api_client.list_switch_flow()
+                for s in flow_data.get("switches", []):
+                    if s.get("old_id") == old_id:
+                        old_used = float(s.get("old_used_gb", 0) or 0)
+                        break
+            except Exception:
+                pass
+            if old_used <= 0:
+                old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
             if old_used > 0:
                 cumulative = dict(config.get("server_cumulative_used", {}) or {})
-                cumulative[old_id] = old_used
+                # 累加（不是覆盖）：历史累计 + 这次旧实例出站
+                cumulative[old_id] = float(cumulative.get(old_id, 0) or 0) + old_used
                 config.set_value("server_cumulative_used", cumulative)
                 self._log(f"  已用流量已记录：{old_used:.1f}G（切换后随服务器迁移）")
             # 迁移 per-server 配置（域名/凭据/备注/名称/到期/累计流量）从旧实例 ID 到新实例 ID

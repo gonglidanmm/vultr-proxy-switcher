@@ -92,6 +92,19 @@ def update_user(user_id: int, **fields) -> dict:
     return _request("PUT", f"/admin/users/{user_id}", fields)
 
 
+def reset_user_switch(user_id: int, resource_id: str | None = None) -> dict:
+    """重置用户切换次数。指定 resource_id 只重置该节点，否则重置该用户全部节点。"""
+    body = {"reset_switch": True}
+    if resource_id:
+        body["resource_id"] = resource_id
+    return _request("PUT", f"/admin/users/{user_id}", body)
+
+
+def list_switch_flow() -> dict:
+    """返回最近完成的切换记录（old_id → new_id + 销毁旧机前抓取的 old_used_gb），用于流量累加。"""
+    return _request("GET", "/admin/switch-flow")
+
+
 def delete_user(user_id: int) -> dict:
     return _request("DELETE", f"/admin/users/{user_id}")
 

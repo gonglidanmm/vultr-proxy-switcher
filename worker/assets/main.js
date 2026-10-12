@@ -291,9 +291,19 @@ async function pollNodes() {
     const nodes = data.nodes || [];
     await checkUpstreamRemoved(nodes);
     await checkUpstreamFlowExhausted(nodes);
-    const ids = nodes.map((n) => n.resource_id).sort().join(",");
-    if (ids !== lastNodeIds) {
-      lastNodeIds = ids;
+    // 签名包含所有会变化的字段（到期/切换次数/流量），任一变化才重渲染
+    const sig = nodes.map((n) => [
+      n.resource_id,
+      n.client_expiry || "",
+      n.expiry || "",
+      n.switch_remaining,
+      n.switch_limit,
+      n.flow_used_gb,
+      n.flow_quota_gb,
+      n.flow_exhausted ? 1 : 0,
+    ].join("|")).sort().join(",");
+    if (sig !== lastNodeIds) {
+      lastNodeIds = sig;
       renderNodes(nodes);
     }
   } catch (e) {
@@ -318,13 +328,28 @@ async function loadNodes() {
   content.innerHTML = '<div class="empty">加载中…</div>';
   try {
     const data = await api("/me/nodes");
-    $("user-name").textContent = user ? user.username : "";
-    const exp = user && user.expires_at ? formatExpiry(user.expires_at) : "不过期";
-    $("user-expiry").textContent = "到期：" + exp;
     const nodes = data.nodes || [];
+    $("user-name").textContent = user ? user.username : "";
+    // 到期：以最久的节点到期时间为准（优先客户到期 client_expiry）
+    let maxExpiry = "";
+    for (const n of nodes) {
+      const e = (n.client_expiry || n.expiry || "").slice(0, 10);
+      if (e && e > maxExpiry) maxExpiry = e;
+    }
+    const exp = maxExpiry || (user && user.expires_at ? formatExpiry(user.expires_at) : "不过期");
+    $("user-expiry").textContent = "到期：" + exp;
     await checkUpstreamRemoved(nodes);
     await checkUpstreamFlowExhausted(nodes);
-    lastNodeIds = nodes.map((n) => n.resource_id).sort().join(",");
+    lastNodeIds = nodes.map((n) => [
+      n.resource_id,
+      n.client_expiry || "",
+      n.expiry || "",
+      n.switch_remaining,
+      n.switch_limit,
+      n.flow_used_gb,
+      n.flow_quota_gb,
+      n.flow_exhausted ? 1 : 0,
+    ].join("|")).sort().join(",");
     renderNodes(nodes);
     initColumnResize();
   } catch (e) {
@@ -411,19 +436,16 @@ const PROTO_DEFS = [
 
 let nodeCache = [];  // 当前节点列表缓存（切换后测试各协议用）
 
-// 节点备注（本地持久化，按 resource_id 存 localStorage）
-function getNodeNote(rid) {
-  try {
-    const m = JSON.parse(localStorage.getItem("node_notes") || "{}");
-    return m[rid] || "";
-  } catch (_) { return ""; }
+// 节点备注（持久化到服务器 D1，按 resource_id 存，换设备/重装都不丢）
+function getNodeNote(n) {
+  return n.note || "";
 }
-function saveNodeNote(rid, text) {
+async function saveNodeNote(resourceId, text) {
   try {
-    const m = JSON.parse(localStorage.getItem("node_notes") || "{}");
-    if (text) m[rid] = text; else delete m[rid];
-    localStorage.setItem("node_notes", JSON.stringify(m));
-  } catch (_) {}
+    await api("/me/note", "POST", { resource_id: resourceId, note: text });
+  } catch (e) {
+    logMsg("备注保存失败：" + (e.message || "网络错误"), "err");
+  }
 }
 
 function renderNodes(nodes) {
@@ -435,6 +457,48 @@ function renderNodes(nodes) {
   }
   content.innerHTML = "";
   nodes.forEach((n, i) => content.appendChild(buildNodeRow(n, i + 1)));
+}
+
+// ===== 节点拖拽排序（持久化到服务器）=====
+let dragFromId = null;
+
+function enableDragSort(tr, rid) {
+  tr.draggable = true;
+  tr.dataset.rid = rid;
+  tr.addEventListener("dragstart", (e) => {
+    dragFromId = rid;
+    tr.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", rid); } catch (_) {}
+  });
+  tr.addEventListener("dragend", () => {
+    tr.classList.remove("dragging");
+    dragFromId = null;
+    document.querySelectorAll("#nodes-content tr.drag-over").forEach((r) => r.classList.remove("drag-over"));
+  });
+  tr.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (!tr.classList.contains("drag-over")) tr.classList.add("drag-over");
+  });
+  tr.addEventListener("dragleave", () => tr.classList.remove("drag-over"));
+  tr.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    tr.classList.remove("drag-over");
+    if (!dragFromId || dragFromId === rid) return;
+    const fromIdx = nodeCache.findIndex((n) => n.resource_id === dragFromId);
+    const toIdx = nodeCache.findIndex((n) => n.resource_id === rid);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = nodeCache.splice(fromIdx, 1);
+    nodeCache.splice(toIdx, 0, moved);
+    renderNodes(nodeCache);
+    try {
+      await api("/me/reorder", "POST", { ordered_ids: nodeCache.map((n) => n.resource_id) });
+      logMsg("节点顺序已保存", "ok");
+    } catch (e) {
+      logMsg("排序保存失败：" + (e.message || "网络错误"), "err");
+    }
+  });
 }
 
 function buildNodeRow(n, idx) {
@@ -484,9 +548,9 @@ function buildNodeRow(n, idx) {
   tdCreated.textContent = n.created_at || "—";
   tr.appendChild(tdCreated);
 
-  // 到期时间（提前 3 天橙色提醒，已过期红色）
+  // 到期时间（优先客户到期 client_expiry，fallback 服务器到期 expiry；提前 3 天橙色提醒，已过期红色）
   const tdExpiry = document.createElement("td");
-  const expiry = n.expiry || "";
+  const expiry = n.client_expiry || n.expiry || "";
   const todayStr = new Date().toISOString().slice(0, 10);
   if (expiry) {
     const expKey = expiry.slice(0, 10);
@@ -536,7 +600,7 @@ function buildNodeRow(n, idx) {
   noteInput.type = "text";
   noteInput.className = "note-input";
   noteInput.placeholder = "备注";
-  noteInput.value = getNodeNote(n.resource_id);
+  noteInput.value = getNodeNote(n);
   noteInput.addEventListener("change", () => saveNodeNote(n.resource_id, noteInput.value.trim()));
   tdNote.appendChild(noteInput);
   tr.appendChild(tdNote);
@@ -593,6 +657,7 @@ function buildNodeRow(n, idx) {
 
   tdOps.appendChild(ops);
   tr.appendChild(tdOps);
+  enableDragSort(tr, n.resource_id);
   return tr;
 }
 
@@ -605,6 +670,7 @@ function availableProtos(n) {
 function buildSingBoxConfig(n, proto) {
   const host = n.host || n.ip || n.domain || "";
   const config = {
+    log: { level: "error", timestamp: false },
     inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: LOCAL_PROXY_PORT }],
     outbounds: [{ type: "direct", tag: "direct" }],
   };
@@ -705,12 +771,12 @@ async function testNodeProtocols(n, showDiagnostics = false) {
   return results;
 }
 
-// 根据各协议测试结果更新状态列（至少一个协议可达才"可用"）
+// 根据各协议测试结果更新状态列（至少一个 TCP 协议可达才"可用"；Hysteria2 UDP 探测不可靠，不参与判断）
 function updateNodeStatus(resourceId, results) {
   const el = $("node-status-" + resourceId);
   if (!el) return;
-  const reachable = Object.values(results).filter((v) => v > 0).length;
-  if (reachable > 0) {
+  const tcpReachable = ["socks5", "ss", "reality"].some((p) => results[p] > 0);
+  if (tcpReachable) {
     el.textContent = "可用";
     el.className = "status ok";
   } else {
@@ -727,7 +793,7 @@ async function checkNode(n, btn) {
   try {
     const results = await testNodeProtocols(n, true);
     updateNodeStatus(n.resource_id, results);
-    const reachable = Object.values(results).filter((v) => v > 0).length;
+    const reachable = ["socks5", "ss", "reality"].filter((p) => results[p] > 0).length;
     btn.textContent = reachable > 0 ? "✓ 可用" : "✗ 不可达";
     // 写日志回显：逐行，可达打 √、不可达打 ✗
     logMsg(`检测节点 ${name}：${reachable > 0 ? "可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
@@ -779,11 +845,11 @@ async function afterSwitch(newIp) {
     return;
   }
   logMsg(`切换完成，${nodeName} 新 IP：${newIp}`, "ok");
-  logMsg(`新机服务启动中（约1-2分钟），自动检测各协议…`, "info");
-  // 轮询测试，直到 TCP 协议（SOCKS5/SS/Reality）至少一个可达，最多 3 分钟
+  logMsg(`新机服务启动中（约1-3分钟，首次需下载安装服务），自动检测各协议…`, "info");
+  // 轮询测试，直到 TCP 协议（SOCKS5/SS/Reality）至少一个可达，最多 5 分钟
   // Hysteria2 是 UDP，探测不可靠，不作为"服务就绪"依据
   let results = null;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 20; i++) {
     await sleep(15000);
     results = await testNodeProtocols(newNode);
     const tcpReachable = ["socks5", "ss", "reality"].some((p) => results[p] > 0);
@@ -791,8 +857,9 @@ async function afterSwitch(newIp) {
   }
   if (!results) return;
   updateNodeStatus(newNode.resource_id, results);
-  const reachable = Object.values(results).filter((v) => v > 0).length;
-  const total = Object.values(results).filter((v) => v !== null).length;
+  const tcpProtos = ["socks5", "ss", "reality"];
+  const reachable = tcpProtos.filter((p) => results[p] > 0).length;
+  const total = tcpProtos.filter((p) => results[p] !== null).length;
   if (reachable > 0) {
     logMsg(`检测完成（${reachable}/${total} 协议可用）`, "ok");
     for (const [p, v] of Object.entries(results)) {

@@ -154,6 +154,12 @@ class UsersPage(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 行拖拽排序（持久化到 config user_order）
+        self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
+        self.table.setDragEnabled(True)
+        self.table.setAcceptDrops(True)
+        self.table.setDropIndicatorShown(True)
+        self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(48)
         header = self.table.horizontalHeader()
@@ -182,6 +188,7 @@ class UsersPage(QWidget):
                 pass
         header.sectionResized.connect(self._on_col_resized)
         self.table.cellDoubleClicked.connect(self._on_cell_dbl)
+        self.table.model().rowsMoved.connect(self._on_rows_moved)
         QApplication.instance().installEventFilter(self)
         layout.addWidget(self.table, 1)
 
@@ -301,6 +308,11 @@ class UsersPage(QWidget):
         return f"{used * 1000:.0f}M" if used < 1 else f"{used:.1f}G"
 
     def _populate(self) -> None:
+        # 按保存的拖拽顺序排序分配项（未出现在 order 里的放末尾）
+        order = config.get("user_order", []) or []
+        if order:
+            order_map = {aid: i for i, aid in enumerate(order)}
+            self._assigns.sort(key=lambda a: order_map.get(a.get("id"), len(order) + 9999))
         self.table.setRowCount(len(self._assigns))
         for row, a in enumerate(self._assigns):
             node = a.get("node_data", {}) or {}
@@ -320,7 +332,8 @@ class UsersPage(QWidget):
             # 原始到期 = 该服务器在「服务器页」设置的到期时间；没设则 fallback 账户动态到期
             _rid = str(a.get("resource_id", ""))
             full_expiry = config.get("server_expiry", {}).get(_rid, "") or self._vultr_expiry or ""
-            full_user_exp = a.get("user_expires_at", "") or ""
+            # 客户到期 = 每台服务器独立的 client_expiry（默认 = 服务器到期）
+            full_user_exp = node.get("client_expiry", "") or full_expiry or ""
 
             user_expiry = full_user_exp[:10] or "-"
             res_expiry = full_expiry[:10] or "-"
@@ -352,9 +365,25 @@ class UsersPage(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col in tips:
                     item.setToolTip(tips[col])
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
                 self.table.setItem(row, col, item)
 
             self.table.setCellWidget(row, 11, self._ops(a, row))
+
+    def _on_rows_moved(self, parent, start, end, dest, row) -> None:
+        """行拖拽后：按表格当前顺序重排 self._assigns + 持久化顺序。"""
+        order = []
+        id_to_assign = {a.get("id"): a for a in self._assigns}
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            aid = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if aid in id_to_assign:
+                order.append(aid)
+        if len(order) != len(self._assigns):
+            return  # 顺序读不完整（异常），不保存
+        self._assigns = [id_to_assign[aid] for aid in order]
+        config.set_value("user_order", order)
 
     def _on_cell_dbl(self, row: int, col: int) -> None:
         """双击用户名 → 编辑该用户。"""
@@ -406,6 +435,7 @@ class UsersPage(QWidget):
             "status": a.get("user_status", "active"),
             "expires_at": a.get("user_expires_at"),
             "note": a.get("user_note", ""),
+            "switch_limit": int(a.get("user_switch_limit", 5) or 5),
         }
 
     def _ops(self, a: dict, row: int) -> QWidget:
@@ -417,7 +447,7 @@ class UsersPage(QWidget):
         detail = QPushButton("详情/设置")
         detail.setProperty("compact", True)
         detail.setFixedHeight(26)
-        detail.clicked.connect(lambda _=False, a=a: self._detail(self._assign_to_user(a)))
+        detail.clicked.connect(lambda _=False, a=a: self._detail(a))
         lay.addWidget(detail)
 
         unassign = QPushButton("取消分配")
@@ -525,8 +555,18 @@ class UsersPage(QWidget):
             self._log(f"❌ 删除失败：{e.message}")
             QMessageBox.warning(self, "删除失败", e.message)
 
-    def _detail(self, user: dict) -> None:
-        dlg = _UserDetailDialog(self, user, _user_resource_expiry(user["id"]) or self._vultr_expiry)
+    def _detail(self, a: dict) -> None:
+        user = self._assign_to_user(a)
+        node_data = a.get("node_data", {}) or {}
+        if isinstance(node_data, str):
+            import json as _json
+            try:
+                node_data = _json.loads(node_data)
+            except Exception:
+                node_data = {}
+        # 客户到期（用户级）上限 = 该用户名下最早到期的服务器（最早到期那台到期了，客户至少断一台）
+        resource_expiry = _user_resource_expiry(user["id"]) or self._vultr_expiry
+        dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry)
         dlg.exec()
         self.refresh()
 
@@ -649,12 +689,14 @@ class _UserDialog(QDialog):
 class _UserDetailDialog(QDialog):
     """用户详情/设置：编辑表单 + 名下分配（文字展示）。"""
 
-    def __init__(self, parent=None, user: dict | None = None, resource_expiry: str = "") -> None:
+    def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "") -> None:
         super().__init__(parent)
         self._user = user or {}
+        self.resource_id = resource_id
+        self.node_data = node_data or {}
         self._resource_expiry = resource_expiry
         self.setWindowTitle("用户详情 / 设置")
-        self.setMinimumSize(920, 680)
+        self.setMinimumSize(720, 720)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -677,15 +719,16 @@ class _UserDetailDialog(QDialog):
         self.pwd_edit.setPlaceholderText("留空则不修改密码")
         form.addWidget(self.pwd_edit)
 
-        form.addWidget(self._lbl("客户到期时间（不能晚于资源原始到期，留空 = 不过期）"))
+        form.addWidget(self._lbl("客户到期（默认 = 服务器到期，可调低但不能超过服务器到期）"))
         self.exp_edit = QLineEdit()
-        if self._user.get("expires_at"):
+        client_exp = self.node_data.get("client_expiry", "") or ""
+        if client_exp:
             try:
-                dt = datetime.fromisoformat(self._user["expires_at"].replace("Z", "+00:00"))
-                self.exp_edit.setText(dt.astimezone().strftime("%Y-%m-%d"))
+                exp_dt = datetime.fromisoformat(str(client_exp).replace("Z", "+00:00"))
+                self.exp_edit.setText(exp_dt.astimezone().strftime("%Y-%m-%d"))
             except Exception:
-                self.exp_edit.setText(str(self._user.get("expires_at", ""))[:10])
-        self.exp_edit.setPlaceholderText("YYYY-MM-DD")
+                self.exp_edit.setText(str(client_exp)[:10])
+        self.exp_edit.setPlaceholderText("留空 = 服务器到期")
         form.addWidget(self.exp_edit)
 
         form.addWidget(self._lbl("状态"))
@@ -709,31 +752,49 @@ class _UserDetailDialog(QDialog):
 
         layout.addLayout(form)
 
-        assign_lbl = QLabel("名下分配（流量配额与到期时间可直接编辑）")
-        assign_lbl.setStyleSheet("font-weight:600;color:#f2f2f7;")
-        layout.addWidget(assign_lbl)
-        self.assign_table = QTableWidget(0, 5)
-        self.assign_table.setHorizontalHeaderLabels(["域名", "IP", "流量配额(GB)", "到期时间", "备注"])
-        self.assign_table.verticalHeader().setVisible(False)
-        self.assign_table.verticalHeader().setDefaultSectionSize(40)
-        self.assign_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        hh = self.assign_table.horizontalHeader()
-        for c in range(5):
-            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        hh.sectionResized.connect(self._on_userdetail_col_resized)
-        defaults = [160, 120, 90, 110, 130]
-        saved = config.get("userdetail_assign_table_widths", {}) or {}
-        for c, d in enumerate(defaults):
-            self.assign_table.setColumnWidth(c, int(saved.get(str(c), d)))
-        self.assign_table.setMinimumHeight(150)
-        layout.addWidget(self.assign_table)
+        # 当前服务器信息（单台，只显示本次点击的这一台）
+        srv_lbl = QLabel("当前服务器")
+        srv_lbl.setStyleSheet("font-weight:600;color:#f2f2f7;")
+        layout.addWidget(srv_lbl)
+
+        node = self.node_data
+        domain = node.get("domain", "") or node.get("host", "") or self.resource_id
+        ip = node.get("ip", "") or "-"
+        info = QLabel(f'{domain}  <span style="color:#98989d;">（{ip}）</span>')
+        layout.addWidget(info)
+
+        layout.addWidget(self._lbl("流量配额（GB，留空 = 不限额）"))
+        self.quota_edit = QLineEdit()
+        quota = float(node.get("quota_gb", 0) or 0)
+        if quota:
+            self.quota_edit.setText(f"{quota:.0f}")
+        self.quota_edit.setPlaceholderText("留空=不限额")
+        layout.addWidget(self.quota_edit)
+
+        # 服务器到期（只读，在「服务器」页双击「到期时间」列设置）
+        srv_expiry = config.get("server_expiry", {}).get(str(self.resource_id), "") or ""
+        if not srv_expiry:
+            srv_expiry = self._resource_expiry or ""
+        exp_lbl = QLabel(f'服务器到期：<span style="color:#ff9f0a;">{str(srv_expiry)[:10] or "跟随账户"}</span>')
+        layout.addWidget(exp_lbl)
+
+        # 切换次数 + 重置
+        sw_row = QHBoxLayout()
+        self.sw_count_lbl = QLabel("今天已切换：— 次")
+        sw_row.addWidget(self.sw_count_lbl)
+        sw_row.addStretch()
+        self.reset_btn = QPushButton("重置切换次数")
+        self.reset_btn.setToolTip("重置该节点当天的切换计数")
+        self.reset_btn.clicked.connect(self._reset_current_switch)
+        sw_row.addWidget(self.reset_btn)
+        layout.addLayout(sw_row)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_ok)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
-        self._load_assigns()
+        self._load_switch_count()
 
     def _lbl(self, text: str) -> QLabel:
         lbl = QLabel(text)
@@ -750,96 +811,45 @@ class _UserDetailDialog(QDialog):
         if hasattr(parent, "_log"):
             parent._log(msg)
 
-    def _on_userdetail_col_resized(self, col: int, old: int, new: int) -> None:
-        """名下分配表格列宽调整持久化。"""
-        widths = config.get("userdetail_assign_table_widths", {}) or {}
-        widths[str(col)] = new
-        config.set_value("userdetail_assign_table_widths", widths)
-
-    def _save_user_note(self, edit) -> None:
-        """保存备注到用户（编辑结束后触发）。"""
-        uid = edit.property("user_id")
-        if uid is None:
+    def _reset_current_switch(self) -> None:
+        """重置当前服务器的当日切换计数。"""
+        username = self._user.get("username", "")
+        domain = self.node_data.get("domain", "") or self.resource_id
+        ret = QMessageBox.question(
+            self,
+            "确认重置",
+            f"确定重置用户「{username}」节点 {domain} 的切换次数吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
             return
-        text = edit.text().strip()
         try:
-            api_client.update_user(int(uid), note=text)
-            self._echo(f"✅ 已保存备注：{text or '（清空）'}")
+            api_client.reset_user_switch(self._user["id"], self.resource_id)
+            self._echo(f"✅ 已重置节点 {domain} 的切换次数")
+            self._load_switch_count()
         except ApiError as e:
-            QMessageBox.warning(self, "保存失败", e.message)
+            QMessageBox.warning(self, "重置失败", e.message)
 
-    def _load_assigns(self) -> None:
-        import json as _json
-
+    def _load_switch_count(self) -> None:
+        """加载当前服务器的当日切换次数（已用 IP 数/上限，与客户端口径一致）。"""
+        _today = datetime.now().strftime("%Y-%m-%d")  # 北京时间（与 Worker 端 bjToday 一致）
+        count = 0
+        limit = int(self._user.get("switch_limit", 5) or 5)
         try:
             data = api_client.get_user(self._user["id"])
-            assigns = data.get("assignments", [])
+            limit = int((data.get("user", {}) or {}).get("switch_limit", limit) or limit)
+            for a in data.get("assignments", []):
+                if str(a.get("resource_id", "")) == str(self.resource_id):
+                    count = int(a.get("switch_count", 0) or 0)
+                    sw_date = str(a.get("switch_date", "") or "")
+                    if sw_date and sw_date[:10] != _today:
+                        count = 0
+                    break
         except ApiError:
-            assigns = []
-        self._assigns = assigns
-        # 展开：每个 IP 一行；域名列跨行合并
-        expanded = []
-        for a in assigns:
-            node = a.get("node_data", {}) or {}
-            if isinstance(node, str):
-                try:
-                    node = _json.loads(node)
-                except Exception:
-                    node = {}
-            domain = node.get("domain", "") or node.get("host", "") or a.get("resource_id", "")
-            quota = float(node.get("quota_gb", 0) or 0)
-            entries = [{
-                "ip": node.get("ip", ""),
-                "expiry": node.get("expiry", "") or "",
-                "quota": quota,
-            }]
-            expanded.append({
-                "domain": domain,
-                "resource_id": a.get("resource_id", ""),
-                "resource_type": a.get("resource_type", ""),
-                "note": a.get("user_note", "") or a.get("note", "") or "",
-                "entries": entries,
-            })
-        self._expanded = expanded
-        self.assign_table.setRowCount(sum(len(e["entries"]) for e in expanded))
-        row = 0
-        for e in expanded:
-            n = len(e["entries"])
-            # 域名：跨行合并居中
-            res_item = QTableWidgetItem(e["domain"])
-            res_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            res_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.assign_table.setItem(row, 0, res_item)
-            if n > 1:
-                self.assign_table.setSpan(row, 0, n, 1)
-            for i, entry in enumerate(e["entries"]):
-                ip_item = QTableWidgetItem(entry["ip"] or "-")
-                ip_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                ip_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.assign_table.setItem(row + i, 1, ip_item)
-                # 流量配额（可编辑）
-                quota_edit = QLineEdit()
-                if entry["quota"]:
-                    quota_edit.setText(f"{entry['quota']:.0f}")
-                quota_edit.setPlaceholderText("留空=不限额")
-                self.assign_table.setCellWidget(row + i, 2, quota_edit)
-                # 到期时间（可编辑）
-                exp_edit = QLineEdit()
-                if entry["expiry"]:
-                    try:
-                        exp_dt = datetime.fromisoformat(str(entry["expiry"]).replace("Z", "+00:00"))
-                        exp_edit.setText(exp_dt.astimezone().strftime("%Y-%m-%d"))
-                    except Exception:
-                        exp_edit.setText(str(entry["expiry"])[:10])
-                exp_edit.setPlaceholderText("留空=原始到期")
-                self.assign_table.setCellWidget(row + i, 3, exp_edit)
-                # 备注（可编辑）
-                note_edit = QLineEdit(e["note"])
-                note_edit.setPlaceholderText("输入备注")
-                note_edit.setProperty("user_id", self._user["id"])
-                note_edit.editingFinished.connect(lambda ed=note_edit: self._save_user_note(ed))
-                self.assign_table.setCellWidget(row + i, 4, note_edit)
-            row += n
+            pass
+        used = count + 1  # 含初始 IP（客户端口径：初始 IP 占 1 个额度）
+        self.sw_count_lbl.setText(f"已用 IP：{used}/{limit}")
 
     def _on_ok(self) -> None:
         username = self.uname_edit.text().strip()
@@ -860,98 +870,61 @@ class _UserDetailDialog(QDialog):
         if password:
             fields["password"] = password
 
+        # 客户到期（每台服务器独立，默认 = 服务器到期，不能超过服务器到期）
+        srv_expiry = config.get("server_expiry", {}).get(str(self.resource_id), "") or self._resource_expiry or ""
+        client_exp = ""
         exp_text = self.exp_edit.text().strip()
         if exp_text:
             exp_dt = _parse_dt(exp_text)
             if not exp_dt:
                 QMessageBox.warning(self, "提示", "到期时间格式不对，请用 YYYY-MM-DD")
                 return
-            res_dt = _parse_dt(self._resource_expiry) if self._resource_expiry else None
-            if res_dt and exp_dt > res_dt:
-                QMessageBox.warning(self, "提示", f"用户到期时间不能晚于资源到期时间 {self._resource_expiry}")
+            srv_dt = _parse_dt(srv_expiry) if srv_expiry else None
+            if srv_dt and exp_dt > srv_dt:
+                QMessageBox.warning(self, "提示", f"客户到期不能晚于服务器到期 {str(srv_expiry)[:10]}")
                 return
-            fields["expires_at"] = exp_dt.astimezone().isoformat()
-        else:
-            fields["expires_at"] = None
+            client_exp = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        # 保存名下分配的到期时间 + 流量（vultr 单实例每资源一行）
-        import json as _json
+        # 流量配额（留空 = 不限额）
+        new_quota = 0
+        q_text = self.quota_edit.text().strip()
+        if q_text:
+            try:
+                new_quota = float(q_text)
+            except ValueError:
+                QMessageBox.warning(self, "提示", "流量配额格式不正确，请输入数字（GB）")
+                return
+            if new_quota <= 0:
+                QMessageBox.warning(self, "提示", "流量配额必须大于 0")
+                return
 
-        edits_by_resource = {}
-        row = 0
-        for e in self._expanded:
-            rid = str(e["resource_id"])
-            edits_by_resource.setdefault(rid, {"resource_type": e["resource_type"], "ip_edits": {}})
-            for i, entry in enumerate(e["entries"]):
-                exp_widget = self.assign_table.cellWidget(row + i, 3)
-                quota_widget = self.assign_table.cellWidget(row + i, 2)
-                new_expiry = ""
-                if exp_widget is not None:
-                    exp_text = exp_widget.text().strip()
-                    if exp_text:
-                        exp_dt = _parse_dt(exp_text)
-                        if not exp_dt:
-                            QMessageBox.warning(self, "提示", "到期时间格式不对，请用 YYYY-MM-DD")
-                            return
-                        new_expiry = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
-                new_quota = None
-                if quota_widget is not None:
-                    q_text = quota_widget.text().strip()
-                    if q_text:
-                        try:
-                            q = float(q_text)
-                        except ValueError:
-                            QMessageBox.warning(self, "提示", "流量配额格式不正确，请输入数字（GB）")
-                            return
-                        if q <= 0:
-                            QMessageBox.warning(self, "提示", "流量配额必须大于 0")
-                            return
-                        new_quota = q
-                    else:
-                        new_quota = 0.0
-                edits_by_resource[rid]["ip_edits"][entry["ip"]] = (new_expiry, new_quota)
-            row += len(e["entries"])
-
-        # 写回名下分配：vultr 单实例每资源一行，直接更新 node_data 的 expiry/quota_gb
-        for a in self._assigns:
-            rid = str(a.get("resource_id", ""))
-            if rid not in edits_by_resource:
-                continue
-            node = a.get("node_data", {}) or {}
-            if isinstance(node, str):
-                try:
-                    node = _json.loads(node)
-                except Exception:
-                    node = {}
-            new_expiry, new_quota = list(edits_by_resource[rid]["ip_edits"].values())[0]
-            changed = False
-            if new_expiry and node.get("expiry") != new_expiry:
-                node["expiry"] = new_expiry
-                changed = True
-            elif not new_expiry and node.get("expiry"):
-                node["expiry"] = ""
-                changed = True
-            if new_quota is not None and float(node.get("quota_gb") or 0) != new_quota:
-                node["quota_gb"] = new_quota
-                changed = True
-            if changed:
-                nm = node.get("name", "") or a.get("resource_id", "")
-                try:
-                    # 显式传 quota_gb，让 Worker 更新 assignments.quota_gb 列（限流依据），而不只存 node_data
-                    api_client.assign(self._user["id"], a["resource_type"], a["resource_id"], node, quota_gb=new_quota)
-                    self._echo(f"✅ 已更新「{nm}」的到期/流量（客户端 30 秒内自动同步）")
-                except ApiError as e:
-                    self._echo(f"❌ 更新「{nm}」失败：{e.message}")
-                    QMessageBox.warning(self, "保存失败", e.message)
-                    return
+        # 写回 node_data：客户到期 + 流量配额（每台服务器独立）
+        node = dict(self.node_data)
+        node_changed = False
+        if client_exp and node.get("client_expiry") != client_exp:
+            node["client_expiry"] = client_exp
+            node_changed = True
+        elif not client_exp and node.get("client_expiry"):
+            node["client_expiry"] = ""
+            node_changed = True
+        if float(node.get("quota_gb") or 0) != new_quota:
+            node["quota_gb"] = new_quota
+            node_changed = True
+        if node_changed:
+            try:
+                # 显式传 quota_gb，让 Worker 更新 assignments.quota_gb 列（限流依据）
+                api_client.assign(self._user["id"], "vultr", self.resource_id, node, quota_gb=new_quota)
+            except ApiError as e:
+                QMessageBox.warning(self, "保存失败", e.message)
+                return
 
         try:
             api_client.update_user(self._user["id"], **fields)
             parts = []
             if password:
                 parts.append("密码")
-            if "expires_at" in fields:
-                parts.append("客户到期")
+            if client_exp or node_changed:
+                parts.append("客户到期/流量")
             self._echo(f"✅ 已保存用户「{username}」的修改（{'、'.join(parts) if parts else '用户名/状态/切换次数'}，客户端 30 秒内自动同步）")
             self.accept()
         except ApiError as e:
@@ -1134,7 +1107,12 @@ class _AssignDetailDialog(QDialog):
             nd = dict(self.node_data)
             if self.total_quota_gb > 0:
                 nd["quota_gb"] = dlg.quota_gb
-            api_client.assign(dlg.user_id, self.resource_type, self.resource_id, nd, dlg.expires_at, quota_gb=dlg.quota_gb)
+            # 客户到期写到 node_data.client_expiry（每台服务器独立），不写用户级 expires_at
+            if dlg.expires_at:
+                nd["client_expiry"] = dlg.expires_at
+            else:
+                nd.pop("client_expiry", None)
+            api_client.assign(dlg.user_id, self.resource_type, self.resource_id, nd, quota_gb=dlg.quota_gb)
             self._load()
         except ApiError as e:
             QMessageBox.warning(self, "分配失败", e.message)

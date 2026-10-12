@@ -15,6 +15,11 @@ function apiHeaders(env, kind) {
   return { "Authorization": `Bearer ${token || ""}`, "Content-Type": "application/json", "User-Agent": "curl/8.4.0" };
 }
 
+// 北京时间「今天」（UTC+8），switch_date 按北京时间计，避免跨 8 小时时区导致「今天」判断偏差
+function bjToday() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 // Cloudflare Worker: vultr-proxy-users API
 // IP 代理客户管理服务端
 //
@@ -211,9 +216,9 @@ async function handleLogin(request, env) {
 }
 
 async function handleMeNodes(env, user) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bjToday();
   const rows = await env.DB.prepare(
-    "SELECT resource_type, resource_id, node_data, switch_count, switch_limit, switch_date, quota_gb, used_gb FROM assignments WHERE user_id = ? ORDER BY id",
+    "SELECT resource_type, resource_id, node_data, switch_count, switch_limit, switch_date, quota_gb, used_gb, note FROM assignments WHERE user_id = ? ORDER BY sort_order, id",
   )
     .bind(user.id)
     .all();
@@ -236,6 +241,7 @@ async function handleMeNodes(env, user) {
       resource_type: r.resource_type,
       resource_id: r.resource_id,
       ...data,
+      note: r.note || "",
       switch_remaining: Math.max(0, limit - 1 - count),
       switch_limit: limit,
       flow_used_gb: used,
@@ -282,6 +288,42 @@ async function handleMeAccount(request, env, user) {
   return json({ user: { id: row.id, username, expires_at: row.expires_at } });
 }
 
+// 保存节点备注（每用户每节点独立，持久化到 D1）
+async function handleMeNote(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  const resourceId = String(body.resource_id || "").trim();
+  const note = String(body.note || "");
+  if (!resourceId) return json({ error: "resource_id 必填" }, 400);
+
+  const row = await env.DB.prepare(
+    "SELECT id FROM assignments WHERE user_id = ? AND resource_id = ?",
+  ).bind(user.id, resourceId).first();
+  if (!row) return json({ error: "资源不存在或未分配给你" }, 404);
+
+  await env.DB.prepare(
+    "UPDATE assignments SET note = ? WHERE user_id = ? AND resource_id = ?",
+  ).bind(note, user.id, resourceId).run();
+
+  return json({ ok: true, note });
+}
+
+// 保存节点显示顺序（客户端拖拽排序后持久化）
+async function handleMeReorder(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  const orderedIds = Array.isArray(body.ordered_ids) ? body.ordered_ids.map(String) : [];
+  if (!orderedIds.length) return json({ error: "ordered_ids 必填" }, 400);
+
+  const stmts = [];
+  for (let i = 0; i < orderedIds.length; i++) {
+    stmts.push(env.DB.prepare(
+      "UPDATE assignments SET sort_order = ? WHERE user_id = ? AND resource_id = ?",
+    ).bind(i, user.id, orderedIds[i]));
+  }
+  await env.DB.batch(stmts);
+
+  return json({ ok: true });
+}
+
 
 async function switchResource(request, env, user) {
   const body = await request.json().catch(() => ({}));
@@ -297,7 +339,7 @@ async function switchResource(request, env, user) {
     return json({ error: "未知资源类型" }, 400);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = bjToday();
   let count = row.switch_count || 0;
   const limit = row.switch_limit || 5;
   if ((row.switch_date || "") !== today) count = 0;
@@ -377,14 +419,25 @@ async function switchResource(request, env, user) {
     return json({ error: "创建新机失败：未返回实例 ID" }, 500);
   }
 
+  // 销毁旧机前：抓旧机出站流量（Vultr 不保留已销毁实例的流量明细，必须先抓再销毁）
+  let oldUsedGb = 0;
+  try {
+    const bwResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}/bandwidth`, { headers });
+    if (bwResp.ok) {
+      const bwData = await bwResp.json();
+      const bw = bwData.bandwidth || {};
+      oldUsedGb = Object.values(bw).reduce((s, d) => s + (Number(d.outgoing_bytes) || 0), 0) / 1e9;
+    }
+  } catch (_) {}
+
   const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
   if (!delResp.ok && delResp.status !== 404) {
     return json({ error: `销毁旧机失败 HTTP ${delResp.status}` }, 500);
   }
 
   await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
-  ).bind(row.id, user.id, resourceId, newId, new Date().toISOString()).run();
+    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, created_at, old_used_gb) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+  ).bind(row.id, user.id, resourceId, newId, new Date().toISOString(), oldUsedGb).run();
 
   return json({ ok: true, status: "pending", new_id: newId, remaining: limit - count - 1 });
 }
@@ -450,7 +503,7 @@ async function switchStatus(env, user) {
     ).bind(req.new_id, JSON.stringify(nodeData), row.id).run();
     await env.DB.prepare(
       "UPDATE assignments SET switch_count = ?, switch_date = ? WHERE id = ?",
-    ).bind((row.switch_count || 0) + 1, new Date().toISOString().slice(0, 10), row.id).run();
+    ).bind((row.switch_count || 0) + 1, bjToday(), row.id).run();
   }
 
   await env.DB.prepare("UPDATE switch_requests SET status = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
@@ -513,14 +566,25 @@ async function adminSwitch(request, env) {
     return json({ error: "创建新机失败：未返回实例 ID" }, 500);
   }
 
+  // 销毁旧机前：抓旧机出站流量（Vultr 不保留已销毁实例的流量明细，必须先抓再销毁）
+  let oldUsedGb = 0;
+  try {
+    const bwResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}/bandwidth`, { headers });
+    if (bwResp.ok) {
+      const bwData = await bwResp.json();
+      const bw = bwData.bandwidth || {};
+      oldUsedGb = Object.values(bw).reduce((s, d) => s + (Number(d.outgoing_bytes) || 0), 0) / 1e9;
+    }
+  } catch (_) {}
+
   const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
   if (!delResp.ok && delResp.status !== 404) {
     return json({ error: `销毁旧机失败 HTTP ${delResp.status}` }, 500);
   }
 
   await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, actor_type, domain, created_at) VALUES (0, 0, ?, ?, 'pending', 'admin', ?, ?)",
-  ).bind(resourceId, newId, domain, new Date().toISOString()).run();
+    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, actor_type, domain, created_at, old_used_gb) VALUES (0, 0, ?, ?, 'pending', 'admin', ?, ?, ?)",
+  ).bind(resourceId, newId, domain, new Date().toISOString(), oldUsedGb).run();
 
   return json({ ok: true, status: "pending", old_id: resourceId, new_id: newId });
 }
@@ -669,6 +733,8 @@ async function getUser(env, id) {
       resource_id: a.resource_id,
       node_data: data,
       created_at: a.created_at,
+      switch_count: a.switch_count || 0,
+      switch_date: a.switch_date || "",
     };
   });
 
@@ -720,6 +786,24 @@ async function updateUser(request, env, id) {
     .bind(passwordHash, status, expiresAt, note, switchLimit, now, id)
     .run();
 
+  // 重置切换次数：可指定 resource_id 只重置某节点，否则重置该用户全部
+  if (body.reset_switch) {
+    const today = bjToday();
+    if (body.resource_id) {
+      await env.DB.prepare(
+        "UPDATE assignments SET switch_count = 0, switch_date = ? WHERE user_id = ? AND resource_id = ?",
+      )
+        .bind(today, id, body.resource_id)
+        .run();
+    } else {
+      await env.DB.prepare(
+        "UPDATE assignments SET switch_count = 0, switch_date = ? WHERE user_id = ?",
+      )
+        .bind(today, id)
+        .run();
+    }
+  }
+
   return json({ ok: true });
 }
 
@@ -737,7 +821,7 @@ async function assignResource(request, env) {
   const resourceType = String(body.resource_type || "");
   const resourceId = String(body.resource_id || "");
   const nodeData = body.node_data || {};
-  const expiresAt = body.expires_at || nodeData.expiry || null;
+  // 客户到期由 node_data.client_expiry 管理（每台服务器独立），不再写用户级 users.expires_at
   // 区分「显式传了 quota_gb（含 0=不限制）」与「没传（保留原配额）」
   const hasQuota = body.quota_gb !== undefined && body.quota_gb !== null;
   const quotaGb = hasQuota ? Number(body.quota_gb) || 0 : null;
@@ -766,14 +850,6 @@ async function assignResource(request, env) {
       .run();
   }
 
-  if (expiresAt) {
-    await env.DB.prepare(
-      "UPDATE users SET expires_at = ?, updated_at = ? WHERE id = ?",
-    )
-      .bind(expiresAt, new Date().toISOString(), userId)
-      .run();
-  }
-
   return json({ ok: true }, 201);
 }
 
@@ -794,6 +870,14 @@ async function syncFlow(request, env) {
     if (r && r.meta && r.meta.changes) updated += r.meta.changes;
   }
   return json({ ok: true, updated });
+}
+
+async function switchFlow(env) {
+  // 返回最近完成的切换记录（含 old_id → new_id 及销毁旧机前抓取的 old_used_gb），供服务端累加流量。
+  const rows = await env.DB.prepare(
+    "SELECT old_id, new_id, old_used_gb, status, actor_type, created_at FROM switch_requests WHERE status = 'done' ORDER BY id DESC LIMIT 50",
+  ).all();
+  return json({ switches: rows.results });
 }
 
 async function unassignResource(request, env) {
@@ -828,7 +912,7 @@ async function listResourceAssignments(env, resourceType, resourceId) {
 
 async function listAllAssignments(env) {
   const rows = await env.DB.prepare(
-    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, u.username, u.status, u.note, u.expires_at AS user_expires_at FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
+    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, u.username, u.status, u.note, u.expires_at AS user_expires_at, u.switch_limit AS user_switch_limit FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
   ).all();
   const assignments = rows.results.map((a) => {
     let data = {};
@@ -840,6 +924,7 @@ async function listAllAssignments(env) {
       user_status: a.status,
       user_note: a.note,
       user_expires_at: a.user_expires_at,
+      user_switch_limit: a.user_switch_limit,
       resource_type: a.resource_type,
       resource_id: a.resource_id,
       node_data: data,
@@ -919,6 +1004,16 @@ export default {
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
         return await handleMeAccount(request, env, user);
       }
+      if (method === "POST" && path === "/me/note") {
+        const user = await requireUser(request, env);
+        if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        return await handleMeNote(request, env, user);
+      }
+      if (method === "POST" && path === "/me/reorder") {
+        const user = await requireUser(request, env);
+        if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        return await handleMeReorder(request, env, user);
+      }
       // 节点签好证书后回传（用 X-Cert-Token 认证，非管理员 token）
       if (method === "POST" && path === "/admin/cert-save") return await certSave(request, env);
 
@@ -950,6 +1045,7 @@ export default {
       if (path === "/admin/switch/status" && method === "GET") return await adminSwitchStatus(env);
       if (path === "/admin/all-assignments" && method === "GET") return await listAllAssignments(env);
       if (path === "/admin/sync-flow" && method === "POST") return await syncFlow(request, env);
+      if (path === "/admin/switch-flow" && method === "GET") return await switchFlow(env);
 
       if (path === "/admin/resource-assignments" && method === "GET") {
         const rt = url.searchParams.get("resource_type") || "";

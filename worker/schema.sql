@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   switch_date TEXT NOT NULL DEFAULT '',
   quota_gb REAL NOT NULL DEFAULT 0,
   used_gb REAL NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
   UNIQUE(user_id, resource_type, resource_id)
 );
 
