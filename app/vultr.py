@@ -420,6 +420,7 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
 
     plan_bw = {p.get("id"): int(p.get("bandwidth", 0) or 0) for p in plans}
     cumulative = dict(config.get("server_cumulative_used", {}) or {})
+    flow_reset = dict(config.get("server_flow_reset", {}) or {})
     running = [i for i in instances if i.get("power_status") == "running" and i.get("id")]
     if not running:
         return {}
@@ -442,8 +443,10 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
             total_out = sum(day.get("outgoing_bytes", 0) for day in bw.values())
             used_gb = total_out / 1e9
             # 累计已用 = 该服务器历史累计（切换 IP 时随服务器迁移）+ 当前实例出站
+            # 减去重置基准：重置流量后从 0 重新算（否则 sync_flow 会用当前实例出站覆盖，重置失效）
             cum = float(cumulative.get(iid, 0) or 0)
-            total_used = cum + used_gb
+            reset_base = float(flow_reset.get(iid, 0) or 0)
+            total_used = cum + max(0.0, used_gb - reset_base)
             quota = plan_bw.get(plan_by_id.get(iid, ""), 0)
             result[iid] = {
                 "used_gb": total_used,

@@ -861,6 +861,18 @@ class _UserDetailDialog(QDialog):
         if ret != QMessageBox.StandardButton.Yes:
             return
         try:
+            # 记录重置基准（当前实例出站），compute_bandwidth 从重置点重新算
+            # 否则 sync_flow 5 分钟内会用「当前实例出站」覆盖 D1 used_gb，重置失效
+            from ..vultr import VultrAPI
+            api = VultrAPI(config.get("vultr_api_key", ""))
+            try:
+                cur_bw = api.get_instance_bandwidth(self.resource_id)
+                cur_out = sum(day.get("outgoing_bytes", 0) for day in cur_bw.values()) / 1e9
+            except Exception:
+                cur_out = 0.0
+            flow_reset = dict(config.get("server_flow_reset", {}) or {})
+            flow_reset[str(self.resource_id)] = cur_out
+            config.set_value("server_flow_reset", flow_reset)
             # 清空本地累计 + D1 used_gb
             cumulative = dict(config.get("server_cumulative_used", {}) or {})
             cumulative[str(self.resource_id)] = 0.0

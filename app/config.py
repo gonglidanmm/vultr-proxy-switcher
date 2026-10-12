@@ -61,6 +61,7 @@ DEFAULTS: dict = {
     "server_names": {},
     # 服务器累计已用流量（域名 -> 累计出站 GB；切换 IP 时旧实例流量累加到域名下，实现"切换后已用继承"）
     "server_cumulative_used": {},
+    "server_flow_reset": {},
     # 表格列宽（列索引 -> 宽度，用户手动拖宽后持久化，重开保留）
     "table_column_widths": {},
     "users_table_column_widths": {},  # 用户管理列表列宽
