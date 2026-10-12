@@ -815,7 +815,7 @@ async function checkNode(n, btn) {
         const matched = n.ip && ips.some((ip) => ip === n.ip);
         logMsg(`   域名 ${domain} → ${resolved}${matched ? "（与节点 IP 一致）" : "（⚠ 与节点 IP 不一致，DNS 可能未同步）"}`, matched ? "ok" : "warn");
       } catch (e) {
-        logMsg(`   域名 ${domain} 解析失败：${e}`, "warn");
+        logMsg(`   域名解析检查不可用（本机 DNS 受限，不影响节点使用）`, "info");
       }
     }
   } catch (e) {

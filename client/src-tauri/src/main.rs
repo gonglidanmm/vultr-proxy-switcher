@@ -58,7 +58,8 @@ fn check_udp(host: String, port: u16) -> Result<f64, String> {
     }
 }
 
-/// 用真实 DNS（8.8.8.8:53，UDP）解析域名 A 记录，绕过本机翻墙的 fake-ip 劫持。
+/// 用真实 DNS 解析域名 A 记录，绕过本机翻墙的 fake-ip 劫持。
+/// 多个 DNS 服务器 fallback：8.8.8.8 在某些网络（防火墙/运营商）UDP 53 被拦，逐个尝试。
 fn resolve_a_real(domain: &str) -> Result<Vec<String>, String> {
     let mut query = Vec::with_capacity(64);
     query.extend_from_slice(&[0x12, 0x34]); // Transaction ID
@@ -79,16 +80,33 @@ fn resolve_a_real(domain: &str) -> Result<Vec<String>, String> {
     query.extend_from_slice(&[0x00, 0x01]); // QTYPE = A
     query.extend_from_slice(&[0x00, 0x01]); // QCLASS = IN
 
+    const DNS_SERVERS: [&str; 4] = ["8.8.8.8:53", "1.1.1.1:53", "223.5.5.5:53", "119.29.29.29:53"];
+    let mut last_err = String::new();
+    for server in DNS_SERVERS.iter() {
+        match query_dns(server, &query) {
+            Ok(ips) => return Ok(ips),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+/// 向指定 DNS 服务器发 A 记录查询，返回解析到的 IP 列表。
+fn query_dns(server: &str, query: &[u8]) -> Result<Vec<String>, String> {
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("绑定失败: {e}"))?;
     socket
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(Duration::from_secs(2)))
         .ok();
     socket
-        .connect("8.8.8.8:53")
-        .map_err(|e| format!("连接 DNS 失败: {e}"))?;
-    socket.send(&query).map_err(|e| format!("发送失败: {e}"))?;
+        .connect(server)
+        .map_err(|_| format!("连接 {server} 失败"))?;
+    socket
+        .send(query)
+        .map_err(|_| format!("发送到 {server} 失败"))?;
     let mut buf = [0u8; 512];
-    let n = socket.recv(&mut buf).map_err(|e| format!("接收失败: {e}"))?;
+    let n = socket
+        .recv(&mut buf)
+        .map_err(|_| format!("{server} 无响应"))?;
 
     if n < 12 {
         return Err("DNS 响应过短".to_string());
