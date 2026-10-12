@@ -408,7 +408,10 @@ class UsersPage(QWidget):
         config.set_value("users_table_column_widths", widths)
 
     def eventFilter(self, obj, event) -> bool:
-        """序号列选整行、其它格选该格、表格外空白取消。"""
+        """序号列选整行、其它格选该格、表格外空白取消。拖拽：强制移动（不复制）。"""
+        if obj is self.table.viewport() and event.type() == QEvent.Type.DragMove:
+            # macOS 上 Qt 拖拽默认可能走 CopyAction 导致复制行，强制 MoveAction
+            event.setDropAction(Qt.DropAction.MoveAction)
         if event.type() == QEvent.Type.MouseButtonPress:
             if obj is self.table.viewport():
                 index = self.table.indexAt(event.position().toPoint())

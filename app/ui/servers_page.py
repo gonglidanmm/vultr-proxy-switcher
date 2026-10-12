@@ -897,11 +897,15 @@ class ServersPage(QWidget):
         config.set_value("server_notes", notes)
 
     def eventFilter(self, obj, event) -> bool:
-        """点击表格：序号列选中整行，其它列或空白清除选中。"""
-        if obj is self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
-            index = self.table.indexAt(event.position().toPoint())
-            if not index.isValid() or index.column() != 0:
-                self.table.clearSelection()
+        """点击表格：序号列选中整行，其它列或空白清除选中。拖拽：强制移动（不复制）。"""
+        if obj is self.table.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress:
+                index = self.table.indexAt(event.position().toPoint())
+                if not index.isValid() or index.column() != 0:
+                    self.table.clearSelection()
+            elif event.type() == QEvent.Type.DragMove:
+                # macOS 上 Qt 拖拽默认可能走 CopyAction 导致复制行，强制 MoveAction
+                event.setDropAction(Qt.DropAction.MoveAction)
         return super().eventFilter(obj, event)
 
     def _on_cell_dblclick(self, row: int, col: int) -> None:
