@@ -449,6 +449,11 @@ class ServersPage(QWidget):
     # ---------------- 服务器列表 ----------------
     # ---------------- 服务器列表 ----------------
     def refresh(self) -> None:
+        # 节流：10 秒内不重复刷新（避免频繁点刷新触发大量 Vultr API 调用撞限流）
+        now = time.time()
+        if now - getattr(self, "_last_refresh", 0) < 10:
+            return
+        self._last_refresh = now
         self._log("⏳ 正在加载服务器列表…")
 
         def _do():

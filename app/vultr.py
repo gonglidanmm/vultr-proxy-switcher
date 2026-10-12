@@ -410,31 +410,46 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
     Vultr 只对出站（outgoing）流量计费，入站免费。
     已用 = 该服务器（instance_id）的历史累计（切换 IP 时随服务器迁移）+ 当前实例出站。
     返回 {iid: {used_gb, quota_gb, remaining_gb}}。
+
+    性能：100-200 台时串行查询要 1-3 分钟，这里用线程池并行查询（每个线程独立 VultrAPI/Session，
+    避免 requests.Session 线程不安全），缩短到 10-20 秒。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     from . import config
 
     plan_bw = {p.get("id"): int(p.get("bandwidth", 0) or 0) for p in plans}
     cumulative = dict(config.get("server_cumulative_used", {}) or {})
-    result = {}
-    for inst in instances:
-        iid = inst.get("id", "")
-        if not iid or inst.get("power_status") != "running":
-            continue
+    running = [i for i in instances if i.get("power_status") == "running" and i.get("id")]
+    if not running:
+        return {}
+
+    # 从 api 实例拿 api_key，供每线程新建独立 VultrAPI（独立 Session）
+    api_key = (api.headers.get("Authorization", "") or "").replace("Bearer ", "").strip()
+    plan_by_id = {i.get("id"): i.get("plan", "") for i in running}
+
+    def _fetch(iid):
+        # 每线程独立 VultrAPI，避免共享 Session 的线程安全问题
         try:
-            bw = api.get_instance_bandwidth(iid)
+            a = VultrAPI(api_key)
+            return iid, a.get_instance_bandwidth(iid)
         except Exception:
-            continue
-        total_out = sum(day.get("outgoing_bytes", 0) for day in bw.values())
-        used_gb = total_out / 1e9
-        # 累计已用 = 该服务器历史累计（切换 IP 时随服务器迁移）+ 当前实例出站
-        cum = cumulative.get(iid, 0.0)
-        total_used = cum + used_gb
-        quota = plan_bw.get(inst.get("plan", ""), 0)
-        result[iid] = {
-            "used_gb": total_used,
-            "quota_gb": quota,
-            "remaining_gb": quota - total_used,
-        }
+            return iid, {}
+
+    result = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for iid, bw in pool.map(_fetch, [i["id"] for i in running]):
+            total_out = sum(day.get("outgoing_bytes", 0) for day in bw.values())
+            used_gb = total_out / 1e9
+            # 累计已用 = 该服务器历史累计（切换 IP 时随服务器迁移）+ 当前实例出站
+            cum = float(cumulative.get(iid, 0) or 0)
+            total_used = cum + used_gb
+            quota = plan_bw.get(plan_by_id.get(iid, ""), 0)
+            result[iid] = {
+                "used_gb": total_used,
+                "quota_gb": quota,
+                "remaining_gb": quota - total_used,
+            }
     return result
 
 
