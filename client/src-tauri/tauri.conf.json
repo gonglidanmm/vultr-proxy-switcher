@@ -32,6 +32,11 @@
     "externalBin": [
       "binaries/sing-box"
     ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    },
     "icon": [
       "icons/icon.icns",
       "icons/icon.ico",
