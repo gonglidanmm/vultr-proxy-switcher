@@ -55,6 +55,7 @@ from ..vultr import (
     region_label,
 )
 from .proxy_controller import ProxyStatusCard
+from .drag_table import DragTableWidget
 from .workers import CallWorker, ProgressWorker
 
 COLS = ["序号", "名称", "区域", "IP", "域名", "状态", "流量(已用/剩余)", "到期时间", "备注", "操作"]
@@ -132,17 +133,11 @@ class ServersPage(QWidget):
         root.addWidget(self._bw_label)
 
         # 表格
-        self.table = QTableWidget(0, len(COLS))
+        self.table = DragTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # 行拖拽排序（持久化到 config server_order）
-        self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
-        self.table.setDragEnabled(True)
-        self.table.setAcceptDrops(True)
-        self.table.setDropIndicatorShown(True)
-        self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(52)
         header = self.table.horizontalHeader()
@@ -173,7 +168,7 @@ class ServersPage(QWidget):
         QApplication.instance().installEventFilter(self)
         self.table.itemChanged.connect(self._on_note_changed)
         self.table.cellDoubleClicked.connect(self._on_cell_dblclick)
-        self.table.model().rowsMoved.connect(self._on_rows_moved)
+        self.table.row_dropped.connect(self._on_row_dropped)
         root.addWidget(self.table, 1)
 
         # 切换IP 日志回显
@@ -858,24 +853,18 @@ class ServersPage(QWidget):
             self.table.setCellWidget(r, 9, self._op_cell(srv))
         self._suppress_note = False
 
-    def _on_rows_moved(self, parent, start, end, dest, row) -> None:
-        """行拖拽后：按表格当前顺序重排 self._servers + 持久化 + 重填序号。"""
-        order = []
-        id_to_srv = {s["id"]: s for s in self._servers}
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            sid = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if sid and sid in id_to_srv:
-                order.append(sid)
-        if len(order) != len(self._servers):
-            return  # 顺序读不完整（异常），不保存
-        self._servers = [id_to_srv[sid] for sid in order]
-        config.set_value("server_order", order)
-        # 重填序号列（1,2,3...）
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item:
-                item.setText(str(r + 1))
+    def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
+        """拖拽排序：把 self._servers 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
+
+        直接操作数据列表（pop + insert），再重新 populate——绝不复制、绝不错位。
+        """
+        if src_row < 0 or dst_row < 0 or src_row >= len(self._servers) or src_row == dst_row:
+            return
+        srv = self._servers.pop(src_row)
+        insert_at = dst_row if dst_row <= len(self._servers) else len(self._servers)
+        self._servers.insert(insert_at, srv)
+        config.set_value("server_order", [s["id"] for s in self._servers])
+        self._populate_table()
 
     def _on_note_changed(self, item: QTableWidgetItem) -> None:
         if self._suppress_note:
@@ -907,15 +896,11 @@ class ServersPage(QWidget):
         config.set_value("server_notes", notes)
 
     def eventFilter(self, obj, event) -> bool:
-        """点击表格：序号列选中整行，其它列或空白清除选中。拖拽：强制移动（不复制）。"""
-        if obj is self.table.viewport():
-            if event.type() == QEvent.Type.MouseButtonPress:
-                index = self.table.indexAt(event.position().toPoint())
-                if not index.isValid() or index.column() != 0:
-                    self.table.clearSelection()
-            elif event.type() == QEvent.Type.DragMove:
-                # macOS 上 Qt 拖拽默认可能走 CopyAction 导致复制行，强制 MoveAction
-                event.setDropAction(Qt.DropAction.MoveAction)
+        """点击表格：序号列选中整行，其它列或空白清除选中。"""
+        if obj is self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.table.indexAt(event.position().toPoint())
+            if not index.isValid() or index.column() != 0:
+                self.table.clearSelection()
         return super().eventFilter(obj, event)
 
     def _on_cell_dblclick(self, row: int, col: int) -> None:

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from .. import api_client, config
 from ..api_client import ApiError
+from .drag_table import DragTableWidget
 
 # 全局回显：让 Vultr-IP 页面的操作也能写入用户管理页的日志区
 _g_echo = None
@@ -149,17 +150,11 @@ class UsersPage(QWidget):
         top.addWidget(self.add_btn)
         layout.addLayout(top)
 
-        self.table = QTableWidget(0, len(COLS))
+        self.table = DragTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # 行拖拽排序（持久化到 config user_order）
-        self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
-        self.table.setDragEnabled(True)
-        self.table.setAcceptDrops(True)
-        self.table.setDropIndicatorShown(True)
-        self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(48)
         header = self.table.horizontalHeader()
@@ -188,7 +183,7 @@ class UsersPage(QWidget):
                 pass
         header.sectionResized.connect(self._on_col_resized)
         self.table.cellDoubleClicked.connect(self._on_cell_dbl)
-        self.table.model().rowsMoved.connect(self._on_rows_moved)
+        self.table.row_dropped.connect(self._on_row_dropped)
         QApplication.instance().installEventFilter(self)
         layout.addWidget(self.table, 1)
 
@@ -371,19 +366,18 @@ class UsersPage(QWidget):
 
             self.table.setCellWidget(row, 11, self._ops(a, row))
 
-    def _on_rows_moved(self, parent, start, end, dest, row) -> None:
-        """行拖拽后：按表格当前顺序重排 self._assigns + 持久化顺序。"""
-        order = []
-        id_to_assign = {a.get("id"): a for a in self._assigns}
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            aid = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if aid in id_to_assign:
-                order.append(aid)
-        if len(order) != len(self._assigns):
-            return  # 顺序读不完整（异常），不保存
-        self._assigns = [id_to_assign[aid] for aid in order]
-        config.set_value("user_order", order)
+    def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
+        """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
+
+        直接操作数据列表（pop + insert），再重新 populate——绝不复制、绝不错位。
+        """
+        if src_row < 0 or dst_row < 0 or src_row >= len(self._assigns) or src_row == dst_row:
+            return
+        a = self._assigns.pop(src_row)
+        insert_at = dst_row if dst_row <= len(self._assigns) else len(self._assigns)
+        self._assigns.insert(insert_at, a)
+        config.set_value("user_order", [x.get("id") for x in self._assigns])
+        self._populate()
 
     def _on_cell_dbl(self, row: int, col: int) -> None:
         """双击用户名 → 编辑该用户。"""
@@ -408,10 +402,7 @@ class UsersPage(QWidget):
         config.set_value("users_table_column_widths", widths)
 
     def eventFilter(self, obj, event) -> bool:
-        """序号列选整行、其它格选该格、表格外空白取消。拖拽：强制移动（不复制）。"""
-        if obj is self.table.viewport() and event.type() == QEvent.Type.DragMove:
-            # macOS 上 Qt 拖拽默认可能走 CopyAction 导致复制行，强制 MoveAction
-            event.setDropAction(Qt.DropAction.MoveAction)
+        """序号列选整行、其它格选该格、表格外空白取消。"""
         if event.type() == QEvent.Type.MouseButtonPress:
             if obj is self.table.viewport():
                 index = self.table.indexAt(event.position().toPoint())
