@@ -752,7 +752,8 @@ function updateUpstreamButtons() {
 // 测试节点各协议 TCP 连通性（host:port 可达 = 协议服务在监听）
 // showDiagnostics=true 时打印失败诊断（手动检测用），轮询检测静默避免刷屏
 async function testNodeProtocols(n, showDiagnostics = false) {
-  const host = n.host || n.ip || n.domain || "";
+  // 检测用真实 IP（n.ip 优先），不用域名——域名会被翻墙软件 fake-ip 劫持成 198.18.x 假 IP，直连必超时
+  const host = n.ip || n.host || n.domain || "";
   const protos = ["socks5", "ss", "reality", "hysteria2"];
   const results = {};
   for (const p of protos) {
