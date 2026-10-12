@@ -792,6 +792,7 @@ class ServersPage(QWidget):
             "power": inst.get("power_status", ""),
             "date_created": inst.get("date_created", ""),
             "plan": PLAN_NAMES.get(inst.get("plan", ""), inst.get("plan", "")),
+            "plan_id": inst.get("plan", ""),
         }
 
     def _on_servers(self, result) -> None:
@@ -1356,17 +1357,18 @@ class ServersPage(QWidget):
             return
 
         # 弹窗选目标国家（默认当前国家）
-        dlg = SwitchIpDialog(srv["region"], self)
+        dlg = SwitchIpDialog(srv["region"], self, current_plan=srv.get("plan_id", ""))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         target_region = dlg.selected_region()
+        target_plan = dlg.selected_plan()
         sub = domain.server_domain(srv["id"])
         creds = gencreds.get_credentials(srv["id"])
         self._log(f"========== 开始切换IP：{srv['name']} ({srv['region']}) → 目标 {target_region} ==========")
 
         def _do(progress):
             progress("① 请求 Worker 销毁重建（同国家换区）...")
-            result = api_client.admin_switch(resource_id=srv["id"], region=target_region, domain=sub, creds=creds)
+            result = api_client.admin_switch(resource_id=srv["id"], region=target_region, domain=sub, creds=creds, plan=target_plan)
             new_id = result.get("new_id", "")
             progress(f"② 已触发重建，新实例 {new_id[:8]}...，等待就绪...")
             for _ in range(72):  # 最多 6 分钟
@@ -2124,11 +2126,11 @@ class ManualServerDialog(QDialog):
 
 
 class SwitchIpDialog(QDialog):
-    """切换IP 前选目标国家 + 具体区域（州/城市），标注大陆直连速度。"""
+    """切换IP 前选目标国家 + 具体区域（州/城市）+ 套餐，标注大陆直连速度。"""
 
-    def __init__(self, current_region: str, parent=None):
+    def __init__(self, current_region: str, parent=None, current_plan: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("切换IP — 选择目标国家 + 区域")
+        self.setWindowTitle("切换IP — 选择目标国家 + 区域 + 套餐")
         self.setMinimumWidth(400)
         form = QFormLayout(self)
 
@@ -2144,6 +2146,16 @@ class SwitchIpDialog(QDialog):
 
         self.region_combo = QComboBox()
         form.addRow("目标区域（州/城市）", self.region_combo)
+
+        # 套餐选择：管理员可在此换套餐（如 $5 1TB → $6 2TB）；仅服务端可用，客户端切换不能换套餐
+        self.plan_combo = QComboBox()
+        for p in config.get("plans", []) or []:
+            self.plan_combo.addItem(PLAN_NAMES.get(p, p), p)
+        if current_plan:
+            idx = self.plan_combo.findData(current_plan)
+            if idx >= 0:
+                self.plan_combo.setCurrentIndex(idx)
+        form.addRow("套餐（可换）", self.plan_combo)
 
         hint = QLabel("速度标签为中国大陆直连参考：快 = 西海岸/亚洲，慢 = 东海岸/欧洲")
         hint.setWordWrap(True)
@@ -2167,6 +2179,9 @@ class SwitchIpDialog(QDialog):
 
     def selected_region(self) -> str:
         return self.region_combo.currentData()
+
+    def selected_plan(self) -> str:
+        return self.plan_combo.currentData() or ""
 
 
 class NodeShareDialog(QDialog):

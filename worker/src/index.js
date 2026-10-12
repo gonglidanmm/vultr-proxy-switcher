@@ -534,7 +534,9 @@ async function adminSwitch(request, env) {
   }
   const oldInst = ((await oldResp.json()).instance) || {};
   const oldRegion = oldInst.region || "";
-  const plan = oldInst.plan || "";
+  // 套餐：管理员可显式指定（body.plan），未指定则沿用旧机套餐。
+  // 客户端 switchResource 不支持指定 plan（保持旧套餐），只有服务端能换套餐。
+  const plan = (body.plan || "").trim() || oldInst.plan || "";
   const label = oldInst.label || "vultr-proxy-node";
   const country = REGION_COUNTRY[oldRegion] || "";
   const targetRegion = (body.region || "").trim();

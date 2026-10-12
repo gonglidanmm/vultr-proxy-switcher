@@ -148,8 +148,12 @@ def list_all_assignments() -> dict:
 # ---------------- 切换 IP（走 Worker） ----------------
 
 
-def admin_switch(resource_id: str, region: str = "", domain: str = "", creds: dict | None = None) -> dict:
-    """管理端切换 IP：触发 Worker 销毁重建，返回 { ok, old_id, new_id, status }。"""
+def admin_switch(resource_id: str, region: str = "", domain: str = "", creds: dict | None = None, plan: str = "") -> dict:
+    """管理端切换 IP：触发 Worker 销毁重建，返回 { ok, old_id, new_id, status }。
+
+    plan 可选指定新套餐（如 vhp-1c-1gb-amd），不传则沿用旧机套餐。
+    仅服务端可用；客户端切换 IP 不能指定套餐。
+    """
     body = {"resource_id": resource_id}
     if region:
         body["region"] = region
@@ -157,6 +161,8 @@ def admin_switch(resource_id: str, region: str = "", domain: str = "", creds: di
         body["domain"] = domain
     if creds:
         body["creds"] = creds
+    if plan:
+        body["plan"] = plan
     return _request("POST", "/admin/switch", body, admin=True)
 
 
