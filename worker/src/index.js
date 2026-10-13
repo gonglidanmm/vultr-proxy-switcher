@@ -608,7 +608,7 @@ async function processOneSwitch(req, env, headers, request) {
       if (countryName && cityName) nodeData.location = `${countryName}·${cityName}`;
     }
     const domain = nodeData.domain || "";
-    if (domain) await updateDns(env, domain, newIp);
+    // 注：DNS 已在「拿到新机 IP 后」提前更新（见上文），这里不再重复调用。
     await env.DB.prepare(
       "UPDATE assignments SET resource_id = ?, node_data = ? WHERE id = ?",
     ).bind(req.new_id, JSON.stringify(nodeData), row.id).run();
@@ -626,16 +626,23 @@ async function switchStatus(request, env, user) {
   if (!VULTR_KEY) return json({ status: "none" });
   const headers = apiHeaders(env, "vultr");
 
-  // 查该用户所有进行中的切换（支持并发多台同时切，每台独立回显）
+  // 查该用户所有进行中的切换 + 最近 10 分钟已完成的切换。
+  // 关键：done 的记录不再属于 pending，但并发切换时先完成的节点必须仍能被客户端匹配到（resource_id），
+  // 否则客户端找不到自己那一台的 done 状态，会误判「切换失败」。所以 done 记录也要返回（带 stage=done）。
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const reqs = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE user_id = ? AND status = 'pending' ORDER BY id ASC",
-  ).bind(user.id).all();
-  const pending = reqs.results || [];
-  if (pending.length === 0) return json({ status: "none" });
+    "SELECT * FROM switch_requests WHERE user_id = ? AND (status = 'pending' OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
+  ).bind(user.id, since).all();
+  const all = reqs.results || [];
+  if (all.length === 0) return json({ status: "none" });
 
   const items = [];
-  for (const req of pending) {
-    items.push(await processOneSwitch(req, env, headers, request));
+  for (const req of all) {
+    if (req.status === "done") {
+      items.push({ resource_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || "" });
+    } else {
+      items.push(await processOneSwitch(req, env, headers, request));
+    }
   }
   const anyPending = items.some((it) => it.status === "pending");
   return json({ status: anyPending ? "pending" : "done", items });
@@ -733,7 +740,7 @@ async function adminSwitch(request, env) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, actor_type, domain, created_at, old_used_gb, new_bandwidth) VALUES (0, 0, ?, ?, 'pending', 'admin', ?, ?, ?, ?)",
+    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, stage, actor_type, domain, created_at, old_used_gb, new_bandwidth) VALUES (0, 0, ?, ?, 'pending', 'booting', 'admin', ?, ?, ?, ?)",
   ).bind(resourceId, newId, domain, new Date().toISOString(), oldUsedGb, newBandwidth).run();
 
   return json({ ok: true, status: "pending", old_id: resourceId, new_id: newId });
@@ -806,16 +813,21 @@ async function adminSwitchStatus(request, env) {
   if (!VULTR_KEY) return json({ status: "none" });
   const headers = apiHeaders(env, "vultr");
 
-  // 查所有 admin 进行中的切换（支持并发多台）
+  // 查所有 admin 进行中的切换 + 最近 10 分钟已完成的（并发切换时先完成的仍能被匹配到，避免误判失败）
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const reqs = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND status = 'pending' ORDER BY id ASC",
-  ).all();
-  const pending = reqs.results || [];
-  if (pending.length === 0) return json({ status: "none" });
+    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND (status = 'pending' OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
+  ).bind(since).all();
+  const all = reqs.results || [];
+  if (all.length === 0) return json({ status: "none" });
 
   const items = [];
-  for (const req of pending) {
-    items.push(await processAdminSwitch(req, env, headers, request));
+  for (const req of all) {
+    if (req.status === "done") {
+      items.push({ old_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || "", domain: req.domain || "" });
+    } else {
+      items.push(await processAdminSwitch(req, env, headers, request));
+    }
   }
   const anyPending = items.some((it) => it.status === "pending");
   return json({ status: anyPending ? "pending" : "done", items });

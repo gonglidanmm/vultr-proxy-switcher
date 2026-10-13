@@ -884,6 +884,19 @@ async function afterSwitch(newIp) {
       const label = p === "hysteria2" && v > 0 ? "（端口通，证书以服务端为准）" : "";
       logMsg(`   ${protoName(p)}：${v > 0 ? v + "ms" + label : "不可达"}`, v > 0 ? "ok" : "err");
     }
+    // 域名同步检测：提示软路由客户域名是否已指向新 IP（核心卖点：客户不用改配置）
+    const domain = newNode.domain || "";
+    if (domain && domain.includes(".")) {
+      try {
+        const resolved = await invokeRust("resolve_domain", { domain });
+        const matched = String(resolved).split(",").map((s) => s.trim()).includes(newIp);
+        if (matched) {
+          logMsg(`域名 ${domain} 已指向新 IP，软路由客户 1 分钟内自动生效，无需改配置`, "ok");
+        } else {
+          logMsg(`域名 ${domain} → ${resolved}（DNS 同步中，软路由客户稍等 1 分钟生效）`, "warn");
+        }
+      } catch (_) {}
+    }
   } else {
     logMsg(`新机服务启动超时，请稍后点「查联通性」重试`, "warn");
   }
