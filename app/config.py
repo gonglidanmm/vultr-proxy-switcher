@@ -108,3 +108,18 @@ def update(**kwargs) -> None:
         cfg = _load()
         cfg.update(kwargs)
         _save(cfg)
+
+
+def mutate(key: str, fn):
+    """原子读-改-写一个 key：fn(当前值) 返回新值。
+
+    防止「读 → 改 → 写」跨锁期间的并发丢失：多线程并发改同一 key 时，
+    fn 在锁内拿到的是最新值，写回不会覆盖别的线程的修改。
+    fn 只返回「新值」；需要额外结果请通过闭包（可变容器）传出。
+    """
+    with _lock:
+        cfg = _load()
+        new_val = fn(cfg.get(key))
+        cfg[key] = new_val
+        _save(cfg)
+        return new_val

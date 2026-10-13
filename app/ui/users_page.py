@@ -870,13 +870,17 @@ class _UserDetailDialog(QDialog):
                 cur_out = sum(day.get("outgoing_bytes", 0) for day in cur_bw.values()) / 1e9
             except Exception:
                 cur_out = 0.0
-            flow_reset = dict(config.get("server_flow_reset", {}) or {})
-            flow_reset[str(self.resource_id)] = cur_out
-            config.set_value("server_flow_reset", flow_reset)
+            def _set_reset(m):
+                m = dict(m or {})
+                m[str(self.resource_id)] = cur_out
+                return m
+            config.mutate("server_flow_reset", _set_reset)
             # 清空本地累计 + D1 used_gb
-            cumulative = dict(config.get("server_cumulative_used", {}) or {})
-            cumulative[str(self.resource_id)] = 0.0
-            config.set_value("server_cumulative_used", cumulative)
+            def _clear_cum(m):
+                m = dict(m or {})
+                m[str(self.resource_id)] = 0.0
+                return m
+            config.mutate("server_cumulative_used", _clear_cum)
             api_client.reset_flow(self.resource_id)
             self._echo(f"✅ 已重置节点 {domain} 的流量（已用清零，配额重新给满）")
         except ApiError as e:

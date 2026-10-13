@@ -599,10 +599,12 @@ class ServersPage(QWidget):
     def _migrate_server_config(self, old_id: str, new_id: str) -> None:
         """把旧实例 ID 的 per-server 配置（域名/凭据/备注/名称/到期/累计流量）迁移到新实例 ID。"""
         for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry", "server_cumulative_used"):
-            m = dict(config.get(key, {}))
-            if old_id in m:
-                m[new_id] = m.pop(old_id)
-                config.set_value(key, m)
+            def _migrate(m):
+                m = dict(m or {})
+                if old_id in m:
+                    m[new_id] = m.pop(old_id)
+                return m
+            config.mutate(key, _migrate)
 
     def _sync_server_configs(self, instances: list) -> None:
         """检测实例增删，把消失实例的配置迁移到新增实例（客户端切 IP 后自动同步）。"""
@@ -622,10 +624,9 @@ class ServersPage(QWidget):
         try:
             flow_data = api_client.list_switch_flow()
             self._switch_old_flow = {s.get("old_id"): float(s.get("old_used_gb", 0) or 0) for s in flow_data.get("switches", [])}
-            flow_map = {s.get("old_id"): s.get("new_id") for s in flow_data.get("switches", []) if s.get("old_id") and s.get("new_id")}
         except Exception:
             self._switch_old_flow = {}
-            flow_map = {}
+            flow_data = {"switches": []}
         # 建立完整切换链（old → new），支持多步追踪（含 pending 记录，新机已 running 但客户端没轮询完成）
         flow_map = {s.get("old_id"): s.get("new_id") for s in flow_data.get("switches", []) if s.get("old_id") and s.get("new_id")}
 
@@ -647,10 +648,12 @@ class ServersPage(QWidget):
             if old_used <= 0:
                 old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
             if old_used > 0:
-                cumulative = dict(config.get("server_cumulative_used", {}) or {})
-                # 累加（不是覆盖）：历史累计 + 这次旧实例出站
-                cumulative[old_id] = float(cumulative.get(old_id, 0) or 0) + old_used
-                config.set_value("server_cumulative_used", cumulative)
+                def _accum(m):
+                    m = dict(m or {})
+                    # 累加（不是覆盖）：历史累计 + 这次旧实例出站
+                    m[old_id] = float(m.get(old_id, 0) or 0) + old_used
+                    return m
+                config.mutate("server_cumulative_used", _accum)
             self._migrate_server_config(old_id, final_id)
             self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {final_id[:8]}，已同步域名/配置/流量")
             migrated += 1
@@ -733,40 +736,45 @@ class ServersPage(QWidget):
                 pass
             since = dict(config.get("stale_assign_since", {}) or {})
             now = time.time()
+            to_purge = []  # (username, user_id, rid)，网络调用放锁外，避免长时间持锁
+
+            def _calc(since_dict):
+                """锁内原子读-改-写 stale_assign_since，返回新值。"""
+                since = dict(since_dict or {})
+                for a in assigns:
+                    if a.get("resource_type") != "vultr":
+                        continue
+                    rid = a.get("resource_id", "")
+                    if not rid or rid in alive_ids:
+                        continue
+                    # 实例已不在存活列表，但是某次切换的旧机 → 跳过（切换中间态，非真销毁）
+                    if rid in switch_old_ids:
+                        since.pop(rid, None)
+                        continue
+                    if rid not in since:
+                        since[rid] = now
+                        continue
+                    if now - since[rid] < 600:  # 10 分钟内不清理（切换 IP 中间态）
+                        continue
+                    # 超过 10 分钟仍未出现，确认已销毁，待清理（网络调用放锁外）
+                    to_purge.append((a.get("username", ""), a["user_id"], rid))
+                    since.pop(rid, None)
+                # 清理已恢复实例的时间戳记录
+                for rid in list(since.keys()):
+                    if rid in alive_ids:
+                        since.pop(rid, None)
+                return since
+
+            config.mutate("stale_assign_since", _calc)
+
+            # 网络调用（锁外）：真正清理分配记录
             purged = []
-            changed = False
-            for a in assigns:
-                if a.get("resource_type") != "vultr":
-                    continue
-                rid = a.get("resource_id", "")
-                if not rid or rid in alive_ids:
-                    continue
-                # 实例已不在存活列表，但是某次切换的旧机 → 跳过（切换中间态，非真销毁）
-                if rid in switch_old_ids:
-                    since.pop(rid, None)
-                    changed = True
-                    continue
-                if rid not in since:
-                    since[rid] = now
-                    changed = True
-                    continue
-                if now - since[rid] < 600:  # 10 分钟内不清理（切换 IP 中间态）
-                    continue
-                # 超过 10 分钟仍未出现，确认已销毁，清理分配
+            for username, user_id, rid in to_purge:
                 try:
-                    api_client.unassign(a["user_id"], "vultr", rid)
-                    purged.append((a.get("username", ""), rid[:8]))
-                    since.pop(rid, None)
-                    changed = True
+                    api_client.unassign(user_id, "vultr", rid)
+                    purged.append((username, rid[:8]))
                 except ApiError:
                     pass
-            # 清理已恢复实例的时间戳记录
-            for rid in list(since.keys()):
-                if rid in alive_ids:
-                    since.pop(rid, None)
-                    changed = True
-            if changed:
-                config.set_value("stale_assign_since", since)
             return purged
 
         def _done(purged):
@@ -1453,17 +1461,21 @@ class ServersPage(QWidget):
             if old_used <= 0:
                 old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
             if old_used > 0:
-                cumulative = dict(config.get("server_cumulative_used", {}) or {})
-                # 累加（不是覆盖）：历史累计 + 这次旧实例出站
-                cumulative[old_id] = float(cumulative.get(old_id, 0) or 0) + old_used
-                config.set_value("server_cumulative_used", cumulative)
+                def _accum2(m):
+                    m = dict(m or {})
+                    # 累加（不是覆盖）：历史累计 + 这次旧实例出站
+                    m[old_id] = float(m.get(old_id, 0) or 0) + old_used
+                    return m
+                config.mutate("server_cumulative_used", _accum2)
                 self._log(f"  已用流量已记录：{old_used:.1f}G（切换后随服务器迁移）")
             # 迁移 per-server 配置（域名/凭据/备注/名称/到期/累计流量）从旧实例 ID 到新实例 ID
             for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry", "server_cumulative_used"):
-                m = dict(config.get(key, {}))
-                if old_id in m:
-                    m[new_id] = m.pop(old_id)
-                    config.set_value(key, m)
+                def _migrate(m):
+                    m = dict(m or {})
+                    if old_id in m:
+                        m[new_id] = m.pop(old_id)
+                    return m
+                config.mutate(key, _migrate)
             sub = domain.server_domain(new_id)
             if sub:
                 self._log(f"  域名已迁移：{sub}（等待 DNS 同步到新 IP {ip}）")
