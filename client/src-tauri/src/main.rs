@@ -80,15 +80,28 @@ fn resolve_a_real(domain: &str) -> Result<Vec<String>, String> {
     query.extend_from_slice(&[0x00, 0x01]); // QTYPE = A
     query.extend_from_slice(&[0x00, 0x01]); // QCLASS = IN
 
-    const DNS_SERVERS: [&str; 4] = ["8.8.8.8:53", "1.1.1.1:53", "223.5.5.5:53", "119.29.29.29:53"];
-    let mut last_err = String::new();
+    const DNS_SERVERS: [&str; 4] = ["119.29.29.29:53", "223.5.5.5:53", "8.8.8.8:53", "1.1.1.1:53"];
+    // 查询所有可达的 DNS 服务器，按「多数一致」投票取结果，避免单个 DNS 缓存旧值导致解析摇摆。
+    // 实测：阿里 223.5.5.5 会缓存旧 IP 超过 TTL，腾讯 119.29.29.29 返回新值，8.8.8.8/1.1.1.1 在翻墙网络下 UDP 53 被拦超时。
+    let mut votes: Vec<(String, usize)> = Vec::new();
+    let mut any_ok = false;
     for server in DNS_SERVERS.iter() {
-        match query_dns(server, &query) {
-            Ok(ips) => return Ok(ips),
-            Err(e) => last_err = e,
+        if let Ok(ips) = query_dns(server, &query) {
+            for ip in ips {
+                any_ok = true;
+                match votes.iter_mut().find(|(v, _)| *v == ip) {
+                    Some((_, c)) => *c += 1,
+                    None => votes.push((ip, 1)),
+                }
+            }
         }
     }
-    Err(last_err)
+    if !any_ok {
+        return Err("所有 DNS 服务器均无响应".to_string());
+    }
+    // 取票数最多的 IP；平票时稳定排序保持插入顺序（腾讯优先），国内 DNS 缓存更新快，取国内结果
+    votes.sort_by(|a, b| b.1.cmp(&a.1));
+    Ok(vec![votes[0].0.clone()])
 }
 
 /// 向指定 DNS 服务器发 A 记录查询，返回解析到的 IP 列表。
