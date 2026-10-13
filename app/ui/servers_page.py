@@ -1408,6 +1408,15 @@ class ServersPage(QWidget):
         self._log(f"========== 开始切换IP：{srv['name']} ({srv['region']}) → 目标 {target_region} ==========")
 
         def _do(progress):
+            stage_text = {
+                "creating": "正在创建新机",
+                "destroying": "正在销毁旧机",
+                "booting": "新机启动中，正在安装代理软件",
+                "testing": "代理软件已就绪，正在检测端口",
+                "retrying": "端口检测失败，正在重建新机",
+                "done": "切换成功",
+                "failed": "切换失败",
+            }
             progress("① 请求 Worker 销毁重建（同国家换区）...")
             result = api_client.admin_switch(resource_id=srv["id"], region=target_region, domain=sub, creds=creds, plan=target_plan)
             new_id = result.get("new_id", "")
@@ -1415,18 +1424,27 @@ class ServersPage(QWidget):
             for _ in range(72):  # 最多 6 分钟
                 time.sleep(5)
                 st = api_client.admin_switch_status()
-                if st.get("status") == "done":
-                    new_ip = st.get("new_ip", "")
-                    label = st.get("label", "")
-                    region = st.get("region", "")
+                items = st.get("items", [])
+                mine = next((it for it in items if it.get("old_id") == srv["id"]), None)
+                if mine and mine.get("status") == "done":
+                    new_ip = mine.get("new_ip", "")
+                    label = mine.get("label", "")
+                    region = mine.get("region", "")
                     progress(f"   🎉 切换完成，新 IP：{new_ip}（{region}）")
                     progress("③ 同步 DNS 到新 IP...")
                     _sync_dns_direct(sub, new_ip, progress)
                     progress("④ 验证 DNS 已指向新 IP...")
                     _verify_dns(sub, new_ip, progress)
                     return {"id": new_id, "main_ip": new_ip, "label": label, "region": region}
-                if st.get("status") == "none":
+                if st.get("status") == "none" and len(items) == 0:
                     raise RuntimeError("切换状态丢失，请重试")
+                # 阶段回显：显示当前卡在哪一步
+                if mine:
+                    stage = mine.get("stage", "")
+                    note = mine.get("note", "")
+                    progress(f"   ⏳ {stage_text.get(stage, stage or '处理中')}" + (f"：{note}" if note else ""))
+                else:
+                    progress("   ⏳ 排队等待中...")
             raise RuntimeError("切换超时（6 分钟），新实例可能仍在启动，请稍后刷新查看")
 
         w = ProgressWorker(_do)

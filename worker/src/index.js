@@ -449,10 +449,10 @@ async function switchResource(request, env, user) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, created_at, old_used_gb) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, stage, created_at, old_used_gb) VALUES (?, ?, ?, ?, 'pending', 'booting', ?, ?)",
   ).bind(row.id, user.id, resourceId, newId, new Date().toISOString(), oldUsedGb).run();
 
-  return json({ ok: true, status: "pending", new_id: newId, remaining: limit - count - 1 });
+  return json({ ok: true, status: "pending", new_id: newId, remaining: limit - count - 1, stage: "booting" });
 }
 
 async function updateDns(env, domain, ip) {
@@ -494,6 +494,20 @@ async function checkTcpAlive(ip, port) {
     }
     return true; // TLS 握手失败等 = TCP 已建立 = 通
   }
+}
+
+async function checkNodeHealthy(ip) {
+  // 检测 3 个 TCP 端口（443 Reality / 45678 SS / 1080 SOCKS5），全通才算健康。
+  // 8443（Hysteria2）是 UDP，不做 TCP 检测。
+  const ports = [443, 45678, 1080];
+  const ports_status = {};
+  for (const p of ports) {
+    ports_status[p] = await checkTcpAlive(ip, p);
+  }
+  return {
+    all_ok: Object.values(ports_status).every(Boolean),
+    ports: ports_status,
+  };
 }
 
 async function createReplacement(request, env, req) {
@@ -543,38 +557,33 @@ async function createReplacement(request, env, req) {
   return newId2;
 }
 
-async function switchStatus(request, env, user) {
-  const req = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
-  ).bind(user.id).first();
-  if (!req) return json({ status: "none" });
-
-  const VULTR_KEY = env.VULTR_API_KEY || "";
-  if (!VULTR_KEY) return json({ status: "pending" });
-  const headers = apiHeaders(env, "vultr");
-
+async function processOneSwitch(req, env, headers, request) {
   const resp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
-  if (!resp.ok) return json({ status: "pending" });
+  if (!resp.ok) {
+    return { resource_id: req.old_id, stage: "booting", status: "pending", note: "查询新机状态失败" };
+  }
   const inst = ((await resp.json()).instance) || {};
   const power = inst.power_status || inst.status || "";
   const newIp = inst.main_ip || "";
-  if (power !== "running" || !newIp) return json({ status: "pending" });
+  if (power !== "running" || !newIp) {
+    return { resource_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
+  }
 
-  // 检测新机 443 端口（Reality/xray）：不通 = 网络栈卡死或 xray 没起来，自动重切（最多 2 次）。
-  // 注意：新机 running 后 cloud-init 还需 2-3 分钟下载/启动 gost+xray，443 此时必然不通，
+  // 检测 3 个 TCP 端口（443 Reality / 45678 SS / 1080 SOCKS5）：不通 = 网络栈卡死或软件没起来，自动重切（最多 2 次）。
+  // 注意：新机 running 后 cloud-init 还需 2-3 分钟下载/启动 gost+xray，端口此时必然不通，
   // 必须等足够久才检测，否则误判为卡死导致反复重切、客户端一直 pending 等待很久。
   const retryCount = Number(req.retry_count || 0);
   if (retryCount < 2) {
-    const alive = await checkTcpAlive(newIp, 443);
-    if (!alive) {
+    const health = await checkNodeHealthy(newIp);
+    if (!health.all_ok) {
       const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
       if (runningMs < 180000) {
         // 新机 running 不足 3 分钟：cloud-init 可能未完成，先等，不重切
-        return json({ status: "pending" });
+        return { resource_id: req.old_id, stage: "testing", status: "pending", ports: health.ports, note: "代理软件安装中，稍后检测端口" };
       }
       const replaced = await createReplacement(request, env, req);
       if (replaced) {
-        return json({ status: "pending", retrying: true, retry: retryCount + 1 });
+        return { resource_id: req.old_id, stage: "retrying", status: "pending", retry: retryCount + 1, note: "端口检测失败，正在重建新机" };
       }
       // 重切失败（如 Vultr API 限流）：retry_count 已在 createReplacement 里 +1，继续用当前新机，
       // 至少 Hysteria2 可能通，等下次轮询再试。
@@ -605,8 +614,28 @@ async function switchStatus(request, env, user) {
     ).bind((row.switch_count || 0) + 1, bjToday(), row.id).run();
   }
 
-  await env.DB.prepare("UPDATE switch_requests SET status = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
-  return json({ status: "done", new_ip: newIp });
+  await env.DB.prepare("UPDATE switch_requests SET status = 'done', stage = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
+  return { resource_id: req.old_id, stage: "done", status: "done", new_ip: newIp };
+}
+
+async function switchStatus(request, env, user) {
+  const VULTR_KEY = env.VULTR_API_KEY || "";
+  if (!VULTR_KEY) return json({ status: "none" });
+  const headers = apiHeaders(env, "vultr");
+
+  // 查该用户所有进行中的切换（支持并发多台同时切，每台独立回显）
+  const reqs = await env.DB.prepare(
+    "SELECT * FROM switch_requests WHERE user_id = ? AND status = 'pending' ORDER BY id ASC",
+  ).bind(user.id).all();
+  const pending = reqs.results || [];
+  if (pending.length === 0) return json({ status: "none" });
+
+  const items = [];
+  for (const req of pending) {
+    items.push(await processOneSwitch(req, env, headers, request));
+  }
+  const anyPending = items.some((it) => it.status === "pending");
+  return json({ status: anyPending ? "pending" : "done", items });
 }
 
 
@@ -707,22 +736,33 @@ async function adminSwitch(request, env) {
   return json({ ok: true, status: "pending", old_id: resourceId, new_id: newId });
 }
 
-async function adminSwitchStatus(env) {
-  const req = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND status = 'pending' ORDER BY id DESC LIMIT 1",
-  ).first();
-  if (!req) return json({ status: "none" });
-
-  const VULTR_KEY = env.VULTR_API_KEY || "";
-  if (!VULTR_KEY) return json({ status: "pending" });
-  const headers = apiHeaders(env, "vultr");
-
+async function processAdminSwitch(req, env, headers, request) {
   const resp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
-  if (!resp.ok) return json({ status: "pending" });
+  if (!resp.ok) {
+    return { old_id: req.old_id, stage: "booting", status: "pending", note: "查询新机状态失败" };
+  }
   const inst = ((await resp.json()).instance) || {};
   const power = inst.power_status || inst.status || "";
   const newIp = inst.main_ip || "";
-  if (power !== "running" || !newIp) return json({ status: "pending" });
+  if (power !== "running" || !newIp) {
+    return { old_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
+  }
+
+  // 检测 3 个 TCP 端口（等 cloud-init 3 分钟），不通且超时才重切
+  const retryCount = Number(req.retry_count || 0);
+  if (retryCount < 2) {
+    const health = await checkNodeHealthy(newIp);
+    if (!health.all_ok) {
+      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+      if (runningMs < 180000) {
+        return { old_id: req.old_id, stage: "testing", status: "pending", ports: health.ports, note: "代理软件安装中，稍后检测端口" };
+      }
+      const replaced = await createReplacement(request, env, req);
+      if (replaced) {
+        return { old_id: req.old_id, stage: "retrying", status: "pending", retry: retryCount + 1, note: "端口检测失败，正在重建新机" };
+      }
+    }
+  }
 
   // 回写：旧实例若已分配给某用户，更新 assignment 的 resource_id + node_data（客户端同步）
   const assign = await env.DB.prepare(
@@ -756,8 +796,28 @@ async function adminSwitchStatus(env) {
     await updateDns(env, req.domain, newIp);
   }
 
-  await env.DB.prepare("UPDATE switch_requests SET status = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
-  return json({ status: "done", new_ip: newIp, old_id: req.old_id, new_id: req.new_id, domain, label: inst.label || "", region: inst.region || "" });
+  await env.DB.prepare("UPDATE switch_requests SET status = 'done', stage = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
+  return { old_id: req.old_id, stage: "done", status: "done", new_ip: newIp, domain, label: inst.label || "", region: inst.region || "" };
+}
+
+async function adminSwitchStatus(request, env) {
+  const VULTR_KEY = env.VULTR_API_KEY || "";
+  if (!VULTR_KEY) return json({ status: "none" });
+  const headers = apiHeaders(env, "vultr");
+
+  // 查所有 admin 进行中的切换（支持并发多台）
+  const reqs = await env.DB.prepare(
+    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND status = 'pending' ORDER BY id ASC",
+  ).all();
+  const pending = reqs.results || [];
+  if (pending.length === 0) return json({ status: "none" });
+
+  const items = [];
+  for (const req of pending) {
+    items.push(await processAdminSwitch(req, env, headers, request));
+  }
+  const anyPending = items.some((it) => it.status === "pending");
+  return json({ status: anyPending ? "pending" : "done", items });
 }
 
 // ============ 管理员 handlers ============
@@ -1189,7 +1249,7 @@ export default {
       }
 
       if (path === "/admin/switch" && method === "POST") return await adminSwitch(request, env);
-      if (path === "/admin/switch/status" && method === "GET") return await adminSwitchStatus(env);
+      if (path === "/admin/switch/status" && method === "GET") return await adminSwitchStatus(request, env);
       if (path === "/admin/all-assignments" && method === "GET") return await listAllAssignments(env);
       if (path === "/admin/sync-flow" && method === "POST") return await syncFlow(request, env);
       if (path === "/admin/reset-flow" && method === "POST") return await resetFlow(request, env);

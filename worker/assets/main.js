@@ -941,6 +941,16 @@ function closeRegionModal() {
   if (m) m.style.display = "none";
 }
 
+const STAGE_TEXT = {
+  creating: "正在创建新机",
+  destroying: "正在销毁旧机",
+  booting: "新机启动中，正在安装代理软件",
+  testing: "代理软件已就绪，正在检测端口",
+  retrying: "端口检测失败，正在重建新机",
+  done: "切换成功",
+  failed: "切换失败",
+};
+
 async function switchIp(n, btn) {
   if (btn.disabled) return;
   btn.disabled = true;
@@ -960,19 +970,28 @@ async function switchIp(n, btn) {
     for (let i = 0; i < 72; i++) {
       await sleep(5000);
       const st = await api("/me/switch/status");
-      if (st.status === "done") {
+      // 多台并发切换：按 resource_id 匹配自己这一台，避免串行混淆
+      const items = st.items || [];
+      const mine = items.find((it) => it.resource_id === n.resource_id);
+      if (mine && mine.status === "done") {
         btn.textContent = "切换成功 ✓";
-        await afterSwitch(st.new_ip || "");
+        await afterSwitch(mine.new_ip || "");
         return;
       }
-      if (st.status === "none") { btn.textContent = "切换失败，请重试"; showMsg("❌ 切换失败，请重试", "error"); return; }
-      btn.textContent = `切换中… ${(i + 1) * 5}s`;
+      if (st.status === "none" && items.length === 0) {
+        btn.textContent = "切换失败，请重试";
+        showMsg("❌ 切换失败，请重试", "error");
+        return;
+      }
+      // 阶段回显：显示当前卡在哪一步
+      const stageText = mine ? (STAGE_TEXT[mine.stage] || mine.stage || "处理中") : "排队中";
+      btn.textContent = `${stageText} ${(i + 1) * 5}s`;
     }
     btn.textContent = "切换超时";
     showMsg("⚠️ 切换超时，请稍后重试", "warn");
   } catch (e) {
-    btn.textContent = "失败：" + e.message;
-    showMsg("❌ " + e.message, "error");
+    btn.textContent = "失败：" + (e && e.message ? e.message : "");
+    showMsg("❌ " + (e && e.message ? e.message : "网络错误"), "error");
   } finally {
     if (!cancelled) {
       btn.disabled = false;
