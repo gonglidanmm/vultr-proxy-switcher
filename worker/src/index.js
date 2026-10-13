@@ -465,7 +465,72 @@ async function updateDns(env, domain, ip) {
   } catch (_) {}
 }
 
-async function switchStatus(env, user) {
+async function checkTcpAlive(ip, port) {
+  // 检测 TCP 端口是否通：对 443 发 HTTPS，区分「连接拒绝/超时」（不通）与「TLS 握手失败」（通）。
+  // reality 对非法 SNI 会转发到 dest，可能返回正常响应，故有 response 或 TLS 错误都算「通」。
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    await fetch(`https://${ip}:${port}`, { method: "HEAD", signal: ctrl.signal, redirect: "manual" });
+    clearTimeout(timer);
+    return true;
+  } catch (e) {
+    const msg = String((e && e.message) || e || "").toLowerCase();
+    if (msg.includes("fetch failed") || msg.includes("timed out") || msg.includes("timeout") || msg.includes("refused") || msg.includes("econnrefused")) {
+      return false;
+    }
+    return true; // TLS 握手失败等 = TCP 已建立 = 通
+  }
+}
+
+async function createReplacement(request, env, req) {
+  // 切换的新机卡死（443 不通）时，再创建一台同 region/plan/label 的新机，销毁卡死的新机。
+  // 复用 switchResource 的创建逻辑；成功返回新机 ID，失败返回 null（如 Vultr API 限流）。
+  const VULTR_KEY = env.VULTR_API_KEY || "";
+  if (!VULTR_KEY) return null;
+  const headers = apiHeaders(env, "vultr");
+
+  const instResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
+  if (!instResp.ok) return null;
+  const inst = ((await instResp.json()).instance) || {};
+  const region = inst.region || "";
+  const plan = inst.plan || "";
+  const label = inst.label || "vultr-proxy-node";
+
+  const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
+  let nodeData = {};
+  let creds = {};
+  if (row) {
+    try { nodeData = JSON.parse(row.node_data); } catch (_) {}
+    creds = nodeData._creds || {};
+  }
+  const domain = nodeData.domain || req.domain || "";
+
+  const cert = await getCachedCert(env, domain);
+  const workerUrl = new URL(request.url).origin;
+  const userData = buildGostUserData(creds, domain, cert, workerUrl, env.CERT_TOKEN || "");
+  const createResp = await fetch(apiBase(env, "vultr") + "/v2/instances", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ region, plan, os_id: 1743, label, user_data: userData, backups: "disabled" }),
+  });
+  if (!createResp.ok) return null;
+  const newInst = ((await createResp.json()).instance) || {};
+  const newId2 = newInst.id || "";
+  if (!newId2) return null;
+
+  // 销毁卡死的新机（销毁失败也继续，保留 new_id2 供下次检测）
+  try {
+    await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { method: "DELETE", headers });
+  } catch (_) {}
+
+  await env.DB.prepare(
+    "UPDATE switch_requests SET new_id = ?, retry_count = retry_count + 1 WHERE id = ?",
+  ).bind(newId2, req.id).run();
+  return newId2;
+}
+
+async function switchStatus(request, env, user) {
   const req = await env.DB.prepare(
     "SELECT * FROM switch_requests WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
   ).bind(user.id).first();
@@ -481,6 +546,20 @@ async function switchStatus(env, user) {
   const power = inst.power_status || inst.status || "";
   const newIp = inst.main_ip || "";
   if (power !== "running" || !newIp) return json({ status: "pending" });
+
+  // 检测新机 443 端口（Reality/xray）：不通 = 网络栈卡死或 xray 没起来，自动重切（最多 2 次）
+  const retryCount = Number(req.retry_count || 0);
+  if (retryCount < 2) {
+    const alive = await checkTcpAlive(newIp, 443);
+    if (!alive) {
+      const replaced = await createReplacement(request, env, req);
+      if (replaced) {
+        return json({ status: "pending", retrying: true, retry: retryCount + 1 });
+      }
+      // 重切失败（如 Vultr API 限流）：retry_count 已在 createReplacement 里 +1，继续用当前新机，
+      // 至少 Hysteria2 可能通，等下次轮询再试。
+    }
+  }
 
   const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
   if (row) {
@@ -1023,7 +1102,7 @@ export default {
       if (method === "GET" && path === "/me/switch/status") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
-        return await switchStatus(env, user);
+        return await switchStatus(request, env, user);
       }
       if (method === "GET" && path === "/me/nodes") {
         const user = await requireUser(request, env);
