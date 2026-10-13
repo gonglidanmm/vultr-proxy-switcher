@@ -225,6 +225,27 @@ GEOF
 systemctl daemon-reload
 systemctl enable gost
 systemctl restart gost
+# gost 定期重启（防卡死）：gost 2.11.5 长时间运行后 SOCKS5 监听/转发会卡死（端口仍监听但流量不通），
+# 重启即恢复。systemd 的 Restart=always 只在进程退出时触发，卡死进程不退出，故用 timer 每 6 小时主动重启。
+cat > /etc/systemd/system/gost-restart.service <<'GEOF'
+[Unit]
+Description=Periodic gost restart (anti-stall)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart gost
+GEOF
+cat > /etc/systemd/system/gost-restart.timer <<'GEOF'
+[Unit]
+Description=Restart gost every 6h
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+[Install]
+WantedBy=timers.target
+GEOF
+systemctl daemon-reload
+systemctl enable gost-restart.timer
+systemctl start gost-restart.timer
 ${xray_section}
 ${hysteria_section}
 `;
