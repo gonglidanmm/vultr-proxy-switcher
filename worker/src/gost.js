@@ -203,11 +203,13 @@ ufw --force enable 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 if [ ! -x /usr/local/bin/gost ]; then
   # 下载加重试（cloud-init 时 GitHub 下载常因网络抖动失败，导致 gost 服务起不来、SS/SOCKS5 端口不通）
+  # 注意：v2.12.0 起文件名改为 gost_2.12.0_linux_amd64.tar.gz（tar.gz + 下划线），v2.11.5 及以前是 gost-linux-amd64-x.x.x.gz
   for i in 1 2 3 4 5; do
-    wget -q -O /usr/local/bin/gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz && break
+    wget -q -O /tmp/gost.tar.gz https://github.com/ginuerzh/gost/releases/download/v2.12.0/gost_2.12.0_linux_amd64.tar.gz && break
     sleep 10
   done
-  gunzip -f /usr/local/bin/gost.gz
+  tar -xzf /tmp/gost.tar.gz -C /tmp/
+  mv /tmp/gost /usr/local/bin/gost
   chmod +x /usr/local/bin/gost
 fi
 cat > /etc/systemd/system/gost.service <<'GEOF'
