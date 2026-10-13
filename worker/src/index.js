@@ -560,11 +560,18 @@ async function switchStatus(request, env, user) {
   const newIp = inst.main_ip || "";
   if (power !== "running" || !newIp) return json({ status: "pending" });
 
-  // 检测新机 443 端口（Reality/xray）：不通 = 网络栈卡死或 xray 没起来，自动重切（最多 2 次）
+  // 检测新机 443 端口（Reality/xray）：不通 = 网络栈卡死或 xray 没起来，自动重切（最多 2 次）。
+  // 注意：新机 running 后 cloud-init 还需 2-3 分钟下载/启动 gost+xray，443 此时必然不通，
+  // 必须等足够久才检测，否则误判为卡死导致反复重切、客户端一直 pending 等待很久。
   const retryCount = Number(req.retry_count || 0);
   if (retryCount < 2) {
     const alive = await checkTcpAlive(newIp, 443);
     if (!alive) {
+      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+      if (runningMs < 180000) {
+        // 新机 running 不足 3 分钟：cloud-init 可能未完成，先等，不重切
+        return json({ status: "pending" });
+      }
       const replaced = await createReplacement(request, env, req);
       if (replaced) {
         return json({ status: "pending", retrying: true, retry: retryCount + 1 });
