@@ -169,14 +169,15 @@ async function requireUser(request, env) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!token) return null;
   const row = await env.DB.prepare(
-    "SELECT s.user_id AS id, u.username, u.status, u.expires_at, u.switch_limit, u.switch_count, u.switch_date FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?",
+    "SELECT s.user_id AS id, u.username, u.status, u.expires_at, u.switch_limit FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?",
   )
     .bind(token, new Date().toISOString())
     .first();
   if (!row) return null;
   if (row.status !== "active") return null;
   if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
-  return { id: row.id, username: row.username, switch_limit: row.switch_limit, switch_count: row.switch_count, switch_date: row.switch_date };
+  // 注：switch_count/switch_date 是「每节点独立」的（assignments 表），用户级无此计数，故不在此返回
+  return { id: row.id, username: row.username, switch_limit: row.switch_limit };
 }
 
 // ============ 客户端 handlers ============
@@ -218,7 +219,7 @@ async function handleLogin(request, env) {
 async function handleMeNodes(env, user) {
   const today = bjToday();
   const rows = await env.DB.prepare(
-    "SELECT resource_type, resource_id, node_data, switch_count, switch_limit, switch_date, quota_gb, used_gb, note FROM assignments WHERE user_id = ? ORDER BY sort_order, id",
+    "SELECT resource_type, resource_id, node_data, switch_count, switch_limit, switch_date, quota_gb, used_gb, note, created_at FROM assignments WHERE user_id = ? ORDER BY sort_order, id",
   )
     .bind(user.id)
     .all();
@@ -232,7 +233,7 @@ async function handleMeNodes(env, user) {
     delete data._creds;  // 不暴露完整凭据给客户端
     // 每个「用户↔资源」独立计数，按天重置
     let count = r.switch_count || 0;
-    const limit = r.switch_limit || 5;
+    const limit = r.switch_limit == null ? 5 : Number(r.switch_limit);
     if ((r.switch_date || "") !== today) count = 0;
     // 流量配额：quota_gb > 0 才限流；用完标记 exhausted（客户端据此断流）
     const quota = Number(r.quota_gb) || 0;
@@ -241,7 +242,9 @@ async function handleMeNodes(env, user) {
       resource_type: r.resource_type,
       resource_id: r.resource_id,
       ...data,
+      quota_gb: quota,  // 统一用 assignments.quota_gb（覆盖 node_data 里的同名快照，避免双份漂移）
       note: r.note || "",
+      created_at: r.created_at || "",  // 真实分配时间（assignments.created_at）
       switch_remaining: Math.max(0, limit - 1 - count),
       switch_limit: limit,
       flow_used_gb: used,
@@ -341,14 +344,19 @@ async function switchResource(request, env, user) {
 
   const today = bjToday();
   let count = row.switch_count || 0;
-  const limit = row.switch_limit || 5;
+  const limit = row.switch_limit == null ? 5 : Number(row.switch_limit);
   if ((row.switch_date || "") !== today) count = 0;
 
-  // 到期检查：节点到期后禁止切换
+  // 到期检查：客户到期（client_expiry，可调低）与服务器到期（expiry）取更早者，到期后禁止切换
   let nd0 = {};
   try { nd0 = JSON.parse(row.node_data || "{}"); } catch (_) {}
   const expiry = nd0.expiry || "";
-  if (expiry && expiry < today) {
+  const clientExpiry = nd0.client_expiry || "";
+  let effectiveExpiry = expiry;
+  if (clientExpiry && (!effectiveExpiry || clientExpiry < effectiveExpiry)) {
+    effectiveExpiry = clientExpiry;
+  }
+  if (effectiveExpiry && effectiveExpiry < today) {
     return json({ error: "该节点已到期，无法切换 IP", expired: true }, 403);
   }
 

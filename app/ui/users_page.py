@@ -708,6 +708,7 @@ class _UserDetailDialog(QDialog):
 
         form.addWidget(self._lbl("用户名"))
         self.uname_edit = QLineEdit(self._user.get("username", ""))
+        self.uname_edit.setReadOnly(True)  # 用户名是登录凭证，客户端不能改用户名，服务端也保持只读
         form.addWidget(self.uname_edit)
 
         form.addWidget(self._lbl("密码（留空 = 不修改）"))
@@ -924,7 +925,6 @@ class _UserDetailDialog(QDialog):
             return
 
         fields = {
-            "username": username,
             "status": self.status_combo.currentData(),
             "note": self.note_edit.toPlainText().strip(),
             "switch_limit": self.switch_spin.value(),
