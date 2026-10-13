@@ -621,6 +621,7 @@ function buildNodeRow(n, idx) {
   {
     const swBtn = document.createElement("button");
     swBtn.className = "btn";
+    swBtn.id = "switch-" + (n.resource_id || "");
     const expKey = expiry ? expiry.slice(0, 10) : "";
     const expDate = expKey ? new Date(expKey + "T00:00:00") : null;
     const todayDate = new Date(todayStr + "T00:00:00");
@@ -856,6 +857,9 @@ function showMsg(text, type) {
   String(text).split("\n").forEach((l) => logMsg(l, logType));
 }
 
+// 自动重切计数（模块级，防止无限重切；新机卡死时最多自动重切 2 次）
+let autoReSwitchCount = 0;
+
 // 切换完成后：重新加载节点 + 等服务起来 + 测试各协议延迟 + 完整回显
 async function afterSwitch(newIp) {
   await loadNodes();
@@ -882,6 +886,7 @@ async function afterSwitch(newIp) {
   const reachable = tcpProtos.filter((p) => results[p] > 0).length;
   const total = tcpProtos.filter((p) => results[p] !== null).length;
   if (reachable > 0) {
+    autoReSwitchCount = 0;  // 切换成功，重置自动重切计数
     logMsg(`检测完成（${reachable}/${total} 协议可用）`, "ok");
     for (const [p, v] of Object.entries(results)) {
       if (v === null) continue;
@@ -902,7 +907,21 @@ async function afterSwitch(newIp) {
       } catch (_) {}
     }
   } else {
-    logMsg(`新机服务启动超时，请稍后点「查联通性」重试`, "warn");
+    // 检测不通 = 新机可能卡死（网络栈卡死/cloud-init 失败），自动重切（最多 2 次）
+    if (autoReSwitchCount < 2) {
+      autoReSwitchCount++;
+      logMsg(`新机服务启动超时，自动重切第 ${autoReSwitchCount} 次…`, "warn");
+      const btn = $("switch-" + newNode.resource_id);
+      if (btn) {
+        await switchIp(newNode, btn, true);  // auto 模式：跳过地区弹窗
+      } else {
+        logMsg(`未找到切换按钮，请手动重试`, "warn");
+        autoReSwitchCount = 0;
+      }
+    } else {
+      logMsg(`已自动重切 2 次仍不通，请稍后手动重试或联系管理员`, "err");
+      autoReSwitchCount = 0;
+    }
   }
 }
 
@@ -968,7 +987,7 @@ const STAGE_TEXT = {
   failed: "切换失败",
 };
 
-async function switchIp(n, btn) {
+async function switchIp(n, btn, auto = false) {
   if (btn.disabled) return;
   btn.disabled = true;
   const orig = btn.textContent;
@@ -976,7 +995,8 @@ async function switchIp(n, btn) {
   try {
     btn.textContent = "切换中…";
     showMsg(`正在切换 ${n.name || n.ip || n.resource_id} 的 IP…`, "info");
-    const region = await pickRegion(n);
+    // auto 模式（自动重切）跳过地区弹窗，随机选同国家地区
+    const region = auto ? "" : await pickRegion(n);
     if (region === null) { cancelled = true; btn.disabled = false; btn.textContent = orig; logMsg("已取消切换", "info"); return; }  // 取消切换
     const first = await api("/me/switch", "POST", { resource_id: n.resource_id, region });
     if (first && first.status === "done") {
