@@ -723,6 +723,14 @@ class ServersPage(QWidget):
             instances = api.list_instances()
             alive_ids = {i["id"] for i in instances}
             assigns = api_client.list_all_assignments().get("assignments", [])
+            # 查切换记录：切换中的旧机（old_id）绝不清理——它可能是「切换 IP 卡在中间态」
+            # （客户端没轮询完成，assignment 还没回写到新机）。清理它会误删正在工作的节点。
+            switch_old_ids = set()
+            try:
+                flow = api_client.list_switch_flow().get("switches", [])
+                switch_old_ids = {s.get("old_id") for s in flow if s.get("old_id")}
+            except Exception:
+                pass
             since = dict(config.get("stale_assign_since", {}) or {})
             now = time.time()
             purged = []
@@ -733,7 +741,11 @@ class ServersPage(QWidget):
                 rid = a.get("resource_id", "")
                 if not rid or rid in alive_ids:
                     continue
-                # 实例已不在存活列表
+                # 实例已不在存活列表，但是某次切换的旧机 → 跳过（切换中间态，非真销毁）
+                if rid in switch_old_ids:
+                    since.pop(rid, None)
+                    changed = True
+                    continue
                 if rid not in since:
                     since[rid] = now
                     changed = True
