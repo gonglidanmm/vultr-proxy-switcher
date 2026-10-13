@@ -983,9 +983,13 @@ async function switchIp(n, btn) {
         showMsg("❌ 切换失败，请重试", "error");
         return;
       }
-      // 阶段回显：显示当前卡在哪一步
+      // 阶段回显：显示当前卡在哪一步（按钮 + 日志区都回显）
       const stageText = mine ? (STAGE_TEXT[mine.stage] || mine.stage || "处理中") : "排队中";
+      const noteText = mine && mine.note ? mine.note : "";
+      const label = noteText || stageText;
       btn.textContent = `${stageText} ${(i + 1) * 5}s`;
+      // 每 15 秒往日志区写一次（避免刷屏），让用户看清卡在哪一步
+      if (i % 3 === 0) logMsg(`${label}（已等待 ${(i + 1) * 5}s）`, "info");
     }
     btn.textContent = "切换超时";
     showMsg("⚠️ 切换超时，请稍后重试", "warn");
