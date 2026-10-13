@@ -1430,7 +1430,8 @@ class ServersPage(QWidget):
                     new_ip = mine.get("new_ip", "")
                     label = mine.get("label", "")
                     region = mine.get("region", "")
-                    progress(f"   🎉 切换完成，新 IP：{new_ip}（{region}）")
+                    loc = f"（{region}）" if region else ""
+                    progress(f"   🎉 切换完成，新 IP：{new_ip}{loc}")
                     progress("③ 同步 DNS 到新 IP...")
                     _sync_dns_direct(sub, new_ip, progress)
                     progress("④ 验证 DNS 已指向新 IP...")
