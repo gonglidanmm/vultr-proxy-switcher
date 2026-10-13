@@ -756,8 +756,24 @@ function updateUpstreamButtons() {
 // 测试节点各协议 TCP 连通性（host:port 可达 = 协议服务在监听）
 // showDiagnostics=true 时打印失败诊断（手动检测用），轮询检测静默避免刷屏
 async function testNodeProtocols(n, showDiagnostics = false) {
-  // 检测用真实 IP（n.ip 优先），不用域名——域名会被翻墙软件 fake-ip 劫持成 198.18.x 假 IP，直连必超时
-  const host = n.ip || n.host || n.domain || "";
+  // 客户软路由用「域名」连接，检测也要走「域名 → IP → 各协议」完整链路。
+  // 先用投票 DNS（resolve_a_real，绕过 fake-ip 和公共 DNS 缓存旧值）解析域名到真实 IP，再用真实 IP 测协议延迟。
+  let host = n.ip || n.host || "";
+  const domain = (n.domain && String(n.domain).includes(".")) ? n.domain : "";
+  if (domain) {
+    try {
+      const resolved = await invokeRust("resolve_domain", { domain });
+      const ip = String(resolved).split(",")[0].trim();
+      if (ip) {
+        host = ip;
+        if (showDiagnostics) {
+          const expect = n.ip || n.host || "";
+          const matched = expect && ip === expect;
+          logMsg(`   域名 ${domain} → ${ip}${matched ? "（与节点 IP 一致）" : "（⚠ 与节点 IP 不一致，DNS 未同步）"}`, matched ? "ok" : "warn");
+        }
+      }
+    } catch (_) {}
+  }
   const protos = ["socks5", "ss", "reality", "hysteria2"];
   const results = {};
   for (const p of protos) {
@@ -806,18 +822,6 @@ async function checkNode(n, btn) {
       if (v === null) continue;
       const label = p === "hysteria2" && v > 0 ? "（端口通，证书以服务端为准）" : "";
       logMsg(`   ${protoName(p)}：${v > 0 ? v + "ms" + label : "不可达"}`, v > 0 ? "ok" : "err");
-    }
-    // 域名解析检查：显示域名当前（真实 DNS）解析到的 IP，对比节点真实 IP
-    const domain = (n.domain && n.domain.includes(".")) ? n.domain : "";
-    if (domain) {
-      try {
-        const resolved = await invokeRust("resolve_domain", { domain });
-        const ips = resolved.split(",").map((s) => s.trim());
-        const matched = n.ip && ips.some((ip) => ip === n.ip);
-        logMsg(`   域名 ${domain} → ${resolved}${matched ? "（与节点 IP 一致）" : "（⚠ 与节点 IP 不一致，DNS 可能未同步）"}`, matched ? "ok" : "warn");
-      } catch (e) {
-        logMsg(`   域名解析检查不可用（本机 DNS 受限，不影响节点使用）`, "info");
-      }
     }
   } catch (e) {
     btn.textContent = "✗ 不可达";
