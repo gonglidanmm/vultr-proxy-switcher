@@ -569,25 +569,14 @@ async function processOneSwitch(req, env, headers, request) {
     return { resource_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
   }
 
-  // 检测 3 个 TCP 端口（443 Reality / 45678 SS / 1080 SOCKS5）：不通 = 网络栈卡死或软件没起来，自动重切（最多 2 次）。
-  // 注意：新机 running 后 cloud-init 还需 2-3 分钟下载/启动 gost+xray，端口此时必然不通，
-  // 必须等足够久才检测，否则误判为卡死导致反复重切、客户端一直 pending 等待很久。
-  const retryCount = Number(req.retry_count || 0);
-  if (retryCount < 2) {
-    const health = await checkNodeHealthy(newIp);
-    if (!health.all_ok) {
-      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-      if (runningMs < 180000) {
-        // 新机 running 不足 3 分钟：cloud-init 可能未完成，先等，不重切
-        return { resource_id: req.old_id, stage: "testing", status: "pending", ports: health.ports, note: "代理软件安装中，稍后检测端口" };
-      }
-      const replaced = await createReplacement(request, env, req);
-      if (replaced) {
-        return { resource_id: req.old_id, stage: "retrying", status: "pending", retry: retryCount + 1, note: "端口检测失败，正在重建新机" };
-      }
-      // 重切失败（如 Vultr API 限流）：retry_count 已在 createReplacement 里 +1，继续用当前新机，
-      // 至少 Hysteria2 可能通，等下次轮询再试。
-    }
+  // 等 cloud-init 完成（3.5 分钟）：Worker 的 fetch 无法可靠检测 TCP 端口（Cloudflare 对不通的端口
+  // 也返回 403，无法区分「连接拒绝」和「服务未启动」，实测 fetch 到黑洞地址也返回 403），
+  // 端口检测交给客户端 Rust 的 check_connectivity（真实 TCP 连接）。这里只等固定时间让 cloud-init
+  // 下载/启动 gost+xray，时间到就回写 done，客户端再真实检测。
+  const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+  if (runningMs < 210000) {
+    const remaining = Math.ceil((210000 - runningMs) / 1000);
+    return { resource_id: req.old_id, stage: "booting", status: "pending", note: `新机启动中，正在安装代理软件（约 ${remaining} 秒后就绪）` };
   }
 
   const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
@@ -748,20 +737,11 @@ async function processAdminSwitch(req, env, headers, request) {
     return { old_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
   }
 
-  // 检测 3 个 TCP 端口（等 cloud-init 3 分钟），不通且超时才重切
-  const retryCount = Number(req.retry_count || 0);
-  if (retryCount < 2) {
-    const health = await checkNodeHealthy(newIp);
-    if (!health.all_ok) {
-      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-      if (runningMs < 180000) {
-        return { old_id: req.old_id, stage: "testing", status: "pending", ports: health.ports, note: "代理软件安装中，稍后检测端口" };
-      }
-      const replaced = await createReplacement(request, env, req);
-      if (replaced) {
-        return { old_id: req.old_id, stage: "retrying", status: "pending", retry: retryCount + 1, note: "端口检测失败，正在重建新机" };
-      }
-    }
+  // 等 cloud-init 完成（3.5 分钟）：端口检测交给客户端 Rust 的 check_connectivity（真实 TCP）。
+  const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+  if (runningMs < 210000) {
+    const remaining = Math.ceil((210000 - runningMs) / 1000);
+    return { old_id: req.old_id, stage: "booting", status: "pending", note: `新机启动中，正在安装代理软件（约 ${remaining} 秒后就绪）` };
   }
 
   // 回写：旧实例若已分配给某用户，更新 assignment 的 resource_id + node_data（客户端同步）
