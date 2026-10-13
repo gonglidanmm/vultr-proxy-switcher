@@ -569,6 +569,20 @@ async function processOneSwitch(req, env, headers, request) {
     return { resource_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
   }
 
+  // 拿到新机 IP 后立即更新 DNS（不等 cloud-init 完成），让域名解析尽早生效。
+  // 核心卖点：客户设一次域名，切 IP 不用改任何配置，域名自动指向新 IP。
+  // 用 switch_requests.new_ip 做「DNS 已更新」标记（为空=未更新），避免每轮轮询重复调 Cloudflare API。
+  if (!req.new_ip) {
+    const row0 = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
+    let nd0 = {};
+    try { nd0 = JSON.parse(row0 ? row0.node_data : "{}"); } catch (_) {}
+    const domain0 = nd0.domain || "";
+    if (domain0) {
+      await updateDns(env, domain0, newIp);
+      await env.DB.prepare("UPDATE switch_requests SET new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
+    }
+  }
+
   // 等 cloud-init 完成（3.5 分钟）：Worker 的 fetch 无法可靠检测 TCP 端口（Cloudflare 对不通的端口
   // 也返回 403，无法区分「连接拒绝」和「服务未启动」，实测 fetch 到黑洞地址也返回 403），
   // 端口检测交给客户端 Rust 的 check_connectivity（真实 TCP 连接）。这里只等固定时间让 cloud-init
@@ -735,6 +749,13 @@ async function processAdminSwitch(req, env, headers, request) {
   const newIp = inst.main_ip || "";
   if (power !== "running" || !newIp) {
     return { old_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
+  }
+
+  // 拿到新机 IP 后立即更新 DNS（不等 cloud-init），让域名解析尽早生效。
+  // 核心卖点：客户设一次域名，切 IP 不用改配置。用 new_ip 做「已更新」标记避免重复调用。
+  if (!req.new_ip && req.domain) {
+    await updateDns(env, req.domain, newIp);
+    await env.DB.prepare("UPDATE switch_requests SET new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
   }
 
   // 等 cloud-init 完成（3.5 分钟）：端口检测交给客户端 Rust 的 check_connectivity（真实 TCP）。
