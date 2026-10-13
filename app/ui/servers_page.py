@@ -626,11 +626,22 @@ class ServersPage(QWidget):
         except Exception:
             self._switch_old_flow = {}
             flow_map = {}
-        # 用切换记录精确迁移（gone 里的旧机 → flow_map 里对应的新机）
+        # 建立完整切换链（old → new），支持多步追踪（含 pending 记录，新机已 running 但客户端没轮询完成）
+        flow_map = {s.get("old_id"): s.get("new_id") for s in flow_data.get("switches", []) if s.get("old_id") and s.get("new_id")}
+
+        def _trace(uid: str) -> str:
+            cur = uid
+            seen = set()
+            while cur in flow_map and cur not in seen:
+                seen.add(cur)
+                cur = flow_map[cur]
+            return cur
+
+        # 用切换链追踪迁移（gone 里的旧机 → 链上最终新机）
         migrated = 0
         for old_id in gone:
-            new_id = flow_map.get(old_id)
-            if not new_id or new_id not in current_ids:
+            final_id = _trace(old_id)
+            if final_id == old_id or final_id not in current_ids:
                 continue
             old_used = self._switch_old_flow.get(old_id, 0)
             if old_used <= 0:
@@ -640,8 +651,8 @@ class ServersPage(QWidget):
                 # 累加（不是覆盖）：历史累计 + 这次旧实例出站
                 cumulative[old_id] = float(cumulative.get(old_id, 0) or 0) + old_used
                 config.set_value("server_cumulative_used", cumulative)
-            self._migrate_server_config(old_id, new_id)
-            self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {new_id[:8]}，已同步域名/配置/流量")
+            self._migrate_server_config(old_id, final_id)
+            self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {final_id[:8]}，已同步域名/配置/流量")
             migrated += 1
         # 切换记录里匹配不到的，只在 gone/added 各 1 个时保守迁移；否则跳过（宁可不同步也不乱迁）
         if migrated == 0 and len(gone) == 1 and len(added) == 1:

@@ -903,9 +903,10 @@ async function resetFlow(request, env) {
 }
 
 async function switchFlow(env) {
-  // 返回最近完成的切换记录（含 old_id → new_id 及销毁旧机前抓取的 old_used_gb），供服务端累加流量。
+  // 返回切换记录（含 pending），供服务端按 old_id → new_id 链追踪迁移配置。
+  // 含 pending 是因为客户端切换后可能没轮询完成，但新机已 running，配置仍需迁移。
   const rows = await env.DB.prepare(
-    "SELECT old_id, new_id, old_used_gb, status, actor_type, created_at FROM switch_requests WHERE status = 'done' ORDER BY id DESC LIMIT 50",
+    "SELECT old_id, new_id, old_used_gb, status, actor_type, created_at FROM switch_requests ORDER BY id DESC LIMIT 200",
   ).all();
   return json({ switches: rows.results });
 }
