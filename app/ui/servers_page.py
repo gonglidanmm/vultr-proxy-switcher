@@ -607,10 +607,8 @@ class ServersPage(QWidget):
             config.mutate(key, _migrate)
 
     def _sync_server_configs(self, instances: list) -> None:
-        """检测实例增删，把消失实例的配置迁移到新增实例（客户端切 IP 后自动同步）。"""
+        """检测实例增删 + 扫描 config 旧 UUID，把消失实例的配置迁移到新增实例（客户端切 IP 后自动同步）。"""
         cached = getattr(self, "_servers", [])
-        if not cached:
-            return
         # 只统计本页管理的实例（label 前缀匹配），排除控制机等其它实例
         label = config.get("label", "vultr-proxy-node")
         managed = [i for i in instances if (i.get("label", "") or "").startswith(label)]
@@ -618,7 +616,13 @@ class ServersPage(QWidget):
         cached_ids = {srv["id"] for srv in cached if (srv.get("label", "") or "").startswith(label)}
         gone = sorted(cached_ids - current_ids)
         added = sorted(current_ids - cached_ids)
-        if not gone or not added:
+
+        # 主动扫描 config 里的旧 UUID（指向已销毁实例），不依赖 cached——
+        # 覆盖「服务端停机期间客户端切换 IP」的情况（此时 cached 检测不到 gone）
+        domains = dict(config.get("server_domains", {}) or {})
+        stale_ids = [uid for uid in domains if uid not in current_ids]
+
+        if not gone and not stale_ids:
             return
         # 从 Worker 读切换记录（old_id → new_id 精确映射，避免 gone/added 排序错配把配置迁到错误实例）
         try:
@@ -638,9 +642,10 @@ class ServersPage(QWidget):
                 cur = flow_map[cur]
             return cur
 
-        # 用切换链追踪迁移（gone 里的旧机 → 链上最终新机）
+        # 用切换链追踪迁移（gone 的旧机 + config 里指向已销毁实例的旧 UUID → 链上最终新机）
+        targets = set(gone) | set(stale_ids)
         migrated = 0
-        for old_id in gone:
+        for old_id in targets:
             final_id = _trace(old_id)
             if final_id == old_id or final_id not in current_ids:
                 continue
