@@ -82,8 +82,14 @@ def _load() -> dict:
 
 
 def _save(cfg: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        # 磁盘满/权限错误：打印诊断后重新抛出，让调用方知道保存失败（不能静默丢数据）
+        import sys
+        print(f"[config] 保存配置失败：{e}", file=sys.stderr)
+        raise
 
 
 def get(key: str, default=None):

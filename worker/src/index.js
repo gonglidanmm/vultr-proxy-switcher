@@ -421,7 +421,12 @@ async function switchResource(request, env, user) {
     const errText = await createResp.text().catch(() => "");
     return json({ error: `创建新机失败 HTTP ${createResp.status}${errText ? "：" + errText.slice(0, 200) : ""}` }, 500);
   }
-  const newInst = ((await createResp.json()).instance) || {};
+  let newInst = {};
+  try {
+    newInst = ((await createResp.json()).instance) || {};
+  } catch (_) {
+    return json({ error: "创建新机响应异常，请重试" }, 500);
+  }
   const newId = newInst.id || "";
   if (!newId) {
     return json({ error: "创建新机失败：未返回实例 ID" }, 500);
@@ -661,7 +666,12 @@ async function adminSwitch(request, env) {
     const errText = await createResp.text().catch(() => "");
     return json({ error: `创建新机失败 HTTP ${createResp.status}${errText ? "：" + errText.slice(0, 200) : ""}` }, 500);
   }
-  const newInst = ((await createResp.json()).instance) || {};
+  let newInst = {};
+  try {
+    newInst = ((await createResp.json()).instance) || {};
+  } catch (_) {
+    return json({ error: "创建新机响应异常，请重试" }, 500);
+  }
   const newId = newInst.id || "";
   if (!newId) {
     return json({ error: "创建新机失败：未返回实例 ID" }, 500);
@@ -1187,7 +1197,9 @@ export default {
 
       return json({ error: "Not Found" }, 404);
     } catch (e) {
-      return json({ error: e.message || "Internal Error" }, 500);
+      // 不把 e.message 回传客户端（会泄露 D1 表名/列名、fetch URL 等内部结构），记日志 + 固定文案
+      console.error("Unhandled error:", e && e.message ? e.message : e);
+      return json({ error: "服务器内部错误" }, 500);
     }
   },
 };

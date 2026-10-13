@@ -18,18 +18,23 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _req(method: str, url: str, token: str, **kwargs):
+    """requests 封装：网络错误（ConnectionError/Timeout 等）统一转成 CloudflareError，避免冒原始异常。"""
+    kwargs.setdefault("timeout", 15)
+    kwargs.setdefault("proxies", _NO_PROXY)
+    headers = kwargs.pop("headers", None) or _headers(token)
+    try:
+        return requests.request(method, url, headers=headers, **kwargs)
+    except requests.exceptions.RequestException as e:
+        raise CloudflareError(f"Cloudflare 网络错误：{e}")
+
+
 def get_zone_id(token: str, domain: str) -> str:
     """从完整域名反查所属 zone 的 id（如 jp2.yduas.cc → zone yduas.cc）。"""
     parts = domain.split(".")
     for i in range(len(parts) - 1):
         root = ".".join(parts[i:])
-        r = requests.get(
-            f"{BASE}/zones",
-            headers=_headers(token),
-            params={"name": root},
-            timeout=15,
-            proxies=_NO_PROXY,
-        )
+        r = _req("GET", f"{BASE}/zones", token, params={"name": root})
         if r.status_code != 200:
             raise CloudflareError(f"Cloudflare 返回 {r.status_code}")
         for z in r.json().get("result", []):
@@ -41,40 +46,23 @@ def get_zone_id(token: str, domain: str) -> str:
 def sync_domain(token: str, zone_id: str, domain: str, ip: str, ttl: int = 60) -> tuple[str, str]:
     """创建或更新 A 记录 domain → ip（DNS-only，不代理）。返回 (action, record_id)。"""
     headers = _headers(token)
-    r = requests.get(
-        f"{BASE}/zones/{zone_id}/dns_records",
-        headers=headers,
-        params={"name": domain, "type": "A"},
-        timeout=15,
-        proxies=_NO_PROXY,
-    )
+    r = _req("GET", f"{BASE}/zones/{zone_id}/dns_records", token, params={"name": domain, "type": "A"})
     if r.status_code != 200:
         raise CloudflareError(f"查询记录失败 HTTP {r.status_code}")
     recs = r.json().get("result", [])
     payload = {"type": "A", "name": domain, "content": ip, "ttl": ttl, "proxied": False}
     if recs:
         rid = recs[0]["id"]
-        r2 = requests.put(
-            f"{BASE}/zones/{zone_id}/dns_records/{rid}",
-            headers=headers,
-            json=payload,
-            timeout=15,
-            proxies=_NO_PROXY,
-        )
+        r2 = _req("PUT", f"{BASE}/zones/{zone_id}/dns_records/{rid}", token, json=payload)
         action = "updated"
     else:
-        r2 = requests.post(
-            f"{BASE}/zones/{zone_id}/dns_records",
-            headers=headers,
-            json=payload,
-            timeout=15,
-            proxies=_NO_PROXY,
-        )
+        r2 = _req("POST", f"{BASE}/zones/{zone_id}/dns_records", token, json=payload)
         action = "created"
     data = r2.json()
     if not data.get("success"):
         raise CloudflareError(str(data.get("errors")))
-    return action, data["result"]["id"]
+    result = data.get("result") or {}
+    return action, result.get("id", "")
 
 
 def test_connection(token: str, domain: str, zone_id: str = "") -> dict:

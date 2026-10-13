@@ -53,7 +53,10 @@ def _request(method: str, path: str, body: dict | None = None, admin: bool = Tru
         headers["X-Admin-Token"] = _admin_token()
     if user_token:
         headers["Authorization"] = f"Bearer {user_token}"
-    data = json.dumps(body).encode("utf-8") if body is not None else None
+    try:
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+    except (TypeError, ValueError) as e:
+        raise ApiError(f"请求数据序列化失败：{e}")
     req = urllib.request.Request(url, method=method, headers=headers, data=data)
     # 强制直连：绕过系统代理（Cloudflare 应直连，不依赖本地翻墙代理开关状态）
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -69,6 +72,10 @@ def _request(method: str, path: str, body: dict | None = None, admin: bool = Tru
         raise ApiError(msg, e.code)
     except urllib.error.URLError as e:
         raise ApiError(f"无法连接 Worker：{e.reason}")
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ApiError(f"Worker 返回异常数据：{e}")
+    except OSError as e:
+        raise ApiError(f"连接 Worker 超时或网络错误：{e}")
 
 
 # ---------------- 用户 ----------------

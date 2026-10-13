@@ -353,11 +353,12 @@ async function loadNodes() {
     renderNodes(nodes);
     initColumnResize();
   } catch (e) {
-    if (e.status === 401 || e.status === 403 || e.message.includes("401") || e.message.includes("token")) {
+    const msg = e && e.message ? String(e.message) : "";
+    if ((e && (e.status === 401 || e.status === 403)) || msg.includes("401") || msg.includes("token")) {
       await logout("账号已被禁用或登录已失效，请重新登录");
       return;
     }
-    content.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + "</div>";
+    content.innerHTML = '<div class="empty">加载失败：' + escapeHtml(msg) + "</div>";
   }
 }
 
@@ -491,12 +492,12 @@ function enableDragSort(tr, rid) {
     if (fromIdx < 0 || toIdx < 0) return;
     const [moved] = nodeCache.splice(fromIdx, 1);
     nodeCache.splice(toIdx, 0, moved);
-    renderNodes(nodeCache);
     try {
+      renderNodes(nodeCache);
       await api("/me/reorder", "POST", { ordered_ids: nodeCache.map((n) => n.resource_id) });
       logMsg("节点顺序已保存", "ok");
     } catch (e) {
-      logMsg("排序保存失败：" + (e.message || "网络错误"), "err");
+      logMsg("排序保存失败：" + (e && e.message ? e.message : "网络错误"), "err");
     }
   });
 }
@@ -550,7 +551,7 @@ function buildNodeRow(n, idx) {
 
   // 到期时间（优先客户到期 client_expiry，fallback 服务器到期 expiry；提前 3 天橙色提醒，已过期红色）
   const tdExpiry = document.createElement("td");
-  const expiry = n.client_expiry || n.expiry || "";
+  const expiry = String(n.client_expiry || n.expiry || "");
   const todayStr = new Date().toISOString().slice(0, 10);
   if (expiry) {
     const expKey = expiry.slice(0, 10);
