@@ -883,6 +883,15 @@ async function updateUser(request, env, id) {
     .bind(passwordHash, status, expiresAt, note, switchLimit, now, id)
     .run();
 
+  // 每台服务器独立的切换次数上限：传了 resource_id + switch_limit 时同步到该节点（客户端限流依据）
+  if (body.resource_id && body.switch_limit !== undefined) {
+    await env.DB.prepare(
+      "UPDATE assignments SET switch_limit = ? WHERE user_id = ? AND resource_id = ?",
+    )
+      .bind(switchLimit, id, String(body.resource_id))
+      .run();
+  }
+
   // 重置切换次数：可指定 resource_id 只重置某节点，否则重置该用户全部
   if (body.reset_switch) {
     const today = bjToday();
@@ -1022,7 +1031,7 @@ async function listResourceAssignments(env, resourceType, resourceId) {
 
 async function listAllAssignments(env) {
   const rows = await env.DB.prepare(
-    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, u.username, u.status, u.note, u.expires_at AS user_expires_at, u.switch_limit AS user_switch_limit FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
+    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, a.switch_limit AS node_switch_limit, a.switch_count AS node_switch_count, a.switch_date AS node_switch_date, u.username, u.status, u.note, u.expires_at AS user_expires_at, u.switch_limit AS user_switch_limit FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
   ).all();
   const assignments = rows.results.map((a) => {
     let data = {};
@@ -1035,6 +1044,9 @@ async function listAllAssignments(env) {
       user_note: a.note,
       user_expires_at: a.user_expires_at,
       user_switch_limit: a.user_switch_limit,
+      node_switch_limit: a.node_switch_limit,
+      node_switch_count: a.node_switch_count,
+      node_switch_date: a.node_switch_date,
       resource_type: a.resource_type,
       resource_id: a.resource_id,
       node_data: data,

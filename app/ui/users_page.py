@@ -423,6 +423,7 @@ class UsersPage(QWidget):
 
     def _assign_to_user(self, a: dict) -> dict:
         """把分配行转换成 user dict（供用户操作按钮使用）。"""
+        node_limit = int(a.get("node_switch_limit", 0) or 0)
         return {
             "id": a.get("user_id"),
             "username": a.get("username", ""),
@@ -430,6 +431,8 @@ class UsersPage(QWidget):
             "expires_at": a.get("user_expires_at"),
             "note": a.get("user_note", ""),
             "switch_limit": int(a.get("user_switch_limit", 5) or 5),
+            # 每台服务器独立的切换上限（assignments.switch_limit）；0/None 表示未单独设置，沿用用户级
+            "node_switch_limit": node_limit,
         }
 
     def _ops(self, a: dict, row: int) -> QWidget:
@@ -735,7 +738,11 @@ class _UserDetailDialog(QDialog):
         form.addWidget(self._lbl("每天 IP 数上限（默认 5，含初始 IP，可切换 = 上限-1）"))
         self.switch_spin = QSpinBox()
         self.switch_spin.setRange(0, 999)
-        self.switch_spin.setValue(int(self._user.get("switch_limit", 5) or 5))
+        node_limit = int(self._user.get("node_switch_limit", 0) or 0)
+        if node_limit > 0:
+            self.switch_spin.setValue(node_limit)  # 每台服务器独立上限（已单独设置）
+        else:
+            self.switch_spin.setValue(int(self._user.get("switch_limit", 5) or 5))
         form.addWidget(self.switch_spin)
 
         form.addWidget(self._lbl("备注"))
@@ -921,6 +928,8 @@ class _UserDetailDialog(QDialog):
             "status": self.status_combo.currentData(),
             "note": self.note_edit.toPlainText().strip(),
             "switch_limit": self.switch_spin.value(),
+            # 每台服务器独立的上限：传 resource_id，Worker 会同步到 assignments.switch_limit（客户端限流依据）
+            "resource_id": self.resource_id,
         }
         if password:
             fields["password"] = password
