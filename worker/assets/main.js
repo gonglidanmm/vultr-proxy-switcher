@@ -677,10 +677,9 @@ function buildSingBoxConfig(n, proto, listenPort = LOCAL_PROXY_PORT) {
     log: { level: "error", timestamp: false },
     inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: listenPort }],
     outbounds: [{ type: "direct", tag: "direct" }],
-    // 用腾讯 DNS 解析域名（更新快，绕过系统 DNS 缓存旧 IP）。
-    // sing-box 1.12+ 新格式：type + server（旧 address 字段已弃用，1.14 直接报错）。
-    // 不设 detour：DNS 查询默认走 direct 直连（设 detour 到空 direct 出站反而报错）。
-    dns: { servers: [{ type: "udp", tag: "dns-real", server: "119.29.29.29" }] },
+    // 节点域名(*.yduas.cc)用腾讯 DNS 解析拿最新 IP（切 IP 后立即生效，绕过系统缓存旧值）；
+    // 其余域名不设 DNS 规则，走系统 DNS（与改动前一致，不污染用户访问的网站域名）。
+    dns: { servers: [{ type: "udp", tag: "dns-cn", server: "119.29.29.29" }] },
   };
   let upstream = null;
   if (proto === "socks5" && n.socks5) {
@@ -707,6 +706,8 @@ function buildSingBoxConfig(n, proto, listenPort = LOCAL_PROXY_PORT) {
     };
   }
   if (!upstream) throw new Error("该节点缺少所选协议的配置");
+  // 节点地址用「dns-cn」(腾讯 DNS) 解析拿最新 IP，只作用于节点域名，不影响用户访问的其它域名
+  upstream.domain_resolver = "dns-cn";
   config.outbounds.push(upstream);
   config.route = { final: "upstream" };
   return JSON.stringify(config);
