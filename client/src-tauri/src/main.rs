@@ -381,20 +381,33 @@ fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
         use std::os::windows::process::CommandExt;
         curl_cmd.creation_flags(0x08000000);
     }
-    let out = curl_cmd
-        .output()
-        .map_err(|e| format!("执行 curl 失败: {e}"))?;
+
+    // curl 测试（失败重试一次：sing-box 出站协议如 Reality 首次握手需要时间，第一次常超时）
+    let mut got_204 = false;
+    let mut secs: f64 = 0.0;
+    for attempt in 0..2 {
+        let out = curl_cmd
+            .output()
+            .map_err(|e| format!("执行 curl 失败: {e}"))?;
+        let s = String::from_utf8_lossy(&out.stdout);
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.first() == Some(&"204") {
+            got_204 = true;
+            secs = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0.0);
+            break;
+        }
+        if attempt == 0 {
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+    }
 
     let _ = child.kill();
     let _ = child.wait();
 
-    let s = String::from_utf8_lossy(&out.stdout);
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.first() == Some(&"204") {
-        let secs: f64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0.0);
+    if got_204 {
         Ok(secs * 1000.0)
     } else {
-        Err(format!("转发测试失败（HTTP {}）", parts.first().unwrap_or(&"?")))
+        Err("转发测试失败（HTTP 非 204）".to_string())
     }
 }
 
