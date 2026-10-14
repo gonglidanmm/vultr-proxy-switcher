@@ -330,6 +330,65 @@ fn stop_proxy(state: State<ProxyState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 真实协议转发测试：启动一个独立的 sing-box（不碰 ProxyState 的现有连接），
+/// 通过它的临时端口 curl 请求 gstatic 204。真正收到 204 才算「能代理」，返回真实延迟毫秒数。
+/// 这是「以客户本机为标准」的完整链路测试：域名 → sing-box 解析 → 协议握手 → 转发到海外网站。
+#[tauri::command]
+fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
+    let cfg = config_dir().join("config-test.json");
+    std::fs::write(&cfg, &config_json).map_err(|e| format!("写测试配置失败: {e}"))?;
+
+    let mut cmd = Command::new(sing_box_path());
+    cmd.args(["-c", cfg.to_str().unwrap_or_default(), "run"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动 sing-box 失败: {e}"))?;
+
+    // 等临时端口就绪（sing-box 启动约 1-2 秒）
+    let mut ready = false;
+    for _ in 0..30 {
+        if TcpStream::connect(("127.0.0.1", test_port)).is_ok() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !ready {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("sing-box 启动超时（端口未就绪）".to_string());
+    }
+
+    // 通过临时端口 curl gstatic 204（真实转发测试）
+    let proxy = format!("http://127.0.0.1:{}", test_port);
+    let out = Command::new("curl")
+        .args([
+            "-s", "-x", &proxy,
+            "--connect-timeout", "8",
+            "--max-time", "12",
+            "-o", "/dev/null",
+            "-w", "%{http_code} %{time_total}",
+            "https://www.gstatic.com/generate_204",
+        ])
+        .output()
+        .map_err(|e| format!("执行 curl 失败: {e}"))?;
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let s = String::from_utf8_lossy(&out.stdout);
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.first() == Some(&"204") {
+        let secs: f64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0.0);
+        Ok(secs * 1000.0)
+    } else {
+        Err(format!("转发测试失败（HTTP {}）", parts.first().unwrap_or(&"?")))
+    }
+}
+
 fn main() {
     // Windows 高 DPI：Per-Monitor V2（否则 125%/150% 缩放屏上界面模糊）
     #[cfg(target_os = "windows")]
@@ -356,7 +415,8 @@ fn main() {
             resolve_domain,
             set_system_proxy,
             start_proxy,
-            stop_proxy
+            stop_proxy,
+            test_proxy
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

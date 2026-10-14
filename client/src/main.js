@@ -669,12 +669,18 @@ function availableProtos(n) {
   return order.filter((p) => n[p] || (n.links && n.links[p]));
 }
 
-function buildSingBoxConfig(n, proto) {
-  const host = n.host || n.ip || n.domain || "";
+function buildSingBoxConfig(n, proto, listenPort = LOCAL_PROXY_PORT) {
+  // 客户软路由用「域名」连接，客户端连接与测试也用域名（核心卖点：切 IP 不改域名）。
+  // 优先域名，否则退回 host/IP（老节点可能没存域名）。
+  const host = (n.domain && String(n.domain).includes(".")) ? n.domain : (n.host || n.ip || "");
   const config = {
     log: { level: "error", timestamp: false },
-    inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: LOCAL_PROXY_PORT }],
+    inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: listenPort }],
     outbounds: [{ type: "direct", tag: "direct" }],
+    // 用腾讯 DNS 解析域名（更新快，绕过系统 DNS 缓存旧 IP）。
+    // sing-box 1.12+ 新格式：type + server（旧 address 字段已弃用，1.14 直接报错）。
+    // 不设 detour：DNS 查询默认走 direct 直连（设 detour 到空 direct 出站反而报错）。
+    dns: { servers: [{ type: "udp", tag: "dns-real", server: "119.29.29.29" }] },
   };
   let upstream = null;
   if (proto === "socks5" && n.socks5) {
@@ -693,7 +699,12 @@ function buildSingBoxConfig(n, proto) {
       },
     };
   } else if (proto === "hysteria2" && n.hysteria2) {
-    upstream = { type: "hysteria2", tag: "upstream", server: host, server_port: n.hysteria2.port, password: n.hysteria2.password || "" };
+    // Hysteria2 用 password 认证，TLS 证书只做加密通道不做身份验证，故 insecure=true 跳过证书校验
+    upstream = {
+      type: "hysteria2", tag: "upstream", server: host, server_port: n.hysteria2.port,
+      password: n.hysteria2.password || "",
+      tls: { enabled: true, insecure: true },
+    };
   }
   if (!upstream) throw new Error("该节点缺少所选协议的配置");
   config.outbounds.push(upstream);
@@ -754,39 +765,24 @@ function updateUpstreamButtons() {
     b.classList.toggle("active-upstream", isUp);
   });
 }
-// 测试节点各协议 TCP 连通性（host:port 可达 = 协议服务在监听）
-// showDiagnostics=true 时打印失败诊断（手动检测用），轮询检测静默避免刷屏
+// 真实转发测试的临时本地端口（不碰 7890 连接端口，避免测试打断正在使用的连接）
+const TEST_PROXY_PORT = 7891;
+
+// 测试节点各协议「真实转发」（不是只测端口通）：以客户本机为标准，
+// 用 sing-box 走「域名 → 协议握手 → 转发到 gstatic 204」，真正收到 204 才算能代理。
+// 端口通 ≠ 能代理（gost 卡死端口通但转发断、脏 IP 端口通但客户本机连不上），必须真实转发才可靠。
 async function testNodeProtocols(n, showDiagnostics = false) {
-  // 客户软路由用「域名」连接，检测也要走「域名 → IP → 各协议」完整链路。
-  // 先用投票 DNS（resolve_a_real，绕过 fake-ip 和公共 DNS 缓存旧值）解析域名到真实 IP，再用真实 IP 测协议延迟。
-  let host = n.ip || n.host || "";
-  const domain = (n.domain && String(n.domain).includes(".")) ? n.domain : "";
-  if (domain) {
-    try {
-      const resolved = await invokeRust("resolve_domain", { domain });
-      const ip = String(resolved).split(",")[0].trim();
-      if (ip) {
-        host = ip;
-        if (showDiagnostics) {
-          const expect = n.ip || n.host || "";
-          const matched = expect && ip === expect;
-          logMsg(`   域名 ${domain} → ${ip}${matched ? "（与节点 IP 一致）" : "（⚠ 与节点 IP 不一致，DNS 未同步）"}`, matched ? "ok" : "warn");
-        }
-      }
-    } catch (_) {}
-  }
   const protos = ["socks5", "ss", "reality", "hysteria2"];
   const results = {};
   for (const p of protos) {
     const cfg = n[p];
     if (!cfg || !cfg.port) { results[p] = null; continue; }
     try {
-      // Hysteria2 是 UDP(QUIC)，用 UDP 探测；其余 TCP
-      const cmd = p === "hysteria2" ? "check_udp" : "check_connectivity";
-      const ms = await invokeRust(cmd, { host, port: cfg.port });
+      const configJson = buildSingBoxConfig(n, p, TEST_PROXY_PORT);
+      const ms = await invokeRust("test_proxy", { configJson, testPort: TEST_PROXY_PORT });
       results[p] = Math.round(ms);
     } catch (e) {
-      if (showDiagnostics) logMsg(`   [诊断] ${p} 检测异常（host=${host} port=${cfg.port}）: ${e}`, "warn");
+      if (showDiagnostics) logMsg(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
       results[p] = -1;  // 不可达
     }
   }
@@ -821,7 +817,7 @@ async function checkNode(n, btn) {
     logMsg(`检测节点 ${name}：${reachable > 0 ? "可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
     for (const [p, v] of Object.entries(results)) {
       if (v === null) continue;
-      const label = p === "hysteria2" && v > 0 ? "（端口通，证书以服务端为准）" : "";
+      const label = v > 0 ? "（真实转发）" : "";
       logMsg(`   ${protoName(p)}：${v > 0 ? v + "ms" + label : "不可达"}`, v > 0 ? "ok" : "err");
     }
   } catch (e) {
@@ -890,7 +886,7 @@ async function afterSwitch(newIp) {
     logMsg(`检测完成（${reachable}/${total} 协议可用）`, "ok");
     for (const [p, v] of Object.entries(results)) {
       if (v === null) continue;
-      const label = p === "hysteria2" && v > 0 ? "（端口通，证书以服务端为准）" : "";
+      const label = v > 0 ? "（真实转发）" : "";
       logMsg(`   ${protoName(p)}：${v > 0 ? v + "ms" + label : "不可达"}`, v > 0 ? "ok" : "err");
     }
     // 域名同步检测：提示软路由客户域名是否已指向新 IP（核心卖点：客户不用改配置）
