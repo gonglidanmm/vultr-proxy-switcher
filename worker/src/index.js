@@ -562,6 +562,14 @@ async function createReplacement(request, env, req) {
 async function processOneSwitch(req, env, headers, request) {
   const resp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
   if (!resp.ok) {
+    // 新机 404 且超过 10 分钟 = 新机已被销毁（可能用户又切了一次，新机变旧机被销毁），标记 failed 避免永久卡 pending
+    if (resp.status === 404) {
+      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+      if (runningMs > 600000) {
+        await env.DB.prepare("UPDATE switch_requests SET status = 'failed', stage = 'failed' WHERE id = ?").bind(req.id).run();
+        return { resource_id: req.old_id, stage: "failed", status: "failed", note: "新机已不存在（可能被后续切换销毁）" };
+      }
+    }
     return { resource_id: req.old_id, stage: "booting", status: "pending", note: "查询新机状态失败" };
   }
   const inst = ((await resp.json()).instance) || {};
@@ -753,6 +761,14 @@ async function adminSwitch(request, env) {
 async function processAdminSwitch(req, env, headers, request) {
   const resp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
   if (!resp.ok) {
+    // 新机 404 且超过 10 分钟 = 已被销毁，标记 failed 避免永久卡 pending
+    if (resp.status === 404) {
+      const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+      if (runningMs > 600000) {
+        await env.DB.prepare("UPDATE switch_requests SET status = 'failed', stage = 'failed' WHERE id = ?").bind(req.id).run();
+        return { old_id: req.old_id, stage: "failed", status: "failed", note: "新机已不存在（可能被后续切换销毁）" };
+      }
+    }
     return { old_id: req.old_id, stage: "booting", status: "pending", note: "查询新机状态失败" };
   }
   const inst = ((await resp.json()).instance) || {};
