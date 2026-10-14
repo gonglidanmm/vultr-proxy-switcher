@@ -1411,7 +1411,8 @@ class ServersPage(QWidget):
             stage_text = {
                 "creating": "正在创建新机",
                 "destroying": "正在销毁旧机",
-                "booting": "新机启动中，正在安装代理软件",
+                "booting": "新机已创建，正在启动中",
+                "installing": "新机运行中，正在下载安装代理软件",
                 "testing": "代理软件已就绪，正在检测端口",
                 "retrying": "端口检测失败，正在重建新机",
                 "done": "切换成功",

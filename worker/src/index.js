@@ -583,14 +583,14 @@ async function processOneSwitch(req, env, headers, request) {
     }
   }
 
-  // 等 cloud-init 完成（3.5 分钟）：Worker 的 fetch 无法可靠检测 TCP 端口（Cloudflare 对不通的端口
-  // 也返回 403，无法区分「连接拒绝」和「服务未启动」，实测 fetch 到黑洞地址也返回 403），
-  // 端口检测交给客户端 Rust 的 check_connectivity（真实 TCP 连接）。这里只等固定时间让 cloud-init
-  // 下载/启动 gost+xray，时间到就回写 done，客户端再真实检测。
-  const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-  if (runningMs < 210000) {
-    const remaining = Math.ceil((210000 - runningMs) / 1000);
-    return { resource_id: req.old_id, stage: "booting", status: "pending", note: `新机启动中，正在安装代理软件（约 ${remaining} 秒后就绪）` };
+  // 真实检测安装完成：等新机 cloud-init 安装完代理软件后主动回写 node-ready（stage 变 'installed'）。
+  // 不再死等固定 3.5 分钟——装多久等多久（通常 1-2 分钟就回写，立即就绪），
+  // 超时 6 分钟兜底（cloud-init 异常没回写时，按就绪处理，客户端会真实检测端口，不通自动重切）。
+  if (req.stage !== "installed") {
+    const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+    if (runningMs < 360000) {
+      return { resource_id: req.old_id, stage: "installing", status: "pending", note: "新机运行中，正在下载安装代理软件（真实等待安装完成）" };
+    }
   }
 
   const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
@@ -765,11 +765,13 @@ async function processAdminSwitch(req, env, headers, request) {
     await env.DB.prepare("UPDATE switch_requests SET new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
   }
 
-  // 等 cloud-init 完成（3.5 分钟）：端口检测交给客户端 Rust 的 check_connectivity（真实 TCP）。
-  const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-  if (runningMs < 210000) {
-    const remaining = Math.ceil((210000 - runningMs) / 1000);
-    return { old_id: req.old_id, stage: "booting", status: "pending", note: `新机启动中，正在安装代理软件（约 ${remaining} 秒后就绪）` };
+  // 真实检测安装完成：等新机 cloud-init 回写 node-ready（stage 变 'installed'），不死等固定时长。
+  // 超时 6 分钟兜底（cloud-init 异常没回写时按就绪处理，客户端真实检测端口，不通自动重切）。
+  if (req.stage !== "installed") {
+    const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
+    if (runningMs < 360000) {
+      return { old_id: req.old_id, stage: "installing", status: "pending", note: "新机运行中，正在下载安装代理软件（真实等待安装完成）" };
+    }
   }
 
   // 回写：旧实例若已分配给某用户，更新 assignment 的 resource_id + node_data（客户端同步）
@@ -1236,6 +1238,15 @@ export default {
       }
       // 节点签好证书后回传（用 X-Cert-Token 认证，非管理员 token）
       if (method === "POST" && path === "/admin/cert-save") return await certSave(request, env);
+
+      // 新机 cloud-init 安装完代理软件后回写（管理员认证之前，cloud-init 不带 token）：
+      // 把 switch_requests.stage 置为 installed，Worker 轮询据此判定「安装完成」，实现真实分阶段回显。
+      if (method === "GET" && path === "/admin/node-ready") {
+        const newId = (url.searchParams.get("new_id") || "").trim();
+        if (!newId) return json({ error: "new_id 必填" }, 400);
+        await env.DB.prepare("UPDATE switch_requests SET stage = 'installed' WHERE new_id = ? AND status = 'pending'").bind(newId).run();
+        return json({ ok: true });
+      }
 
       // 管理员端点
       if (!(await requireAdmin(request, env))) {

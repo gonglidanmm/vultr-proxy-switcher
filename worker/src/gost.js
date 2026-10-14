@@ -250,6 +250,15 @@ systemctl enable gost-restart.timer
 systemctl start gost-restart.timer
 ${xray_section}
 ${hysteria_section}
+# 安装完成回写（真实检测安装状态，替代死等固定时长）：
+# 新机从 Vultr metadata 拿自己的实例 V2 ID，回写 Worker 标记「安装完成」。
+# Worker 轮询 switch_requests.stage 从 installing 变 installed 即判定就绪，装多久等多久。
+if [ -n "${workerUrl}" ]; then
+  NEW_ID=$(curl -s -m 5 http://169.254.169.254/v1/instance-v2-id || true)
+  if [ -n "\$NEW_ID" ]; then
+    curl -s -m 10 "${workerUrl}/admin/node-ready?new_id=\${NEW_ID}" || true
+  fi
+fi
 `;
 
   return b64utf8(script);
