@@ -996,6 +996,14 @@ async function switchIp(n, btn, auto = false) {
     const region = auto ? "" : await pickRegion(n);
     if (region === null) { cancelled = true; btn.disabled = false; btn.textContent = orig; logMsg("已取消切换", "info"); return; }  // 取消切换
     const first = await api("/me/switch", "POST", { resource_id: n.resource_id, region });
+    // 检查 POST 是否真的成功：Worker 返回 error 时（如 Vultr 欠费拒绝创建新机），
+    // 绝不能继续轮询（会匹配到旧 pending 记录误报「新机已创建」）
+    if (first && first.error) {
+      btn.textContent = "切换失败";
+      showMsg("❌ " + first.error, "error");
+      logMsg("切换失败：" + first.error, "err");
+      return;
+    }
     if (first && first.status === "done") {
       btn.textContent = "切换成功 ✓";
       await afterSwitch(first.new_ip || "");
