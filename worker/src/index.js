@@ -566,7 +566,7 @@ async function processOneSwitch(req, env, headers, request) {
   const power = inst.power_status || inst.status || "";
   const newIp = inst.main_ip || "";
   if (power !== "running" || !newIp) {
-    return { resource_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
+    return { resource_id: req.old_id, stage: "booting", status: "pending", note: "新机已创建，正在启动中" };
   }
 
   // 拿到新机 IP 后立即更新 DNS（不等 cloud-init 完成），让域名解析尽早生效。
@@ -755,7 +755,7 @@ async function processAdminSwitch(req, env, headers, request) {
   const power = inst.power_status || inst.status || "";
   const newIp = inst.main_ip || "";
   if (power !== "running" || !newIp) {
-    return { old_id: req.old_id, stage: "booting", status: "pending", note: "新机启动中，正在安装代理软件" };
+    return { old_id: req.old_id, stage: "booting", status: "pending", note: "新机已创建，正在启动中" };
   }
 
   // 拿到新机 IP 后立即更新 DNS（不等 cloud-init），让域名解析尽早生效。

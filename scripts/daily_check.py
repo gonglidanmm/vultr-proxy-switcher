@@ -10,11 +10,11 @@
 """
 import sys
 import socket
-import subprocess
 
 sys.path.insert(0, "/Users/konglidan/vultr-proxy-switcher")
 from app import config, vultr  # noqa: E402
 from app import gencreds  # noqa: E402
+from app import e2e  # noqa: E402
 
 issues: list[str] = []
 
@@ -29,29 +29,6 @@ def tcp_open(ip: str, port: int, timeout: float = 5.0) -> bool:
         return False
     finally:
         s.close()
-
-
-def proxy_forward_ok(ip: str, creds: dict, timeout: float = 8.0) -> bool:
-    """通过节点 SOCKS5 代理实际访问网站，验证「转发」是否正常（不只测端口）。
-
-    端口通 ≠ 转发通：Vultr 网络栈卡死时 gost 仍监听端口但出站转发断，端口检测测不出，
-    必须走真实流量才能发现。返回 None 表示无法检测（无凭据）。
-    """
-    user = (creds or {}).get("proxy_user", "")
-    pwd = (creds or {}).get("proxy_pass", "")
-    port = int((creds or {}).get("proxy_port", 1080))
-    if not user:
-        return None
-    try:
-        r = subprocess.run(
-            ["curl", "-s", "-x", f"socks5h://{user}:{pwd}@{ip}:{port}",
-             "--connect-timeout", str(int(timeout)), "-o", "/dev/null",
-             "-w", "%{http_code}", "https://www.google.com"],
-            capture_output=True, text=True, timeout=timeout + 5,
-        )
-        return r.stdout.strip() == "200"
-    except Exception:
-        return False
 
 
 def main() -> None:
@@ -94,14 +71,34 @@ def main() -> None:
         # 卡死（443 Reality 端口）
         if not tcp_open(ip, 443):
             issues.append(f"实例卡死：{dom}（{ip}）443 端口不通")
-        # 转发检测（端口通但转发断 = 网络栈卡死，端口检测测不出，必须走真实流量）
+        # 真实转发检测（域名 + 完整协议，从阿文 Mac 中国网络测：端口通≠能代理，必须走真实流量）
         try:
             creds = gencreds.get_credentials(uid)
         except Exception:
             creds = {}
-        fwd = proxy_forward_ok(ip, creds)
-        if fwd is False:
-            issues.append(f"转发失败：{dom}（{ip}）SOCKS5 端口通但出站转发断，疑似网络栈卡死，需重切")
+        test_host = dom or ip
+        try:
+            lat = e2e.e2e_latencies(
+                host=test_host,
+                socks_user=creds.get("proxy_user", ""),
+                socks_pass=creds.get("proxy_pass", ""),
+                socks_port=int(creds.get("proxy_port", 1080)),
+                ss_pass=creds.get("ss_password", ""),
+                ss_port=int(creds.get("ss_port", 45678)),
+                reality_uuid=creds.get("reality_uuid", ""),
+                reality_public_key=creds.get("reality_public_key", ""),
+                reality_short_id=creds.get("reality_short_id", ""),
+                reality_sni=creds.get("reality_sni", "www.cloudflare.com"),
+                reality_port=int(creds.get("reality_port", 443)),
+                hy_pass=creds.get("hysteria_password", ""),
+                hy_port=int(creds.get("hysteria_port", 8443)),
+                domain=dom,
+            )
+        except Exception:
+            lat = {}
+        ok = [p for p, v in lat.items() if v is not None]
+        if lat and not ok:
+            issues.append(f"真实转发全部失败：{dom}（{ip}）端口通但各协议转发不通，疑似网络栈卡死，需重切")
 
     if issues:
         print(f"🚨 巡检发现 {len(issues)} 个异常：")

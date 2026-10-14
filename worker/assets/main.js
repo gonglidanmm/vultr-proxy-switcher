@@ -867,10 +867,10 @@ async function afterSwitch(newIp) {
   }
   logMsg(`切换完成，${nodeName} 新 IP：${newIp}`, "ok");
   logMsg(`新机服务启动中（约1-3分钟，首次需下载安装服务），自动检测各协议…`, "info");
-  // 轮询测试，直到 TCP 协议（SOCKS5/SS/Reality）至少一个可达，最多 5 分钟
-  // Hysteria2 是 UDP，探测不可靠，不作为"服务就绪"依据
+  // 轮询测试，直到 TCP 协议（SOCKS5/SS/Reality）至少一个可达，最多 8 次（约 2 分钟）
+  // 现在 Worker done 已基于「cloud-init 回写 node-ready」（安装完成），此处是验证 + 兜底
   let results = null;
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 8; i++) {
     await sleep(15000);
     results = await testNodeProtocols(newNode);
     const tcpReachable = ["socks5", "ss", "reality"].some((p) => results[p] > 0);

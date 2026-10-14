@@ -72,7 +72,11 @@ export function buildGostUserData(creds, domain = "", cert = null, workerUrl = "
     xray_section = `
 # Xray (VLESS+Reality)
 if [ ! -x /usr/local/bin/xray ]; then
-  wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+  # 下载加重试（cloud-init 时 GitHub 下载常因网络抖动失败，导致 443 不通）
+  for i in 1 2 3 4 5; do
+    wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && break
+    sleep 10
+  done
   unzip -q -o /tmp/xray.zip -d /usr/local/bin/
   chmod +x /usr/local/bin/xray
 fi
@@ -103,7 +107,11 @@ systemctl restart xray
     hysteria_section = `
 # Hysteria2
 if [ ! -x /usr/local/bin/hysteria ]; then
-  wget -q -O /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64
+  # 下载加重试（cloud-init 时 GitHub 下载常因网络抖动失败）
+  for i in 1 2 3 4 5; do
+    wget -q -O /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64 && break
+    sleep 10
+  done
   chmod +x /usr/local/bin/hysteria
 fi
 mkdir -p /etc/hysteria

@@ -1561,8 +1561,10 @@ class ServersPage(QWidget):
             # Hysteria2 是 UDP，无法测准确往返，用 22 端口网络延迟近似
             hy_lat = ssh_lat if hy_open else None
             exit_ip = check.exit_ip_and_latency("127.0.0.1", local_port)
+            # 用域名连接（客户软路由填域名，检测也要用域名才能测出「客户本机」真实可用性；域名未生效时退回 IP）
+            test_host = sub or host
             e2e_lat = e2e.e2e_latencies(
-                host=host,
+                host=test_host,
                 socks_user=creds.get("proxy_user", ""),
                 socks_pass=creds.get("proxy_pass", ""),
                 socks_port=up_port,
