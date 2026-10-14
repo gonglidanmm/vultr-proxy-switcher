@@ -41,6 +41,16 @@ def _socks5_e2e(port: int, timeout: int = 10) -> int | None:
         return None
 
 
+def _socks5_e2e_retry(port: int, attempts: int = 2) -> int | None:
+    """测端到端延迟，失败重试（客户端冷启动/握手慢时第一次可能失败，重试消除偶发误报）。"""
+    for _ in range(attempts):
+        r = _socks5_e2e(port)
+        if r is not None:
+            return r
+        time.sleep(2)
+    return None
+
+
 def _port_ready(port: int, timeout: float = 0.5) -> bool:
     """检测本地端口是否已监听（客户端启动就绪判定）。"""
     import socket
@@ -84,7 +94,7 @@ def _gost_e2e(upstream: str, local_port: int) -> int | None:
             if _port_ready(local_port):
                 break
             time.sleep(0.5)
-        return _socks5_e2e(local_port)
+        return _socks5_e2e_retry(local_port)
     finally:
         _stop(p)
 
@@ -133,7 +143,7 @@ def _xray_reality_e2e(host: str, port: int, uuid: str, public_key: str, short_id
             if _port_ready(local_port):
                 break
             time.sleep(0.5)
-        return _socks5_e2e(local_port)
+        return _socks5_e2e_retry(local_port)
     finally:
         _stop(p)
         try:
@@ -164,7 +174,7 @@ socks5:
             if _port_ready(local_port):
                 break
             time.sleep(0.5)
-        return _socks5_e2e(local_port)
+        return _socks5_e2e_retry(local_port)
     finally:
         _stop(p)
         try:
