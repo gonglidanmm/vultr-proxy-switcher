@@ -444,8 +444,10 @@ async function switchResource(request, env, user) {
   } catch (_) {}
 
   const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
+  // 销毁旧机失败不阻断切换（新机已创建，返回错误会让客户端重试、重复创建新机造成更多孤儿）。
+  // 记日志，旧机可后续由巡检/手动处理，避免「销毁失败→重试→孤儿新机」雪崩。
   if (!delResp.ok && delResp.status !== 404) {
-    return json({ error: `销毁旧机失败 HTTP ${delResp.status}` }, 500);
+    console.error(`销毁旧机 ${resourceId} 失败 HTTP ${delResp.status}（不阻断切换，新机已创建）`);
   }
 
   await env.DB.prepare(
@@ -585,10 +587,10 @@ async function processOneSwitch(req, env, headers, request) {
 
   // 真实检测安装完成：等新机 cloud-init 安装完代理软件后主动回写 node-ready（stage 变 'installed'）。
   // 不再死等固定 3.5 分钟——装多久等多久（通常 1-2 分钟就回写，立即就绪），
-  // 超时 6 分钟兜底（cloud-init 异常没回写时，按就绪处理，客户端会真实检测端口，不通自动重切）。
+  // 超时 5 分钟兜底（cloud-init 异常没回写时，按就绪处理，客户端会真实检测端口，不通自动重切）。
   if (req.stage !== "installed") {
     const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-    if (runningMs < 360000) {
+    if (runningMs < 300000) {
       return { resource_id: req.old_id, stage: "installing", status: "pending", note: "新机运行中，正在下载安装代理软件（真实等待安装完成）" };
     }
   }
@@ -735,8 +737,10 @@ async function adminSwitch(request, env) {
   } catch (_) {}
 
   const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
+  // 销毁旧机失败不阻断切换（新机已创建，返回错误会让客户端重试、重复创建新机造成更多孤儿）。
+  // 记日志，旧机可后续由巡检/手动处理，避免「销毁失败→重试→孤儿新机」雪崩。
   if (!delResp.ok && delResp.status !== 404) {
-    return json({ error: `销毁旧机失败 HTTP ${delResp.status}` }, 500);
+    console.error(`销毁旧机 ${resourceId} 失败 HTTP ${delResp.status}（不阻断切换，新机已创建）`);
   }
 
   await env.DB.prepare(
@@ -766,10 +770,10 @@ async function processAdminSwitch(req, env, headers, request) {
   }
 
   // 真实检测安装完成：等新机 cloud-init 回写 node-ready（stage 变 'installed'），不死等固定时长。
-  // 超时 6 分钟兜底（cloud-init 异常没回写时按就绪处理，客户端真实检测端口，不通自动重切）。
+  // 超时 5 分钟兜底（cloud-init 异常没回写时按就绪处理，客户端真实检测端口，不通自动重切）。
   if (req.stage !== "installed") {
     const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
-    if (runningMs < 360000) {
+    if (runningMs < 300000) {
       return { old_id: req.old_id, stage: "installing", status: "pending", note: "新机运行中，正在下载安装代理软件（真实等待安装完成）" };
     }
   }

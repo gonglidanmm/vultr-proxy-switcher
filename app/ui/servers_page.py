@@ -1623,14 +1623,11 @@ class ServersPage(QWidget):
         if r["exit_ip"]:
             ip, lat = r["exit_ip"]
             self._log(f"代理出口延迟（通过本地代理访问的完整链路，这才是翻墙延迟）：{ip}（{lat}ms）")
-            if all(lat is not None for _, lat, _ in marks):
-                self._op_label.setText(f'<span style="color:#32d74b;">节点正常 · 四协议通 · 出口 {ip}</span>')
-            else:
-                self._op_label.setText('<span style="color:#ff9f0a;">部分协议端口不通</span>')
         else:
             self._log("⚠️ 直连通但代理转发失败")
-            self._op_label.setText('<span style="color:#ff9f0a;">代理转发异常</span>')
         e2e_lat = r.get("e2e", {})
+        e2e_ok = [p for p in ("SOCKS5", "SS", "Reality", "Hysteria2") if e2e_lat.get(p) is not None]
+        # 顶部状态以「真实转发」为准（端口通 ≠ 能代理，卡死节点端口通但转发断）
         if e2e_lat:
             self._log("端到端延迟（每个协议真实翻墙延迟）：")
             for proto in ("SOCKS5", "SS", "Reality", "Hysteria2"):
@@ -1643,6 +1640,10 @@ class ServersPage(QWidget):
                     self._log(f"  {proto}: ❌ 不通（域名已解析但证书未签，双击「域名」列重新签发）")
                 else:
                     self._log(f"  {proto}: ❌ 不通")
+        if e2e_ok:
+            self._op_label.setText(f'<span style="color:#32d74b;">节点正常 · {len(e2e_ok)}/4 协议真实转发通 · 出口 {r["exit_ip"][0] if r["exit_ip"] else "?"}</span>')
+        else:
+            self._op_label.setText('<span style="color:#ff453a;">代理转发异常（端口通但转发断，需切换IP）</span>')
 
     def _open_share(self, srv: dict) -> None:
         relays = [r for r in config.get("relays", []) if r.get("server_id") == srv["id"]]

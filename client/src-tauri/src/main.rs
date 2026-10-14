@@ -363,13 +363,15 @@ fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
     }
 
     // 通过临时端口 curl gstatic 204（真实转发测试）
+    // Windows 用 NUL 作为空设备，macOS/Linux 用 /dev/null
+    let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let proxy = format!("http://127.0.0.1:{}", test_port);
     let out = Command::new("curl")
         .args([
             "-s", "-x", &proxy,
             "--connect-timeout", "8",
             "--max-time", "12",
-            "-o", "/dev/null",
+            "-o", null_dev,
             "-w", "%{http_code} %{time_total}",
             "https://www.gstatic.com/generate_204",
         ])
