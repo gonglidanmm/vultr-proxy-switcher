@@ -1184,6 +1184,25 @@ async function getStats(env) {
 
 // ============ 路由 ============
 
+// 定时收尾：处理卡住超过 10 分钟的 pending 切换记录（客户端轮询超时放弃后，这里兜底自愈）。
+// 复用 processOneSwitch：查新机状态 → 回写 assignment → 标记 done，避免 assignment 卡在已销毁旧机导致后续切换 404。
+async function sweepPending(env) {
+  const VULTR_KEY = env.VULTR_API_KEY || "";
+  if (!VULTR_KEY) return;
+  const headers = apiHeaders(env, "vultr");
+  const cutoff = new Date(Date.now() - 600000).toISOString();
+  const rows = await env.DB.prepare(
+    "SELECT * FROM switch_requests WHERE status = 'pending' AND created_at < ? ORDER BY id ASC",
+  ).bind(cutoff).all();
+  for (const req of rows.results) {
+    try {
+      await processOneSwitch(req, env, headers, null);
+    } catch (e) {
+      console.error("sweepPending 收尾失败:", req.id, e && e.message ? e.message : e);
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1295,6 +1314,14 @@ export default {
       // 不把 e.message 回传客户端（会泄露 D1 表名/列名、fetch URL 等内部结构），记日志 + 固定文案
       console.error("Unhandled error:", e && e.message ? e.message : e);
       return json({ error: "服务器内部错误" }, 500);
+    }
+  },
+  // Cloudflare Cron Trigger：每 10 分钟收尾卡住的切换记录（wrangler.toml triggers.crons）
+  async scheduled(_event, env) {
+    try {
+      await sweepPending(env);
+    } catch (e) {
+      console.error("scheduled sweepPending 异常:", e && e.message ? e.message : e);
     }
   },
 };

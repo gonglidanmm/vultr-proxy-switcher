@@ -7,3 +7,7 @@ workers_dev = true
 binding = "DB"
 database_name = "vultr-proxy-users"
 database_id = "d06a9a46-2158-441b-acee-46c8a7053b16"
+
+# 定时收尾：每隔 10 分钟自动处理卡住超过 10 分钟的切换记录（客户端超时放弃后仍能自愈）
+[triggers]
+crons = ["*/10 * * * *"]
