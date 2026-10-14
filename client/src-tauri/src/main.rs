@@ -366,15 +366,22 @@ fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
     // Windows 用 NUL 作为空设备，macOS/Linux 用 /dev/null
     let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let proxy = format!("http://127.0.0.1:{}", test_port);
-    let out = Command::new("curl")
-        .args([
-            "-s", "-x", &proxy,
-            "--connect-timeout", "8",
-            "--max-time", "12",
-            "-o", null_dev,
-            "-w", "%{http_code} %{time_total}",
-            "https://www.gstatic.com/generate_204",
-        ])
+    let mut curl_cmd = Command::new("curl");
+    curl_cmd.args([
+        "-s", "-x", &proxy,
+        "--connect-timeout", "8",
+        "--max-time", "12",
+        "-o", null_dev,
+        "-w", "%{http_code} %{time_total}",
+        "https://www.gstatic.com/generate_204",
+    ]);
+    // Windows 上 curl 也静默运行，不弹黑色控制台窗口（否则每次测试弹一个黑框）
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        curl_cmd.creation_flags(0x08000000);
+    }
+    let out = curl_cmd
         .output()
         .map_err(|e| format!("执行 curl 失败: {e}"))?;
 
