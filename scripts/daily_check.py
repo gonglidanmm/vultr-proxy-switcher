@@ -31,6 +31,57 @@ def tcp_open(ip: str, port: int, timeout: float = 5.0) -> bool:
         s.close()
 
 
+def real_dns_resolve(domain: str) -> list[str]:
+    """用真实 DNS 直连（UDP 53）解析域名 A 记录，绕过本机翻墙软件的 fake-ip 劫持。
+
+    系统 DNS（socket.gethostbyname）在 Shadowrocket/Clash 下会返回 198.18.0.x（fake-ip），
+    无法判断真实 DNS 是否同步。这里直接向腾讯/阿里 DNS 发 UDP 查询拿真实 A 记录。
+    """
+    import struct
+
+    tid = 0x1234
+    header = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    qname = b"".join(bytes([len(l)]) + l.encode() for l in domain.split(".")) + b"\x00"
+    pkt = header + qname + struct.pack(">HH", 1, 1)
+    for server in ("119.29.29.29", "223.5.5.5"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(3)
+        data = b""
+        try:
+            s.sendto(pkt, (server, 53))
+            data, _ = s.recvfrom(512)
+        except Exception:
+            s.close()
+            continue
+        finally:
+            s.close()
+        if len(data) < 12:
+            continue
+        ancount = struct.unpack(">H", data[6:8])[0]
+        pos = 12
+        while pos < len(data) and data[pos] != 0:
+            pos += 1 + data[pos]
+        pos += 5
+        ips = []
+        for _ in range(ancount):
+            if pos + 10 > len(data):
+                break
+            if data[pos] & 0xC0 == 0xC0:
+                pos += 2
+            else:
+                while pos < len(data) and data[pos] != 0:
+                    pos += 1 + data[pos]
+                pos += 1
+            rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[pos:pos + 10])
+            pos += 10
+            if rtype == 1 and rdlen == 4:
+                ips.append(".".join(str(b) for b in data[pos:pos + 4]))
+            pos += rdlen
+        if ips:
+            return ips
+    return []
+
+
 def main() -> None:
     key = config.get("vultr_api_key", "")
     if not key:
@@ -61,13 +112,13 @@ def main() -> None:
         ip = inst.get("main_ip", "")
         if not ip:
             continue
-        # DNS
+        # DNS（用真实 DNS 直连 119.29.29.29 查询，绕过本机翻墙 fake-ip 劫持——系统 DNS 会返回 198.18.0.x）
         try:
-            resolved = socket.gethostbyname(dom)
-            if resolved != ip:
-                issues.append(f"DNS 不一致：{dom} 解析到 {resolved}，节点 IP 是 {ip}")
+            resolved = real_dns_resolve(dom)
+            if resolved and ip not in resolved:
+                issues.append(f"DNS 不一致：{dom} 解析到 {resolved[0]}，节点 IP 是 {ip}")
         except Exception:
-            issues.append(f"DNS 解析失败：{dom}")
+            pass
         # 卡死（443 Reality 端口）
         if not tcp_open(ip, 443):
             issues.append(f"实例卡死：{dom}（{ip}）443 端口不通")

@@ -149,6 +149,8 @@ def _hysteria_e2e(host: str, port: int, password: str, local_port: int) -> int |
         return None
     conf = f"""server: {host}:{port}
 auth: {password}
+tls:
+  insecure: true
 socks5:
   listen: 127.0.0.1:{local_port}
 """
