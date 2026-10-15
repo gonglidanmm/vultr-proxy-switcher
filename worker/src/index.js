@@ -20,6 +20,26 @@ function bjToday() {
   return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
+// 生成分享链接（补 links 用）：域名不变（卖点：切 IP 域名自动指向新 IP），links 的 host 用域名。
+// 与 app/share.py 保持一致：SS 用 websafe-base64 带 padding（SIP002），hysteria2 端口部分用 mport 范围。
+function b64url(s) {
+  return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-").replace(/\//g, "_");
+}
+function buildLinks(nodeData) {
+  const dom = (nodeData && nodeData.domain) || "";
+  const s = (nodeData && nodeData.socks5) || {};
+  const ss = (nodeData && nodeData.ss) || {};
+  const rl = (nodeData && nodeData.reality) || {};
+  const hy = (nodeData && nodeData.hysteria2) || {};
+  if (!dom || !s.password || !ss.password) return null;  // 凭据不全，不生成
+  return {
+    socks5: `socks5://${s.username || ""}:${s.password}@${dom}:${s.port || 1080}#SOCKS5`,
+    ss: `ss://${b64url(`${ss.method || "aes-256-gcm"}:${ss.password}`)}@${dom}:${ss.port || 45678}#SS`,
+    reality: `vless://${rl.uuid || ""}@${dom}:${rl.port || 443}?encryption=none&flow=${rl.flow || "xtls-rprx-vision"}&security=reality&sni=${rl.sni || "www.cloudflare.com"}&fp=${rl.fp || "chrome"}&pbk=${rl.public_key || ""}&sid=${rl.short_id || ""}&type=tcp#Reality`,
+    hysteria2: `hysteria2://${hy.password || ""}@${dom}:${hy.mport || hy.port || 8443}/#Hysteria2`,
+  };
+}
+
 // Cloudflare Worker: vultr-proxy-users API
 // IP 代理客户管理服务端
 //
@@ -625,6 +645,11 @@ async function processOneSwitch(req, env, headers, request) {
       if (countryName && cityName) nodeData.location = `${countryName}·${cityName}`;
     }
     const domain = nodeData.domain || "";
+    // 补 links（防切换后分享链接丢失）：host 用域名（切 IP 域名不变），凭据不变，仅空时生成
+    if (!nodeData.links || Object.keys(nodeData.links).length === 0) {
+      const links = buildLinks(nodeData);
+      if (links) nodeData.links = links;
+    }
     // 注：DNS 已在「拿到新机 IP 后」提前更新（见上文），这里不再重复调用。
     await env.DB.prepare(
       "UPDATE assignments SET resource_id = ?, node_data = ? WHERE id = ?",
@@ -832,6 +857,11 @@ async function processAdminSwitch(req, env, headers, request) {
       if (countryName && cityName) nodeData.location = `${countryName}·${cityName}`;
     }
     domain = nodeData.domain || "";
+    // 补 links（防切换后分享链接丢失）：host 用域名（切 IP 域名不变），凭据不变，仅空时生成
+    if (!nodeData.links || Object.keys(nodeData.links).length === 0) {
+      const links = buildLinks(nodeData);
+      if (links) nodeData.links = links;
+    }
     // 换套餐：同步客户配额到新套餐带宽（node_data.quota_gb + assignments.quota_gb，限流依据）
     if (Number(req.new_bandwidth) > 0) {
       nodeData.quota_gb = Number(req.new_bandwidth);
