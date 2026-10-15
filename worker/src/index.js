@@ -380,7 +380,7 @@ async function switchResource(request, env, user) {
     return json({ error: "该节点已到期，无法切换 IP", expired: true }, 403);
   }
 
-  if (count >= limit - 1) {
+  if (count >= limit) {
     return json({ error: `今天切换次数已达上限（${limit} 个 IP/天）`, remaining: 0 }, 429);
   }
 
