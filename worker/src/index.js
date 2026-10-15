@@ -1265,7 +1265,12 @@ async function sweepPending(env) {
   ).bind(cutoff).all();
   for (const req of rows.results) {
     try {
-      await processOneSwitch(req, env, headers, null);
+      // 管理端切换（actor_type=admin，assignment_id=0）按 resource_id 回写，客户端切换按 assignment_id 回写
+      if (req.actor_type === "admin") {
+        await processAdminSwitch(req, env, headers, null);
+      } else {
+        await processOneSwitch(req, env, headers, null);
+      }
     } catch (e) {
       console.error("sweepPending 收尾失败:", req.id, e && e.message ? e.message : e);
     }
