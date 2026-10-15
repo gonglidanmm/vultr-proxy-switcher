@@ -285,8 +285,11 @@ class ServersPage(QWidget):
 
     def shutdown(self) -> None:
         """App 退出前等在途 worker 结束（代理停由共享 controller 负责）。"""
+        import shiboken6
         for w in self._workers:
-            if w.isRunning():
+            # worker 完成后 deleteLater 已删 C++ 对象，直接 isRunning() 会抛
+            # "Internal C++ object already deleted"，必须先 isValid 检查
+            if shiboken6.isValid(w) and w.isRunning():
                 w.wait(2000)
 
     def _update_billing(self, billing: dict | None) -> None:
@@ -570,8 +573,12 @@ class ServersPage(QWidget):
     def _on_light_refresh(self, result) -> None:
         billing, instances = result
         self._update_billing(billing)
-        if self._detect_ip_changes(instances):
-            self._sync_server_configs(instances)  # 迁移域名/配置到新实例
+        # 总是调用迁移：内部有 stale 扫描（config 里指向已销毁实例的旧 UUID），
+        # 首次启动 cached 为空时 _detect_ip_changes 返回 False 会漏掉迁移（停机期间切换的配置永久丢）。
+        # _sync_server_configs 无 stale/gone 时廉价返回，不影响性能。
+        migrated = self._sync_server_configs(instances)
+        # 迁移了配置（域名/备注/名称换到新实例 ID）后必须强制刷新，否则实例 ID 没变但域名列仍显示旧值/空白。
+        if self._detect_ip_changes(instances) or migrated:
             self.refresh()
 
     def _detect_ip_changes(self, instances: list) -> bool:
@@ -623,7 +630,7 @@ class ServersPage(QWidget):
         stale_ids = [uid for uid in domains if uid not in current_ids]
 
         if not gone and not stale_ids:
-            return
+            return 0
         # 从 Worker 读切换记录（old_id → new_id 精确映射，避免 gone/added 排序错配把配置迁到错误实例）
         try:
             flow_data = api_client.list_switch_flow()
@@ -667,8 +674,10 @@ class ServersPage(QWidget):
             old_id, new_id = gone[0], added[0]
             self._migrate_server_config(old_id, new_id)
             self._log(f"🔄 检测到实例变化：{old_id[:8]} → {new_id[:8]}，已同步配置")
+            migrated = 1
         elif migrated == 0:
             self._log(f"ℹ️ 检测到实例变化（消失 {len(gone)} 台，新增 {len(added)} 台），无匹配切换记录，跳过迁移以防错配")
+        return migrated
 
     def _bw_refresh(self) -> None:
         """低频刷新流量列（compute_bandwidth 较耗 API 调用，5 分钟一次）。"""
