@@ -663,6 +663,11 @@ async function switchStatus(request, env, user) {
     }
   }
   const anyPending = items.some((it) => it.status === "pending");
+  // 兜底收尾：即使 Cron 未触发，客户端每次轮询也顺手收尾所有超时 10 分钟的 pending 记录（含其他用户的卡住切换）。
+  // sweepPending 有「超时 10 分钟」限制 + 抢占保护，重复调用安全。
+  try {
+    await sweepPending(env);
+  } catch (_) {}
   return json({ status: anyPending ? "pending" : "done", items });
 }
 
@@ -866,6 +871,10 @@ async function adminSwitchStatus(request, env) {
     }
   }
   const anyPending = items.some((it) => it.status === "pending");
+  // 兜底收尾：服务端轮询也顺手收尾所有超时 10 分钟的 pending 记录
+  try {
+    await sweepPending(env);
+  } catch (_) {}
   return json({ status: anyPending ? "pending" : "done", items });
 }
 
@@ -1349,6 +1358,7 @@ export default {
   // Cloudflare Cron Trigger：每 10 分钟收尾卡住的切换记录（wrangler.toml triggers.crons）
   async scheduled(_event, env) {
     try {
+      console.log(`[scheduled] 触发收尾，VULTR_API_KEY=${env.VULTR_API_KEY ? "有" : "空"}`);
       await sweepPending(env);
     } catch (e) {
       console.error("scheduled sweepPending 异常:", e && e.message ? e.message : e);
