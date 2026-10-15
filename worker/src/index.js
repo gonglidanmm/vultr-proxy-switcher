@@ -603,6 +603,13 @@ async function processOneSwitch(req, env, headers, request) {
     }
   }
 
+  // 抢占（防并发重复处理）：多台客户端并发轮询 switchStatus 时，同一条记录可能被多个请求同时处理，
+  // 导致 switch_count 重复 +1。先原子地把 status 从 pending 改成 processing，只有抢到的才回写 assignment。
+  const claim = await env.DB.prepare("UPDATE switch_requests SET status = 'processing' WHERE id = ? AND status = 'pending'").bind(req.id).run();
+  if (!(claim.meta && claim.meta.changes)) {
+    return { resource_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || newIp };
+  }
+
   const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
   if (row) {
     let nodeData = {};
@@ -641,14 +648,15 @@ async function switchStatus(request, env, user) {
   // 否则客户端找不到自己那一台的 done 状态，会误判「切换失败」。所以 done 记录也要返回（带 stage=done）。
   const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const reqs = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE user_id = ? AND (status = 'pending' OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
+    "SELECT * FROM switch_requests WHERE user_id = ? AND (status IN ('pending','processing') OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
   ).bind(user.id, since).all();
   const all = reqs.results || [];
   if (all.length === 0) return json({ status: "none" });
 
   const items = [];
   for (const req of all) {
-    if (req.status === "done") {
+    // done 或 processing（已被并发请求抢占、即将完成）都按完成返回
+    if (req.status === "done" || req.status === "processing") {
       items.push({ resource_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || "" });
     } else {
       items.push(await processOneSwitch(req, env, headers, request));
@@ -794,6 +802,12 @@ async function processAdminSwitch(req, env, headers, request) {
     }
   }
 
+  // 抢占（防并发重复处理）：服务端多台并发切换时，同一条记录可能被多个请求同时处理，先原子抢占。
+  const claim = await env.DB.prepare("UPDATE switch_requests SET status = 'processing' WHERE id = ? AND status = 'pending'").bind(req.id).run();
+  if (!(claim.meta && claim.meta.changes)) {
+    return { old_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || newIp };
+  }
+
   // 回写：旧实例若已分配给某用户，更新 assignment 的 resource_id + node_data（客户端同步）
   const assign = await env.DB.prepare(
     "SELECT * FROM assignments WHERE resource_type = 'vultr' AND resource_id = ?",
@@ -838,7 +852,7 @@ async function adminSwitchStatus(request, env) {
   // 查所有 admin 进行中的切换 + 最近 10 分钟已完成的（并发切换时先完成的仍能被匹配到，避免误判失败）
   const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const reqs = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND (status = 'pending' OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
+    "SELECT * FROM switch_requests WHERE actor_type = 'admin' AND (status IN ('pending','processing') OR (status = 'done' AND created_at > ?)) ORDER BY id ASC",
   ).bind(since).all();
   const all = reqs.results || [];
   if (all.length === 0) return json({ status: "none" });
@@ -1208,7 +1222,7 @@ async function sweepPending(env) {
   const headers = apiHeaders(env, "vultr");
   const cutoff = new Date(Date.now() - 600000).toISOString();
   const rows = await env.DB.prepare(
-    "SELECT * FROM switch_requests WHERE status = 'pending' AND created_at < ? ORDER BY id ASC",
+    "SELECT * FROM switch_requests WHERE status IN ('pending','processing') AND created_at < ? ORDER BY id ASC",
   ).bind(cutoff).all();
   for (const req of rows.results) {
     try {
