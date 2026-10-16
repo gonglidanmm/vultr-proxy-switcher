@@ -364,7 +364,10 @@ async function switchResource(request, env, user) {
 
   const today = bjToday();
   let count = row.switch_count || 0;
-  const limit = row.switch_limit == null ? 5 : Number(row.switch_limit);
+  // 节点级 switch_limit 为 0/空 时沿用用户级（每台独立上限覆盖用户级；未单独设置则跟随用户级）
+  const nodeLimit = row.switch_limit == null ? 0 : Number(row.switch_limit);
+  const userLimit = user.switch_limit == null ? 0 : Number(user.switch_limit);
+  const limit = nodeLimit > 0 ? nodeLimit : (userLimit > 0 ? userLimit : 5);
   if ((row.switch_date || "") !== today) count = 0;
 
   // 到期检查：客户到期（client_expiry，可调低）与服务器到期（expiry）取更早者，到期后禁止切换
@@ -656,7 +659,7 @@ async function processOneSwitch(req, env, headers, request) {
     ).bind(req.new_id, JSON.stringify(nodeData), row.id).run();
     await env.DB.prepare(
       "UPDATE assignments SET switch_count = ?, switch_date = ? WHERE id = ?",
-    ).bind((row.switch_count || 0) + 1, bjToday(), row.id).run();
+    ).bind((row.switch_date || "") === bjToday() ? (row.switch_count || 0) + 1 : 1, bjToday(), row.id).run();
   }
 
   await env.DB.prepare("UPDATE switch_requests SET status = 'done', stage = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
