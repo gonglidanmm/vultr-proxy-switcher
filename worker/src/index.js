@@ -195,7 +195,8 @@ async function requireUser(request, env) {
     .first();
   if (!row) return null;
   if (row.status !== "active") return null;
-  if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
+  // 注：不再按用户级 expires_at 拒绝鉴权——每台服务器独立到期（node_data.client_expiry），
+  // 单台到期只禁该台切换，不应锁死整个账号登录（曾导致「1台到期→全部无法登录」）。
   // 注：switch_count/switch_date 是「每节点独立」的（assignments 表），用户级无此计数，故不在此返回
   return { id: row.id, username: row.username, switch_limit: row.switch_limit };
 }
@@ -218,9 +219,7 @@ async function handleLogin(request, env) {
   const ok = await verifyPassword(password, user.password_hash);
   if (!ok) return json({ error: "用户名或密码错误" }, 401);
   if (user.status !== "active") return json({ error: "账号已禁用" }, 403);
-  if (user.expires_at && new Date(user.expires_at) < new Date()) {
-    return json({ error: "账号已到期" }, 403);
-  }
+  // 不再按用户级 expires_at 拒绝登录——每台服务器独立到期（client_expiry），单台到期只禁该台切换。
 
   const token = newToken();
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -253,7 +252,9 @@ async function handleMeNodes(env, user) {
     delete data._creds;  // 不暴露完整凭据给客户端
     // 每个「用户↔资源」独立计数，按天重置
     let count = r.switch_count || 0;
-    const limit = r.switch_limit == null ? 5 : Number(r.switch_limit);
+    const nodeLimit = r.switch_limit == null ? 0 : Number(r.switch_limit);
+    const userLimit = user && user.switch_limit != null ? Number(user.switch_limit) : 0;
+    const limit = nodeLimit > 0 ? nodeLimit : (userLimit > 0 ? userLimit : 5);
     if ((r.switch_date || "") !== today) count = 0;
     // 流量配额：quota_gb > 0 才限流；用完标记 exhausted（客户端据此断流）
     const quota = Number(r.quota_gb) || 0;
