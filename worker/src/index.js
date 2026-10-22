@@ -713,7 +713,22 @@ async function adminSwitch(request, env) {
   if (body.creds && typeof body.creds === "object" && Object.keys(body.creds).length > 0) {
     creds = body.creds;  // 管理端传来的该服务器独立凭据
   } else {
-    try { creds = JSON.parse(env.GLOBAL_CREDS || "{}"); } catch (_) {}
+    // 优先沿用原节点的独立凭据（node_data._creds），否则 fallback GLOBAL_CREDS。
+    // 之前直接用 GLOBAL_CREDS，导致管理端切换后凭据被全局凭据覆盖、客户端认证失败（切换参数「变了」）。
+    const oldAssign = await env.DB.prepare(
+      "SELECT node_data FROM assignments WHERE resource_type = 'vultr' AND resource_id = ?",
+    ).bind(resourceId).first();
+    if (oldAssign) {
+      try {
+        const oldNd = JSON.parse(oldAssign.node_data);
+        if (oldNd._creds && typeof oldNd._creds === "object" && Object.keys(oldNd._creds).length > 0) {
+          creds = oldNd._creds;
+        }
+      } catch (_) {}
+    }
+    if (!creds || Object.keys(creds).length === 0) {
+      try { creds = JSON.parse(env.GLOBAL_CREDS || "{}"); } catch (_) {}
+    }
   }
 
   const headers = apiHeaders(env, "vultr");
