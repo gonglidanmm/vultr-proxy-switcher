@@ -3,6 +3,7 @@
 # 用法: sh install_tailscale.sh <你的AuthKey>
 # 自动检测架构 + 下载对应版本 + 安装 + 开机自启 + 登录 + 防火墙 + dropbear
 # 下载约 3 分钟（直连官方源慢，非被墙），请耐心等待
+# 注意：state 放 /etc/tailscale（持久化），防火墙用 uci zone（持久化），重启不丢
 
 AUTHKEY="$1"
 if [ -z "$AUTHKEY" ]; then
@@ -36,19 +37,19 @@ wget -q --timeout=180 --tries=3 -O /tmp/tailscale.tgz "https://pkgs.tailscale.co
 # 4. 解压安装
 cd /tmp && tar xzf tailscale.tgz
 TS_DIR=$(ls -d tailscale_*_${TS_ARCH} | head -1)
-mkdir -p /var/lib/tailscale /var/run/tailscale
+mkdir -p /etc/tailscale /var/run/tailscale
 cp "$TS_DIR/tailscale" "$TS_DIR/tailscaled" /usr/sbin/
 chmod +x /usr/sbin/tailscale /usr/sbin/tailscaled
 echo "[4/7] 已安装到 /usr/sbin/"
 
-# 5. 开机自启脚本
+# 5. 开机自启脚本（state 放 /etc/tailscale，持久化）
 cat > /etc/init.d/tailscale <<'EOF'
 #!/bin/sh /etc/rc.common
 START=90
 STOP=10
 start() {
-    mkdir -p /var/lib/tailscale /var/run/tailscale
-    /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
+    mkdir -p /var/run/tailscale
+    /usr/sbin/tailscaled --state=/etc/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
 }
 stop() {
     killall tailscaled 2>/dev/null
@@ -60,24 +61,36 @@ chmod +x /etc/init.d/tailscale
 echo "[5/7] 开机自启已配置"
 
 # 6. 启动 + 登录
-/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
+/usr/sbin/tailscaled --state=/etc/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
 sleep 3
 /usr/sbin/tailscale --socket=/var/run/tailscale/tailscaled.sock up --authkey="$AUTHKEY" --netfilter-mode=off --accept-dns=false
 sleep 3
 echo "[6/7] 已登录"
 
-# 7. 防火墙 + dropbear（关键）
+# 7. 防火墙（uci 持久化）+ dropbear（关键）
 uci set network.tailscale=interface
 uci set network.tailscale.proto='none'
 uci set network.tailscale.device='tailscale0'
 uci commit network
+
+# 建 firewall zone tailscale（持久化，重启不丢，替代会丢的临时 iptables）
+FW_TS=$(uci show firewall 2>/dev/null | grep -E "name='tailscale'" | head -1 | cut -d'.' -f2 | cut -d'=' -f1)
+[ -n "$FW_TS" ] && uci delete firewall.$FW_TS
+uci add firewall zone
+uci set firewall.@zone[-1].name='tailscale'
+uci set firewall.@zone[-1].network='tailscale'
+uci set firewall.@zone[-1].input='ACCEPT'
+uci set firewall.@zone[-1].output='ACCEPT'
+uci set firewall.@zone[-1].forward='ACCEPT'
+uci commit firewall
+/etc/init.d/firewall restart 2>/dev/null
+
 # dropbear 删 Interface 监听所有接口（千万别写 lan tailscale，会挂）
 uci delete dropbear.@dropbear[0].Interface 2>/dev/null
 uci commit dropbear
 /etc/init.d/dropbear restart 2>/dev/null
 sleep 2
-iptables -I zone_tailscale_input -i tailscale0 -j ACCEPT 2>/dev/null
-echo "[7/7] 防火墙 + dropbear 已配置"
+echo "[7/7] 防火墙（持久化）+ dropbear 已配置"
 
 echo ""
 echo "================ 完成 ================"
