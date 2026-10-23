@@ -57,6 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
+          retention-days: 7
           path: |
             client/src-tauri/target/release/bundle/dmg/*.dmg
             client/src-tauri/target/release/bundle/macos/*.app
