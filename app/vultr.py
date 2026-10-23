@@ -18,16 +18,21 @@ except Exception:
 
 BASE = "https://api.vultr.com/v2"
 
-# 东京/大阪等区域的 plan -> 名称（阶梯套餐，跟旧脚本一致）
+# 套餐 -> 显示名（价格 + 流量 + 特性，下拉框/列表统一用这个辨认）
 PLAN_NAMES = {
-    "vc2-1c-1gb": "$5 Regular (1GB)",
-    "vhp-1c-1gb-amd": "$6 High Performance AMD (2TB)",
+    "vc2-1c-1gb": "$5/月 · 1TB流量 · 常规1核1G",
+    "vhf-1c-1gb": "$6/月 · 1TB流量 · 高频3.7GHz",
+    "vhp-1c-1gb-amd": "$6/月 · 2TB流量 · AMD EPYC",
+    "vhp-1c-1gb-intel": "$6/月 · 2TB流量 · Intel高频",
+    "vc2-1c-0.5gb-v6": "$2.5/月 · 512GB流量 · IPv6-only",
 }
 
 # 套餐月价（美元/月），用于「剩余可分配天数」预算
 PLAN_MONTHLY_PRICE = {
     "vc2-1c-1gb": 5.0,
+    "vhf-1c-1gb": 6.0,
     "vhp-1c-1gb-amd": 6.0,
+    "vhp-1c-1gb-intel": 6.0,
     "vc2-1c-0.5gb-v6": 2.5,
 }
 
@@ -189,9 +194,10 @@ def build_gost_user_data(user: str, password: str, port: int, creds: dict | None
         xray_section = f"""
 # Xray (VLESS+Reality)
 if [ ! -x /usr/local/bin/xray ]; then
-  wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-  unzip -q -o /tmp/xray.zip -d /usr/local/bin/
-  chmod +x /usr/local/bin/xray
+  echo "下载 xray..."
+  wget -q --timeout=60 --tries=3 -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip || echo "xray 下载失败"
+  unzip -q -o /tmp/xray.zip -d /usr/local/bin/ 2>/dev/null || true
+  chmod +x /usr/local/bin/xray 2>/dev/null || true
 fi
 mkdir -p /usr/local/etc/xray
 echo '{cfg_b64}' | base64 -d > /usr/local/etc/xray/config.json
@@ -206,8 +212,8 @@ Restart=on-failure
 WantedBy=multi-user.target
 XEOF
 systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
+systemctl enable xray 2>/dev/null || true
+systemctl restart xray || echo "xray 启动失败"
 """
 
     hysteria_section = ""
@@ -225,8 +231,9 @@ systemctl restart xray
         hysteria_section = f"""
 # Hysteria2
 if [ ! -x /usr/local/bin/hysteria ]; then
-  wget -q -O /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
+  echo "下载 hysteria..."
+  wget -q --timeout=60 --tries=3 -O /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64 || echo "hysteria 下载失败"
+  chmod +x /usr/local/bin/hysteria 2>/dev/null || true
 fi
 mkdir -p /etc/hysteria
 openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj '/CN=hysteria' 2>/dev/null
@@ -253,13 +260,14 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 HYSEOF
 systemctl daemon-reload
-systemctl enable hysteria
-systemctl restart hysteria
+systemctl enable hysteria 2>/dev/null || true
+systemctl restart hysteria || echo "hysteria 启动失败"
 """
 
     script = f"""#!/bin/bash
-set -e
-apt-get update -y >/dev/null 2>&1 || true
+# 不用 set -e：任何一步失败都不能中断整个初始化，否则后续服务都不装、实例变"半死"
+echo "=== cloud-init start: gost+xray+hysteria ==="
+apt-get update -y >/dev/null 2>&1 || echo "apt update 失败(忽略)"
 {root_line}
 ufw allow {port}/tcp 2>/dev/null || true
 ufw allow {port}/udp 2>/dev/null || true
@@ -271,9 +279,10 @@ systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/nul
 ufw --force enable 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 if [ ! -x /usr/local/bin/gost ]; then
-  wget -q -O /usr/local/bin/gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
-  gunzip -f /usr/local/bin/gost.gz
-  chmod +x /usr/local/bin/gost
+  echo "下载 gost..."
+  wget -q --timeout=60 --tries=3 -O /usr/local/bin/gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz || echo "gost 下载失败"
+  gunzip -f /usr/local/bin/gost.gz 2>/dev/null || true
+  chmod +x /usr/local/bin/gost 2>/dev/null || true
 fi
 cat > /etc/systemd/system/gost.service <<'GEOF'
 [Unit]
@@ -288,10 +297,11 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 GEOF
 systemctl daemon-reload
-systemctl enable gost
-systemctl restart gost
+systemctl enable gost 2>/dev/null || true
+systemctl restart gost || echo "gost 启动失败"
 {xray_section}
 {hysteria_section}
+echo "=== cloud-init done ==="
 """
     return base64.b64encode(script.encode()).decode()
 
@@ -318,7 +328,7 @@ class VultrAPI:
         # 最多重试 2 次：连接池里的 keep-alive 死连接会导致假超时，重建连接池即可恢复
         for _attempt in range(3):
             try:
-                r = self._session.request(method, BASE + path, timeout=(5, 25), **kwargs)
+                r = self._session.request(method, BASE + path, timeout=(15, 60), **kwargs)
                 break
             except requests.RequestException as e:
                 last_err = e
@@ -373,6 +383,13 @@ class VultrAPI:
     def get_account_bandwidth(self) -> dict:
         """返回账户级带宽信息（免费/实例/购买的带宽配额 + 已用 + 超额）。"""
         return self._req("GET", "/account/bandwidth").get("bandwidth", {})
+
+    def halt_instance(self, iid: str) -> None:
+        self._req("POST", f"/instances/{iid}/halt")
+
+    def start_instance(self, iid: str) -> None:
+        self._req("POST", f"/instances/{iid}/start")
+
 
 
 def compute_billing(instances: list[dict], plans: list[dict], account: dict) -> dict:
@@ -481,8 +498,3 @@ def compute_account_bandwidth(account_bw: dict) -> dict:
         "overage_cost": overage_cost,
     }
 
-    def halt_instance(self, iid: str) -> None:
-        self._req("POST", f"/instances/{iid}/halt")
-
-    def start_instance(self, iid: str) -> None:
-        self._req("POST", f"/instances/{iid}/start")
