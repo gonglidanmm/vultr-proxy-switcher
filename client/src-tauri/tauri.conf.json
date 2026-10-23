@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "代理客户端",
+        "url": "https://user.yduas.cc/",
         "width": 1080,
         "height": 760,
         "minWidth": 860,
@@ -23,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://user.yduas.cc; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
+      "csp": null
     },
     "withGlobalTauri": true
   },
