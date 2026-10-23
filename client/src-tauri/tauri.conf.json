@@ -35,6 +35,10 @@
       "binaries/sing-box"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
       "nsis": {
         "installerHooks": "installer-hooks.nsh"
       }
