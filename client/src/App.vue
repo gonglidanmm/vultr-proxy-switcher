@@ -49,12 +49,14 @@ function logout() {
       <div class="sidebar-brand">代理客户端</div>
       <nav class="sidebar-nav">
         <button :class="['nav-item', { active: activeView === 'vultr' }]" @click="activeView = 'vultr'">Vultr</button>
-        <button :class="['nav-item', { active: activeView === 'account' }]" @click="activeView = 'account'">用户管理</button>
       </nav>
       <div class="sidebar-footer">
-        <div class="sidebar-user">{{ auth.user?.username || "" }}</div>
+        <button class="user-row" :class="{ active: activeView === 'account' }" @click="activeView = 'account'" title="用户管理">
+          <span class="user-avatar">{{ (auth.user?.username || "?").charAt(0).toUpperCase() }}</span>
+          <span class="user-name">{{ auth.user?.username || "" }}</span>
+        </button>
         <div v-if="version" class="sidebar-version">版本 v{{ version }}</div>
-        <button class="nav-item" @click="logout">退出登录</button>
+        <button class="logout-btn" @click="logout">退出登录</button>
       </div>
     </aside>
     <main class="app-main">
