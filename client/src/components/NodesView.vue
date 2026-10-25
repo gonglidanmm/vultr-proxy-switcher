@@ -28,6 +28,82 @@ const qr = ref(null); // { name, link }
 const switching = reactive({}); // resource_id -> { text, disabled, checking }
 let autoReSwitchCount = 0;
 
+// ===== 行拖拽排序（拖到目标行位置，调 /me/reorder 持久化）=====
+const dragRid = ref(null);
+const dragOverRid = ref(null);
+
+function onRowDragStart(n, e) {
+  dragRid.value = n.resource_id;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", n.resource_id); } catch (_) {}
+  }
+}
+function onRowDragOver(n, e) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  dragOverRid.value = n.resource_id;
+}
+function onRowDrop(targetN, e) {
+  e.preventDefault();
+  const from = dragRid.value;
+  const to = targetN.resource_id;
+  dragRid.value = null;
+  dragOverRid.value = null;
+  if (!from || from === to) return;
+  const arr = [...nodes.nodes];
+  const fromIdx = arr.findIndex((x) => x.resource_id === from);
+  const toIdx = arr.findIndex((x) => x.resource_id === to);
+  if (fromIdx < 0 || toIdx < 0) return;
+  const [moved] = arr.splice(fromIdx, 1);
+  arr.splice(toIdx, 0, moved);
+  nodes.nodes.splice(0, nodes.nodes.length, ...arr);
+  saveOrder(arr);
+}
+function onRowDragEnd() {
+  dragRid.value = null;
+  dragOverRid.value = null;
+}
+async function saveOrder(arr) {
+  try {
+    await api("/me/reorder", "POST", { ordered_ids: arr.map((x) => x.resource_id) });
+    proxy.log("已保存排序", "ok");
+  } catch (e) {
+    proxy.log("保存排序失败：" + (e.message || e), "err");
+  }
+}
+
+// ===== 列宽拖拽 + localStorage 持久化（跨账号共享，Mac/Windows 通用）=====
+const COL_WIDTH_KEY = "proxy_col_widths";
+let colWidths = reactive({});
+try { Object.assign(colWidths, JSON.parse(localStorage.getItem(COL_WIDTH_KEY) || "{}")); } catch (_) {}
+const resizingCol = ref(null); // { key, startX, startWidth }
+
+function startColResize(key, e) {
+  const th = e.target.closest("th");
+  const curWidth = colWidths[key] || (th ? th.offsetWidth : 100);
+  resizingCol.value = { key, startX: e.clientX, startWidth: curWidth };
+  document.addEventListener("mousemove", onColResizeMove);
+  document.addEventListener("mouseup", onColResizeUp);
+  e.preventDefault();
+}
+function onColResizeMove(e) {
+  const r = resizingCol.value;
+  if (!r) return;
+  const delta = e.clientX - r.startX;
+  colWidths[r.key] = Math.max(56, r.startWidth + delta);
+}
+function onColResizeUp() {
+  resizingCol.value = null;
+  document.removeEventListener("mousemove", onColResizeMove);
+  document.removeEventListener("mouseup", onColResizeUp);
+  try { localStorage.setItem(COL_WIDTH_KEY, JSON.stringify(colWidths)); } catch (_) {}
+}
+function colStyle(key) {
+  const w = colWidths[key];
+  return w ? { width: w + "px", minWidth: w + "px" } : {};
+}
+
 // ===== WebSocket 实时推送 =====
 const switchWaiters = {}; // resource_id -> resolve 函数（等待 WS 推送 done/failed）
 
@@ -416,19 +492,19 @@ onMounted(() => {
         <thead>
           <tr>
             <th class="col-sel"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" title="全选" /></th>
-            <th class="col-idx">#</th>
-            <th>类型</th>
-            <th>名称</th>
-            <th>位置</th>
-            <th>IP</th>
-            <th>域名</th>
-            <th>状态</th>
-            <th>分配时间</th>
-            <th>到期时间</th>
-            <th>切换次数</th>
-            <th>流量</th>
-            <th>备注</th>
-            <th class="col-ops">操作</th>
+            <th class="col-idx" :style="colStyle('idx')">#<span class="col-resizer" @mousedown="startColResize('idx', $event)"></span></th>
+            <th :style="colStyle('type')">类型<span class="col-resizer" @mousedown="startColResize('type', $event)"></span></th>
+            <th :style="colStyle('name')">名称<span class="col-resizer" @mousedown="startColResize('name', $event)"></span></th>
+            <th :style="colStyle('location')">位置<span class="col-resizer" @mousedown="startColResize('location', $event)"></span></th>
+            <th :style="colStyle('ip')">IP<span class="col-resizer" @mousedown="startColResize('ip', $event)"></span></th>
+            <th :style="colStyle('domain')">域名<span class="col-resizer" @mousedown="startColResize('domain', $event)"></span></th>
+            <th :style="colStyle('status')">状态<span class="col-resizer" @mousedown="startColResize('status', $event)"></span></th>
+            <th :style="colStyle('created')">分配时间<span class="col-resizer" @mousedown="startColResize('created', $event)"></span></th>
+            <th :style="colStyle('expiry')">到期时间<span class="col-resizer" @mousedown="startColResize('expiry', $event)"></span></th>
+            <th :style="colStyle('switch')">切换次数<span class="col-resizer" @mousedown="startColResize('switch', $event)"></span></th>
+            <th :style="colStyle('flow')">流量<span class="col-resizer" @mousedown="startColResize('flow', $event)"></span></th>
+            <th :style="colStyle('note')">备注<span class="col-resizer" @mousedown="startColResize('note', $event)"></span></th>
+            <th class="col-ops" :style="colStyle('ops')">操作<span class="col-resizer" @mousedown="startColResize('ops', $event)"></span></th>
           </tr>
         </thead>
         <tbody>
@@ -438,7 +514,13 @@ onMounted(() => {
           <tr v-else-if="!nodes.nodes.length">
             <td colspan="14" class="empty">暂无分配的节点，请联系管理员。</td>
           </tr>
-          <tr v-for="(n, i) in nodes.nodes" :key="n.resource_id" :data-rid="n.resource_id">
+          <tr v-for="(n, i) in nodes.nodes" :key="n.resource_id" :data-rid="n.resource_id"
+              draggable="true"
+              :class="{ 'drag-over': dragOverRid === n.resource_id }"
+              @dragstart="onRowDragStart(n, $event)"
+              @dragover="onRowDragOver(n, $event)"
+              @drop="onRowDrop(n, $event)"
+              @dragend="onRowDragEnd">
             <td class="col-sel"><input type="checkbox" class="row-sel" :checked="selectedIds.has(n.resource_id)" @change="toggleSelect(n.resource_id)" /></td>
             <td class="col-idx">{{ i + 1 }}</td>
             <td><span class="type-badge type-vultr">Vultr</span></td>

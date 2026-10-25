@@ -94,6 +94,21 @@ body {
 .col-idx { width: 40px; color: var(--muted); }
 .col-ops { min-width: 300px; }
 
+/* 列宽拖拽手柄（th 是 sticky 定位上下文，resizer 绝对定位在右边缘）*/
+.col-resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 2;
+}
+.col-resizer:hover { background: var(--accent); }
+/* 行拖拽视觉反馈 */
+.nodes-table tr.drag-over td { border-top: 2px solid var(--accent); }
+.nodes-table tr[draggable="true"] { cursor: grab; }
+
 /* ===== 单元格状态 ===== */
 .cell-danger { color: var(--danger); }
 .cell-warn { color: var(--warn); }
