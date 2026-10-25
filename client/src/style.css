@@ -139,3 +139,161 @@ body {
   font-size: 13px;
   width: 100px;
 }
+
+/* ===== 代理控制卡 ===== */
+.proxy-card {
+  margin: 12px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+}
+.proxy-row { display: flex; align-items: center; gap: 8px; }
+.proxy-label { color: var(--muted); font-size: 13px; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.seg-btn.active { background: var(--accent); color: #fff; }
+.proxy-status { color: var(--muted); font-size: 13px; }
+.proxy-status.connected { color: #6bdb8a; }
+.upstream-btn.active-upstream { border-color: var(--accent); color: var(--accent); }
+
+/* ===== 状态列 ===== */
+.status.ok { background: #1e3a2a; color: #6bdb8a; }
+.status.bad { background: #3a1e1e; color: var(--danger); }
+
+/* ===== 弹窗通用 ===== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 90%;
+  max-width: 560px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: 15px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+.modal-body { padding: 16px; overflow-y: auto; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ===== 复制节点弹窗 ===== */
+.share-group { margin-bottom: 16px; }
+.share-group-head { margin-bottom: 8px; }
+.share-group-title { font-weight: 600; }
+.share-group-desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.share-link-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg);
+  border-radius: 6px;
+  margin-bottom: 6px;
+}
+.share-link-val {
+  flex: 1;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--fg);
+}
+.share-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.share-label-wrap { flex: 0 0 90px; }
+.share-label { color: var(--muted); font-size: 12px; }
+.share-val {
+  flex: 1;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--fg);
+}
+
+/* ===== 二维码弹窗 ===== */
+.qr-body { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.qr-body canvas { border-radius: 8px; }
+.qr-tip { color: var(--muted); font-size: 12px; }
+.qr-error { color: var(--danger); font-size: 13px; }
+
+/* ===== 地区选择 ===== */
+.region-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+.region-option {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+}
+.region-option:hover { border-color: var(--accent); }
+
+/* ===== 日志面板 ===== */
+.log-panel {
+  margin: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+.log-title { font-size: 13px; font-weight: 600; }
+.link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; }
+.log-body {
+  padding: 8px 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg);
+}
+.log-line { padding: 2px 0; color: var(--fg); }
+.log-line.log-ok { color: #6bdb8a; }
+.log-line.log-err { color: var(--danger); }
+.log-line.log-warn { color: var(--warn); }
+.log-line.log-info { color: var(--muted); }
+.log-ts { color: var(--muted); }
+.log-mark { font-weight: 600; }
+.log-empty { color: var(--muted); padding: 8px 0; }
+
