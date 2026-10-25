@@ -10,6 +10,7 @@ import NodesView from "./components/NodesView.vue";
 import UserView from "./components/UserView.vue";
 
 const auth = useAuthStore();
+const proxy = useProxyStore();
 const isLoggedIn = computed(() => auth.isLoggedIn);
 const activeView = ref("vultr"); // 默认选中 Vultr
 const version = ref(""); // 客户端版本号（侧边栏底部显示）
@@ -18,13 +19,17 @@ onMounted(async () => {
   // 优先本地版本；旧客户端没有 get_version 命令则回退到服务器最新版本
   try {
     version.value = await invokeRust("get_version");
-  } catch (_) {
+    proxy.log(`侧边栏版本：get_version 返回 "${version.value}"`, "info");
+  } catch (e) {
+    proxy.log(`侧边栏版本：get_version 失败（${e && e.message ? e.message : e}），回退服务器`, "warn");
     try {
       const resp = await fetch(API + "/version");
       const data = await resp.json().catch(() => ({}));
       version.value = data.version || "";
-    } catch (_) {
+      proxy.log(`侧边栏版本：服务器返回 "${version.value}"`, "info");
+    } catch (e2) {
       version.value = "";
+      proxy.log(`侧边栏版本：服务器也失败（${e2 && e2.message ? e2.message : e2}）`, "err");
     }
   }
 });
