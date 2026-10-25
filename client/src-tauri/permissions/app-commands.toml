@@ -1,0 +1,15 @@
+# 应用自有命令权限：允许远程前端（user.yduas.cc / localhost dev）调用本地代理、测速、系统代理等命令
+[[permission]]
+identifier = "allow-app-commands"
+description = "允许客户端调用本地代理/测速/系统代理/域名解析等 Rust 命令"
+commands.allow = [
+  "check_connectivity",
+  "check_udp",
+  "resolve_domain",
+  "set_system_proxy",
+  "start_proxy",
+  "stop_proxy",
+  "test_proxy",
+  "get_version",
+  "open_url",
+]

@@ -11,5 +11,5 @@
       "http://127.0.0.1:1424"
     ]
   },
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "allow-app-commands"]
 }
