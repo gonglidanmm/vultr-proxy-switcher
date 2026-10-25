@@ -4,7 +4,7 @@ import { useAuthStore } from "./stores/auth.js";
 import { useProxyStore } from "./stores/proxy.js";
 import { useNodesStore } from "./stores/nodes.js";
 import { closeWs } from "./api/ws.js";
-import { invokeRust } from "./api/index.js";
+import { invokeRust, API } from "./api/index.js";
 import LoginView from "./components/LoginView.vue";
 import NodesView from "./components/NodesView.vue";
 import UserView from "./components/UserView.vue";
@@ -15,10 +15,17 @@ const activeView = ref("vultr"); // 默认选中 Vultr
 const version = ref(""); // 客户端版本号（侧边栏底部显示）
 
 onMounted(async () => {
+  // 优先本地版本；旧客户端没有 get_version 命令则回退到服务器最新版本
   try {
     version.value = await invokeRust("get_version");
   } catch (_) {
-    version.value = ""; // 非桌面环境或旧客户端无此命令
+    try {
+      const resp = await fetch(API + "/version");
+      const data = await resp.json().catch(() => ({}));
+      version.value = data.version || "";
+    } catch (_) {
+      version.value = "";
+    }
   }
 });
 
