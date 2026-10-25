@@ -302,19 +302,23 @@ async function switchIp(n, opts = {}) {
   }
 }
 
+let regionResolve = null; // 当前等待地区选择的 resolve（独立变量，不挂载到节点对象）
+
 function pickRegion(n) {
   return new Promise((resolve) => {
+    regionResolve = resolve;
     regionNode.value = n;
-    regionNode.value._resolve = resolve;
   });
 }
 function onRegionPick(r) {
-  const resolve = regionNode.value?._resolve;
+  const resolve = regionResolve;
+  regionResolve = null;
   regionNode.value = null;
   if (resolve) resolve(r);
 }
 function onRegionClose() {
-  const resolve = regionNode.value?._resolve;
+  const resolve = regionResolve;
+  regionResolve = null;
   regionNode.value = null;
   if (resolve) resolve(null);
 }

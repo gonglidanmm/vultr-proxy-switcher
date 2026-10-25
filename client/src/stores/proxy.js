@@ -72,16 +72,22 @@ export const useProxyStore = defineStore("proxy", {
     async testNodeProtocols(n, showDiagnostics = false, onProgress = null) {
       const protos = ["socks5", "ss", "reality", "hysteria2"];
       const results = {};
+      // 动态端口基准：避免多节点并发测试时端口冲突（每台各用一段随机端口）
+      const basePort = 20000 + Math.floor(Math.random() * 2000); // 20000~22000
       await Promise.all(protos.map(async (p, idx) => {
         const cfg = n[p];
         if (!cfg || !cfg.port) { results[p] = null; return; }
-        const port = TEST_PROXY_PORT + idx; // 7891~7894 各协议独立端口
+        const port = basePort + idx; // 每节点独立端口段，并发不冲突
         let ms = -1;
-        // 轻微错峰启动：保留并发，但避免同时拉起多个 sing-box/curl 造成瞬时卡顿；结果更自然地逐项出现
+        // 轻微错峰启动：保留并发，但避免同时拉起多个 sing-box/curl 造成瞬时卡顿
         if (idx) await new Promise((resolve) => setTimeout(resolve, idx * 180));
         try {
           const configJson = this.buildSingBoxConfig(n, p, port);
-          ms = Math.round(await invokeRust("test_proxy", { configJson, testPort: port }));
+          // 加超时保护：test_proxy 最坏 ~30 秒，35 秒兜底，避免 Rust 侧卡死导致按钮永久锁死
+          ms = Math.round(await Promise.race([
+            invokeRust("test_proxy", { configJson, testPort: port }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("检测超时")), 35000)),
+          ]));
           results[p] = ms;
         } catch (e) {
           if (showDiagnostics) this.log(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
