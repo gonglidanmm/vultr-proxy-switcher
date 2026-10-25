@@ -73,7 +73,7 @@ body {
 .nodes-table th,
 .nodes-table td {
   padding: 8px 10px;
-  text-align: left;
+  text-align: center;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -156,7 +156,7 @@ body {
 }
 .btn:hover { background: #33334a; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.row-ops { display: flex; gap: 6px; }
+.row-ops { display: flex; gap: 6px; justify-content: center; }
 
 /* ===== 备注输入 ===== */
 .note-input {
@@ -201,7 +201,7 @@ body {
 /* ===== 状态列 ===== */
 .status.ok { background: #1e3a2a; color: #6bdb8a; }
 .status.bad { background: #3a1e1e; color: var(--danger); }
-.node-check-status { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 130px; }
+.node-check-status { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 130px; }
 .check-protocols { display: flex; flex-direction: column; gap: 3px; white-space: normal; }
 .check-chip { font-size: 11px; line-height: 1.35; color: var(--muted); }
 .check-chip.checking { color: var(--accent); }
