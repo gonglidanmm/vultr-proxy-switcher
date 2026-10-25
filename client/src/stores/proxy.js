@@ -67,34 +67,82 @@ export const useProxyStore = defineStore("proxy", {
       config.route = { final: "upstream" };
       return JSON.stringify(config);
     },
+    // 构建单进程多协议 sing-box 配置：4 协议入站共享一个进程，一次起一个进程测全部
+    buildMultiConfig(n, activeProtos, ports) {
+      const host = (n.domain && String(n.domain).includes(".")) ? n.domain : (n.host || n.ip || "");
+      const config = {
+        log: { level: "error", timestamp: false },
+        inbounds: [],
+        outbounds: [{ type: "direct", tag: "direct" }],
+        dns: { servers: [{ type: "udp", tag: "dns-cn", server: "119.29.29.29" }] },
+        route: { rules: [], final: "direct" },
+      };
+      activeProtos.forEach((p, idx) => {
+        const cfg = n[p];
+        if (!cfg || !cfg.port) return;
+        const tag = `in-${p}`;
+        config.inbounds.push({ type: "mixed", tag, listen: "127.0.0.1", listen_port: ports[idx] });
+        let upstream = null;
+        if (p === "socks5") {
+          upstream = { type: "socks", tag: `up-${p}`, server: host, server_port: cfg.port, username: cfg.username || "", password: cfg.password || "" };
+        } else if (p === "ss") {
+          upstream = { type: "shadowsocks", tag: `up-${p}`, server: host, server_port: cfg.port, method: cfg.method || "aes-256-gcm", password: cfg.password || "" };
+        } else if (p === "reality") {
+          upstream = {
+            type: "vless", tag: `up-${p}`, server: host, server_port: cfg.port,
+            uuid: cfg.uuid || "", flow: cfg.flow || "xtls-rprx-vision",
+            tls: {
+              enabled: true,
+              server_name: cfg.sni || "www.cloudflare.com",
+              utls: { enabled: true, fingerprint: cfg.fp || "chrome" },
+              reality: { enabled: true, public_key: cfg.public_key || "", short_id: cfg.short_id || "" },
+            },
+          };
+        } else if (p === "hysteria2") {
+          upstream = {
+            type: "hysteria2", tag: `up-${p}`, server: host, server_port: cfg.port,
+            password: cfg.password || "",
+            tls: { enabled: true, insecure: true },
+          };
+        }
+        if (!upstream) return;
+        upstream.domain_resolver = "dns-cn";
+        config.outbounds.push(upstream);
+        config.route.rules.push({ inbound: [tag], outbound: `up-${p}` });
+      });
+      return JSON.stringify(config);
+    },
     // 测试节点各协议「真实转发」（不是只测端口通）——并发测，各协议用独立端口避免冲突
-    // onProgress(p, ms)：每测完一个协议立即回调（用于逐协议实时回显）
+    // onProgress(p, ms)：测完回调（用于状态回显）
     async testNodeProtocols(n, showDiagnostics = false, onProgress = null) {
       const protos = ["socks5", "ss", "reality", "hysteria2"];
       const results = {};
+      protos.forEach((p) => { results[p] = null; });
+      const activeProtos = protos.filter((p) => n[p] && n[p].port);
+      if (!activeProtos.length) return results;
       // 动态端口基准：避免多节点并发测试时端口冲突（每台各用一段随机端口）
       const basePort = 20000 + Math.floor(Math.random() * 2000); // 20000~22000
-      await Promise.all(protos.map(async (p, idx) => {
-        const cfg = n[p];
-        if (!cfg || !cfg.port) { results[p] = null; return; }
-        const port = basePort + idx; // 每节点独立端口段，并发不冲突
-        let ms = -1;
-        // 轻微错峰启动：保留并发，但避免同时拉起多个 sing-box/curl 造成瞬时卡顿
-        if (idx) await new Promise((resolve) => setTimeout(resolve, idx * 180));
-        try {
-          const configJson = this.buildSingBoxConfig(n, p, port);
-          // 加超时保护：test_proxy 最坏 ~30 秒，35 秒兜底，避免 Rust 侧卡死导致按钮永久锁死
-          ms = Math.round(await Promise.race([
-            invokeRust("test_proxy", { configJson, testPort: port }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("检测超时")), 35000)),
-          ]));
-          results[p] = ms;
-        } catch (e) {
-          if (showDiagnostics) this.log(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
+      const ports = activeProtos.map((_, i) => basePort + i);
+      try {
+        const configJson = this.buildMultiConfig(n, activeProtos, ports);
+        // 单进程多协议：一次起一个 sing-box（共享进程），并发 curl 各协议，
+        // 避免每协议各起一个进程导致 8~19 秒（Windows 进程启动慢）
+        const msList = await Promise.race([
+          invokeRust("test_proxy_multi", { configJson, ports }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("检测超时")), 35000)),
+        ]);
+        activeProtos.forEach((p, i) => {
+          const ms = msList[i];
+          results[p] = ms == null ? -1 : Math.round(ms);
+          if (onProgress) onProgress(p, results[p]);
+        });
+      } catch (e) {
+        if (showDiagnostics) this.log(`   [诊断] 真实转发测试失败: ${e}`, "warn");
+        activeProtos.forEach((p) => {
           results[p] = -1;
-        }
-        if (onProgress) onProgress(p, results[p]);
-      }));
+          if (onProgress) onProgress(p, -1);
+        });
+      }
       return results;
     },
     // 启动/停止本地代理

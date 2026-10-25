@@ -334,8 +334,9 @@ fn stop_proxy(state: State<ProxyState>) -> Result<(), String> {
 /// 通过它的临时端口 curl 请求 gstatic 204。真正收到 204 才算「能代理」，返回真实延迟毫秒数。
 /// 这是「以客户本机为标准」的完整链路测试：域名 → sing-box 解析 → 协议握手 → 转发到海外网站。
 #[tauri::command]
-fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
-    let cfg = config_dir().join("config-test.json");
+async fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+    let cfg = config_dir().join(format!("config-test-{}.json", test_port));
     std::fs::write(&cfg, &config_json).map_err(|e| format!("写测试配置失败: {e}"))?;
 
     let mut cmd = Command::new(sing_box_path());
@@ -409,6 +410,93 @@ fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
     } else {
         Err("转发测试失败（HTTP 非 204）".to_string())
     }
+    })
+    .await
+    .map_err(|e| format!("测试任务失败: {e}"))?
+}
+
+/// 测单个端口：curl 通过它请求 gstatic 204，返回延迟毫秒（None = 失败/不可达）
+fn test_one_port(test_port: u16, null_dev: &str) -> Option<f64> {
+    let proxy = format!("http://127.0.0.1:{}", test_port);
+    let mut curl_cmd = Command::new("curl");
+    curl_cmd.args([
+        "-s", "-x", &proxy,
+        "--connect-timeout", "4",
+        "--max-time", "8",
+        "-o", null_dev,
+        "-w", "%{http_code} %{time_total}",
+        "https://www.gstatic.com/generate_204",
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        curl_cmd.creation_flags(0x08000000);
+    }
+    for attempt in 0..2 {
+        if let Ok(out) = curl_cmd.output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let parts: Vec<&str> = s.split_whitespace().collect();
+            if parts.first() == Some(&"204") {
+                let secs = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0.0);
+                return Some(secs * 1000.0);
+            }
+        }
+        if attempt == 0 {
+            std::thread::sleep(Duration::from_millis(800));
+        }
+    }
+    None
+}
+
+/// 单进程多协议真实转发测试：一次起一个 sing-box（含多入站），并发 curl 测各端口。
+/// 避免每个协议单独起 sing-box 进程（Windows 进程启动慢，4 协议 = 4 进程导致 8~19 秒）。
+/// 返回与 ports 同序的延迟数组，None 表示该协议不可达。
+#[tauri::command]
+async fn test_proxy_multi(config_json: String, ports: Vec<u16>) -> Result<Vec<Option<f64>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = config_dir().join(format!("config-test-multi-{}.json", ports.first().unwrap_or(&0)));
+        std::fs::write(&cfg, &config_json).map_err(|e| format!("写测试配置失败: {e}"))?;
+
+        let mut cmd = Command::new(sing_box_path());
+        cmd.args(["-c", cfg.to_str().unwrap_or_default(), "run"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("启动 sing-box 失败: {e}"))?;
+
+        // 等所有端口就绪（sing-box 启动约 1-2 秒）
+        let mut ready = false;
+        for _ in 0..30 {
+            if ports.iter().all(|p| TcpStream::connect(("127.0.0.1", *p)).is_ok()) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if !ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("sing-box 启动超时（端口未就绪）".to_string());
+        }
+
+        // 并发 curl 各端口（共享一个 sing-box 进程，避免串行等待）
+        let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let results: Vec<Option<f64>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = ports
+                .iter()
+                .map(|port| scope.spawn(move || test_one_port(*port, null_dev)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+        });
+
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("测试任务失败: {e}"))?
 }
 
 #[tauri::command]
@@ -455,6 +543,7 @@ fn main() {
             start_proxy,
             stop_proxy,
             test_proxy,
+            test_proxy_multi,
             get_version,
             open_url
         ])
