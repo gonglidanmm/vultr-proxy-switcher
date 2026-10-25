@@ -54,6 +54,8 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.sel-count { color: var(--accent); font-size: 13px; }
 .user-name { font-weight: 600; }
 .user-expiry { color: var(--muted); font-size: 13px; }
 
@@ -211,6 +213,8 @@ body {
   border-top: 1px solid var(--border);
 }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.batch-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.update-note { color: var(--muted); margin-top: 6px; }
 
 /* ===== 复制节点弹窗 ===== */
 .share-group { margin-bottom: 16px; }

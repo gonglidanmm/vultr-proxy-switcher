@@ -1,14 +1,16 @@
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useNodesStore } from "../stores/nodes.js";
 import { useAuthStore } from "../stores/auth.js";
 import { useProxyStore } from "../stores/proxy.js";
-import { api } from "../api/index.js";
-import { protoName, sleep, STAGE_TEXT } from "../utils/index.js";
+import { api, invokeRust, API } from "../api/index.js";
+import { protoName, sleep, STAGE_TEXT, compareVersion } from "../utils/index.js";
 import RegionModal from "./RegionModal.vue";
 import ShareDialog from "./ShareDialog.vue";
 import QrDialog from "./QrDialog.vue";
 import LogPanel from "./LogPanel.vue";
+import BatchDialog from "./BatchDialog.vue";
+import UpdateDialog from "./UpdateDialog.vue";
 
 const nodes = useNodesStore();
 const auth = useAuthStore();
@@ -22,6 +24,69 @@ const qr = ref(null); // { name, link }
 
 const switching = reactive({}); // resource_id -> { text, disabled, checking }
 let autoReSwitchCount = 0;
+
+// ===== 批量切换 =====
+const selectedIds = ref(new Set());
+const batchModal = ref(false);
+const batchPending = ref([]);
+const selCount = computed(() => selectedIds.value.size);
+const allSelected = computed(() => nodes.nodes.length > 0 && selCount.value === nodes.nodes.length);
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    selectedIds.value = new Set();
+  } else {
+    selectedIds.value = new Set(nodes.nodes.map((n) => n.resource_id));
+  }
+}
+function toggleSelect(id) {
+  const s = new Set(selectedIds.value);
+  if (s.has(id)) s.delete(id);
+  else s.add(id);
+  selectedIds.value = s;
+}
+
+function openBatchModal() {
+  const swappable = nodes.nodes.filter((n) => {
+    if (!selectedIds.value.has(n.resource_id)) return false;
+    return !isSwitchDisabled(n);
+  });
+  if (!swappable.length) {
+    proxy.log("选中的节点都不可切换（已到期/流量用尽/次数用完）", "warn");
+    return;
+  }
+  batchPending.value = swappable;
+  batchModal.value = true;
+}
+
+function doBatchSwitch() {
+  const list = batchPending.value;
+  batchPending.value = [];
+  batchModal.value = false;
+  proxy.log(`开始批量切换 ${list.length} 台节点…`, "info");
+  list.forEach((n) => switchIp(n, true)); // auto=true 跳过地区弹窗
+  selectedIds.value = new Set();
+}
+
+// ===== 版本检查 =====
+const updateDialog = ref(null); // UpdateDialog 组件实例
+
+async function checkVersion() {
+  try {
+    let localVer = "";
+    try {
+      localVer = await invokeRust("get_version");
+    } catch (_) {
+      return; // 非桌面环境跳过
+    }
+    const resp = await fetch(API + "/version");
+    const data = await resp.json().catch(() => ({}));
+    if (!data.version) return;
+    if (compareVersion(data.version, localVer) > 0) {
+      updateDialog.value?.show(data.version, localVer, data.note || "", data.download_url || "");
+    }
+  } catch (_) { /* 忽略 */ }
+}
 
 function formatExpiry(n) {
   const expiry = String(n.client_expiry || n.expiry || "");
@@ -211,6 +276,7 @@ function logout() {
 
 onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
+  checkVersion();
 });
 </script>
 
@@ -221,7 +287,12 @@ onMounted(() => {
         <span class="user-name">{{ auth.user?.username || "" }}</span>
         <span v-if="nodes.expiry" class="user-expiry">到期：{{ nodes.expiry }}</span>
       </div>
-      <button class="btn" @click="logout">退出登录</button>
+      <div class="topbar-right">
+        <span v-if="selCount" class="sel-count">已选 {{ selCount }} 台</span>
+        <button class="btn" :disabled="selCount === 0" @click="openBatchModal">批量切换IP</button>
+        <button class="btn" @click="nodes.load().catch(() => {})">刷新</button>
+        <button class="btn" @click="logout">退出登录</button>
+      </div>
     </header>
 
     <div class="proxy-card">
@@ -250,7 +321,7 @@ onMounted(() => {
       <table class="nodes-table">
         <thead>
           <tr>
-            <th class="col-sel"></th>
+            <th class="col-sel"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" title="全选" /></th>
             <th class="col-idx">#</th>
             <th>类型</th>
             <th>名称</th>
@@ -274,7 +345,7 @@ onMounted(() => {
             <td colspan="14" class="empty">暂无分配的节点，请联系管理员。</td>
           </tr>
           <tr v-for="(n, i) in nodes.nodes" :key="n.resource_id" :data-rid="n.resource_id">
-            <td class="col-sel"><input type="checkbox" class="row-sel" :data-rid="n.resource_id" /></td>
+            <td class="col-sel"><input type="checkbox" class="row-sel" :checked="selectedIds.has(n.resource_id)" @change="toggleSelect(n.resource_id)" /></td>
             <td class="col-idx">{{ i + 1 }}</td>
             <td><span class="type-badge type-vultr">Vultr</span></td>
             <td>{{ n.name || "Vultr 线路" }}</td>
@@ -315,5 +386,7 @@ onMounted(() => {
     <ShareDialog v-if="shareNode" :node="shareNode" @close="shareNode = null" @show-qr="qr = $event" />
     <QrDialog v-if="qr" :name="qr.name" :link="qr.link" @close="qr = null" />
     <RegionModal v-if="regionNode" :node="regionNode" @pick="onRegionPick" @close="onRegionClose" />
+    <BatchDialog v-if="batchModal" :count="batchPending.length" @close="batchModal = false" @confirm="doBatchSwitch" />
+    <UpdateDialog ref="updateDialog" />
   </div>
 </template>
