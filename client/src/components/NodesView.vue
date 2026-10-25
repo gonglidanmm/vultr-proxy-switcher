@@ -169,16 +169,21 @@ async function checkVersion() {
     let localVer = "";
     try {
       localVer = await invokeRust("get_version");
-    } catch (_) {
-      return; // 非桌面环境跳过
+    } catch (e) {
+      proxy.log("版本检查：无法获取本地版本（" + (e && e.message ? e.message : e) + "）", "warn");
+      return;
     }
     const resp = await fetch(API + "/version");
     const data = await resp.json().catch(() => ({}));
     if (!data.version) return;
-    if (compareVersion(data.version, localVer) > 0) {
+    const cmp = compareVersion(data.version, localVer);
+    proxy.log(`版本检查：本地 ${localVer}，服务器 ${data.version}，比较结果=${cmp}`, "info");
+    if (cmp > 0) {
       updateDialog.value?.show(data.version, localVer, data.note || "", data.download_url || "");
     }
-  } catch (_) { /* 忽略 */ }
+  } catch (e) {
+    proxy.log("版本检查异常：" + (e && e.message ? e.message : e), "warn");
+  }
 }
 
 // ===== 全部测速 =====

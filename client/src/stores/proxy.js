@@ -144,7 +144,9 @@ export const useProxyStore = defineStore("proxy", {
       } catch (e) {
         const emsg = String(e && e.message ? e.message : e);
         // 旧客户端二进制没有 test_proxy_multi 命令 → 回退到逐协议 test_proxy
-        if (emsg.includes("Command not found") || emsg.includes("not allowed")) {
+        // Tauri v1: "test_proxy_multi not allowed. Command not found"
+        // Tauri v2: "Command test_proxy_multi not found"
+        if (emsg.includes("test_proxy_multi") && (emsg.includes("not found") || emsg.includes("not allowed"))) {
           if (showDiagnostics) this.log("   客户端版本较旧，回退到逐协议检测…", "info");
           await this._testNodeProtocolsLegacy(n, activeProtos, basePort, showDiagnostics, onProgress, results);
         } else {
