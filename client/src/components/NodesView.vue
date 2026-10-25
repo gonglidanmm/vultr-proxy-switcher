@@ -4,6 +4,7 @@ import { useNodesStore } from "../stores/nodes.js";
 import { useAuthStore } from "../stores/auth.js";
 import { useProxyStore } from "../stores/proxy.js";
 import { api, invokeRust, API } from "../api/index.js";
+import { connectWs, onSwitchMessage, closeWs } from "../api/ws.js";
 import { protoName, sleep, STAGE_TEXT, compareVersion } from "../utils/index.js";
 import RegionModal from "./RegionModal.vue";
 import ShareDialog from "./ShareDialog.vue";
@@ -24,6 +25,19 @@ const qr = ref(null); // { name, link }
 
 const switching = reactive({}); // resource_id -> { text, disabled, checking }
 let autoReSwitchCount = 0;
+
+// ===== WebSocket 实时推送 =====
+const switchWaiters = {}; // resource_id -> resolve 函数（等待 WS 推送 done/failed）
+
+function handleWsMessage(data) {
+  if (!data || !data.resource_id) return;
+  const w = switchWaiters[data.resource_id];
+  if (!w) return;
+  if (data.status === "done" || data.status === "failed") {
+    delete switchWaiters[data.resource_id];
+    w(data);
+  }
+}
 
 // ===== 批量切换 =====
 const selectedIds = ref(new Set());
@@ -185,7 +199,7 @@ async function afterSwitch(newIp) {
     if (autoReSwitchCount < 2) {
       autoReSwitchCount++;
       proxy.log(`新机服务启动超时，自动重切第 ${autoReSwitchCount} 次…`, "warn");
-      await switchIp(newNode, true);
+      await switchIp(newNode, { auto: true });
     } else {
       proxy.log(`已自动重切 2 次仍不通，请稍后手动重试或联系管理员`, "err");
       autoReSwitchCount = 0;
@@ -227,26 +241,50 @@ async function switchIp(n, opts = {}) {
       await afterSwitch(first.new_ip || "");
       return;
     }
-    for (let i = 0; i < 72; i++) {
-      await sleep(5000);
-      const st = await api("/me/switch/status");
-      const items = st.items || [];
-      const mine = items.find((it) => it.resource_id === n.resource_id);
-      if (mine && mine.status === "done") {
-        switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
-        await afterSwitch(mine.new_ip || "");
-        return;
-      }
-      if (st.status === "none" && items.length === 0) {
-        switching[n.resource_id] = { text: "切换失败", disabled: false };
-        proxy.log("❌ 切换失败，请重试", "err");
-        return;
-      }
-      const stageText = mine ? (STAGE_TEXT[mine.stage] || mine.stage || "处理中") : "排队中";
-      const noteText = mine && mine.note ? mine.note : "";
-      const label = noteText || stageText;
-      switching[n.resource_id] = { text: `${stageText} ${(i + 1) * 5}s`, disabled: true };
-      if (i % 3 === 0) proxy.log(`${label}（已等待 ${(i + 1) * 5}s）`, "info");
+    // 等待 done：WS 实时推送优先，轮询兜底（15 秒一次，共 6 分钟）
+    const result = await new Promise((resolve) => {
+      switchWaiters[n.resource_id] = resolve; // WS 推送 done/failed 时立即 resolve
+      (async () => {
+        for (let i = 0; i < 24; i++) {
+          await sleep(15000);
+          if (!switchWaiters[n.resource_id]) return; // 已被 WS resolve，退出兜底轮询
+          try {
+            const st = await api("/me/switch/status");
+            const items = st.items || [];
+            const mine = items.find((it) => it.resource_id === n.resource_id);
+            if (mine && mine.status === "done") {
+              delete switchWaiters[n.resource_id];
+              resolve(mine);
+              return;
+            }
+            if (st.status === "none" && items.length === 0) {
+              delete switchWaiters[n.resource_id];
+              resolve({ status: "failed", note: "切换失败，请重试" });
+              return;
+            }
+            const stageText = mine ? (STAGE_TEXT[mine.stage] || mine.stage || "处理中") : "排队中";
+            const noteText = mine && mine.note ? mine.note : "";
+            const label = noteText || stageText;
+            switching[n.resource_id] = { text: `${stageText} ${(i + 1) * 15}s`, disabled: true };
+            if (i % 2 === 0) proxy.log(`${label}（已等待 ${(i + 1) * 15}s）`, "info");
+          } catch (_) { /* 网络抖动，下一轮再试 */ }
+        }
+        if (switchWaiters[n.resource_id]) {
+          delete switchWaiters[n.resource_id];
+          resolve({ status: "timeout" });
+        }
+      })();
+    });
+
+    if (result.status === "done") {
+      switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
+      await afterSwitch(result.new_ip || "");
+      return;
+    }
+    if (result.status === "failed") {
+      switching[n.resource_id] = { text: "切换失败", disabled: false };
+      proxy.log("❌ " + (result.note || "切换失败，请重试"), "err");
+      return;
     }
     switching[n.resource_id] = { text: "切换超时", disabled: false };
     proxy.log("⚠️ 切换超时，请稍后重试", "warn");
@@ -299,6 +337,7 @@ async function checkNode(n) {
 }
 
 function logout() {
+  closeWs();
   proxy.reset();
   auth.logout();
 }
@@ -306,6 +345,8 @@ function logout() {
 onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
   checkVersion();
+  connectWs();
+  onSwitchMessage(handleWsMessage);
 });
 </script>
 

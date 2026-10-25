@@ -11,3 +11,12 @@ database_id = "d06a9a46-2158-441b-acee-46c8a7053b16"
 # 定时收尾：每隔 10 分钟自动处理卡住超过 10 分钟的切换记录（客户端超时放弃后仍能自愈）
 [triggers]
 crons = ["*/10 * * * *"]
+
+# Durable Object：切换进度实时推送（WebSocket）
+[[durable_objects.bindings]]
+name = "SWITCH_ROOM"
+class_name = "SwitchRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SwitchRoom"]

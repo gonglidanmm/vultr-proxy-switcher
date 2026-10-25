@@ -1,5 +1,7 @@
 import { buildGostUserData } from "./gost.js";
 import { REGION_COUNTRY, REGION_CITY, COUNTRY_NAMES } from "./region.js";
+import { SwitchRoom } from "./switch-room.js";
+export { SwitchRoom };
 import indexHtml from "../assets/index.html";
 import mainJs from "../assets/main.js" with { type: "text" };
 import styleCss from "../assets/style.css" with { type: "text" };
@@ -204,6 +206,19 @@ async function requireUser(request, env) {
   // 单台到期只禁该台切换，不应锁死整个账号登录（曾导致「1台到期→全部无法登录」）。
   // 注：switch_count/switch_date 是「每节点独立」的（assignments 表），用户级无此计数，故不在此返回
   return { id: row.id, username: row.username, switch_limit: row.switch_limit };
+}
+
+// 切换状态变化时通知该用户的 DO 广播（WebSocket 实时推送）
+async function notifySwitch(env, userId, payload) {
+  try {
+    const id = env.SWITCH_ROOM.idFromName("u" + userId);
+    await env.SWITCH_ROOM.get(id).fetch("https://switch-room/broadcast", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    // 通知失败不影响切换主流程（前端轮询兜底）
+  }
 }
 
 // ============ 客户端 handlers ============
@@ -596,6 +611,7 @@ async function processOneSwitch(req, env, headers, request) {
       const runningMs = Date.now() - new Date(req.created_at || Date.now()).getTime();
       if (runningMs > 600000) {
         await env.DB.prepare("UPDATE switch_requests SET status = 'failed', stage = 'failed' WHERE id = ?").bind(req.id).run();
+        await notifySwitch(env, req.user_id, { resource_id: req.old_id, stage: "failed", status: "failed", note: "新机已不存在（可能被后续切换销毁）" });
         return { resource_id: req.old_id, stage: "failed", status: "failed", note: "新机已不存在（可能被后续切换销毁）" };
       }
     }
@@ -669,6 +685,7 @@ async function processOneSwitch(req, env, headers, request) {
   }
 
   await env.DB.prepare("UPDATE switch_requests SET status = 'done', stage = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
+  await notifySwitch(env, req.user_id, { resource_id: req.old_id, stage: "done", status: "done", new_ip: newIp });
   return { resource_id: req.old_id, stage: "done", status: "done", new_ip: newIp };
 }
 
@@ -1302,6 +1319,7 @@ async function sweepPending(env) {
 }
 
 export default {
+  SwitchRoom, // Durable Object 类（WebSocket 实时推送）
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS });
@@ -1328,6 +1346,24 @@ export default {
       // 客户端版本检查（无需登录）
       if (method === "GET" && path === "/version") {
         return json({ version: CLIENT_VERSION, download_url: CLIENT_DOWNLOAD_URL, note: CLIENT_RELEASE_NOTE });
+      }
+
+      // WebSocket：切换进度实时推送（路由到该用户的 SwitchRoom DO）
+      // 浏览器 WebSocket 握手不能自定义 Authorization 头，token 走 query 参数（?token=xxx）
+      if (path === "/ws") {
+        let user = null;
+        const wsToken = (url.searchParams.get("token") || "").trim();
+        if (wsToken) {
+          const row = await env.DB.prepare(
+            "SELECT s.user_id AS id, u.username, u.status FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?",
+          ).bind(wsToken, new Date().toISOString()).first();
+          if (row && row.status === "active") user = { id: row.id, username: row.username };
+        } else {
+          user = await requireUser(request, env); // 非浏览器客户端（可带 Authorization 头）
+        }
+        if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        const id = env.SWITCH_ROOM.idFromName("u" + user.id);
+        return await env.SWITCH_ROOM.get(id).fetch(request);
       }
 
       // 客户端端点
