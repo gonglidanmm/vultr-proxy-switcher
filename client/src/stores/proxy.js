@@ -142,13 +142,38 @@ export const useProxyStore = defineStore("proxy", {
           if (onProgress) onProgress(p, results[p]);
         });
       } catch (e) {
-        if (showDiagnostics) this.log(`   [诊断] 真实转发测试失败: ${e}`, "warn");
-        activeProtos.forEach((p) => {
-          results[p] = -1;
-          if (onProgress) onProgress(p, -1);
-        });
+        const emsg = String(e && e.message ? e.message : e);
+        // 旧客户端二进制没有 test_proxy_multi 命令 → 回退到逐协议 test_proxy
+        if (emsg.includes("Command not found") || emsg.includes("not allowed")) {
+          if (showDiagnostics) this.log("   客户端版本较旧，回退到逐协议检测…", "info");
+          await this._testNodeProtocolsLegacy(n, activeProtos, basePort, showDiagnostics, onProgress, results);
+        } else {
+          if (showDiagnostics) this.log(`   [诊断] 真实转发测试失败: ${emsg}`, "warn");
+          activeProtos.forEach((p) => {
+            results[p] = -1;
+            if (onProgress) onProgress(p, -1);
+          });
+        }
       }
       return results;
+    },
+    // 旧版客户端回退：逐协议单进程 test_proxy（旧二进制没有 test_proxy_multi）
+    async _testNodeProtocolsLegacy(n, activeProtos, basePort, showDiagnostics, onProgress, results) {
+      await Promise.all(activeProtos.map(async (p, idx) => {
+        const port = basePort + idx;
+        try {
+          const configJson = this.buildSingBoxConfig(n, p, port);
+          const ms = Math.round(await Promise.race([
+            invokeRust("test_proxy", { configJson, testPort: port }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("检测超时")), 35000)),
+          ]));
+          results[p] = ms;
+        } catch (e) {
+          if (showDiagnostics) this.log(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
+          results[p] = -1;
+        }
+        if (onProgress) onProgress(p, results[p]);
+      }));
     },
     // 启动/停止本地代理
     async startLocalProxy(n) {
