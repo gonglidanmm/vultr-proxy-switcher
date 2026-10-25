@@ -174,6 +174,7 @@ function doBatchSwitch(regions = {}) {
 
 // ===== 版本检查 =====
 const updateDialog = ref(null); // UpdateDialog 组件实例
+let lastPromptedVersion = null; // 已提示过的版本号，避免重复弹窗
 
 async function checkVersion() {
   try {
@@ -189,7 +190,8 @@ async function checkVersion() {
     if (!data.version) return;
     const cmp = compareVersion(data.version, localVer);
     proxy.log(`版本检查：本地 ${localVer}，服务器 ${data.version}，比较结果=${cmp}`, "info");
-    if (cmp > 0) {
+    if (cmp > 0 && lastPromptedVersion !== data.version) {
+      lastPromptedVersion = data.version;
       updateDialog.value?.show(data.version, localVer, data.note || "", data.download_url || "");
     }
   } catch (e) {
@@ -461,6 +463,7 @@ function checkProgress(n) {
 onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
   checkVersion();
+  setInterval(checkVersion, 60000); // 每 60 秒检查大版本更新（提示下载）
   connectWs();
   onSwitchMessage(handleWsMessage);
 });
