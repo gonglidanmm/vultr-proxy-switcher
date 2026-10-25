@@ -215,6 +215,7 @@ async function switchIp(n, opts = {}) {
   if (switching[n.resource_id]?.disabled) return;
   switching[n.resource_id] = { text: "切换中…", disabled: true };
   try {
+    proxy.logDivider();
     proxy.log(`正在切换 ${n.name || n.ip || n.resource_id} 的 IP…`, "info");
     let region = "";
     if (explicitRegion !== undefined) {
@@ -336,6 +337,7 @@ async function checkNode(n) {
     protocols: Object.fromEntries(configured.map((p) => [p, { state: "checking", ms: null }])),
   };
   const name = n.name || n.ip || rid;
+  proxy.logDivider();
   proxy.log(`开始检测 ${name}：${configured.length} 个协议并行启动…`, "info");
   await nextTick(); // 先把“检测中”状态画出来，再启动原生检测，避免用户看到空等
   try {

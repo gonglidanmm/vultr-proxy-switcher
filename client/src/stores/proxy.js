@@ -25,6 +25,11 @@ export const useProxyStore = defineStore("proxy", {
     clearLogs() {
       this.logs = [];
     },
+    // 分割线：每个服务器的操作块之间用分割线隔离，便于分辨
+    logDivider() {
+      this.logs.push({ ts: "", type: "divider", text: "" });
+      if (this.logs.length > 500) this.logs.splice(0, this.logs.length - 500);
+    },
     showMsg(text, type = "info") {
       const logType = type === "success" ? "ok" : type === "error" ? "err" : type === "warn" ? "warn" : "info";
       String(text).split("\n").forEach((l) => this.log(l, logType));

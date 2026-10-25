@@ -22,12 +22,15 @@ watch(
     </div>
     <div class="log-body" ref="bodyRef">
       <div v-if="!proxy.logs.length" class="log-empty">暂无操作记录</div>
-      <div v-for="(l, i) in proxy.logs" :key="i" class="log-line" :class="'log-' + l.type">
-        <span class="log-ts">[{{ l.ts }}] </span>
-        <span v-if="l.type === 'ok'" class="log-mark">√ </span>
-        <span v-else-if="l.type === 'err'" class="log-mark">✗ </span>
-        <span>{{ l.text }}</span>
-      </div>
+      <template v-for="(l, i) in proxy.logs" :key="i">
+        <div v-if="l.type === 'divider'" class="log-divider"></div>
+        <div v-else class="log-line" :class="'log-' + l.type">
+          <span class="log-ts">[{{ l.ts }}] </span>
+          <span v-if="l.type === 'ok'" class="log-mark">√ </span>
+          <span v-else-if="l.type === 'err'" class="log-mark">✗ </span>
+          <span>{{ l.text }}</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>

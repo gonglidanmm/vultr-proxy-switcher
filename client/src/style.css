@@ -319,4 +319,5 @@ body {
 .log-ts { color: var(--muted); }
 .log-mark { font-weight: 600; }
 .log-empty { color: var(--muted); padding: 8px 0; }
+.log-divider { border-top: 1px dashed var(--muted); margin: 10px 0; }
 
