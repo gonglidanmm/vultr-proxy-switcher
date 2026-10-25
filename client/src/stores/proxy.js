@@ -67,22 +67,23 @@ export const useProxyStore = defineStore("proxy", {
       config.route = { final: "upstream" };
       return JSON.stringify(config);
     },
-    // 测试节点各协议「真实转发」（不是只测端口通）
+    // 测试节点各协议「真实转发」（不是只测端口通）——并发测，各协议用独立端口避免冲突
     async testNodeProtocols(n, showDiagnostics = false) {
       const protos = ["socks5", "ss", "reality", "hysteria2"];
       const results = {};
-      for (const p of protos) {
+      await Promise.all(protos.map(async (p, idx) => {
         const cfg = n[p];
-        if (!cfg || !cfg.port) { results[p] = null; continue; }
+        if (!cfg || !cfg.port) { results[p] = null; return; }
+        const port = TEST_PROXY_PORT + idx; // 7891~7894 各协议独立端口
         try {
-          const configJson = this.buildSingBoxConfig(n, p, TEST_PROXY_PORT);
-          const ms = await invokeRust("test_proxy", { configJson, testPort: TEST_PROXY_PORT });
+          const configJson = this.buildSingBoxConfig(n, p, port);
+          const ms = await invokeRust("test_proxy", { configJson, testPort: port });
           results[p] = Math.round(ms);
         } catch (e) {
           if (showDiagnostics) this.log(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
           results[p] = -1;
         }
-      }
+      }));
       return results;
     },
     // 启动/停止本地代理

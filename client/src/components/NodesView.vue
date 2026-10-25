@@ -89,6 +89,30 @@ async function checkVersion() {
   } catch (_) { /* 忽略 */ }
 }
 
+// ===== 全部测速 =====
+const speedTesting = ref(false);
+
+async function speedTestAll() {
+  if (speedTesting.value) return;
+  speedTesting.value = true;
+  const list = nodes.nodes;
+  proxy.log(`开始测速 ${list.length} 台节点（并发）…`, "info");
+  try {
+    await Promise.all(list.map(async (n) => {
+      const name = n.name || n.ip || n.resource_id;
+      const results = await proxy.testNodeProtocols(n);
+      updateNodeStatus(n.resource_id, results);
+      const reachable = ["socks5", "ss", "reality"].filter((p) => results[p] > 0);
+      proxy.log(`  ${name}：${reachable.length > 0 ? reachable.length + " 协议可达" : "全部不可达"}`, reachable.length > 0 ? "ok" : "err");
+    }));
+    proxy.log("测速完成", "ok");
+  } catch (e) {
+    proxy.log("测速失败：" + (e.message || e), "err");
+  } finally {
+    speedTesting.value = false;
+  }
+}
+
 function formatExpiry(n) {
   const expiry = String(n.client_expiry || n.expiry || "");
   if (!expiry) return { text: "未设置", cls: "cell-muted" };
@@ -295,6 +319,7 @@ onMounted(() => {
       <div class="topbar-right">
         <span v-if="selCount" class="sel-count">已选 {{ selCount }} 台</span>
         <button class="btn" :disabled="selCount === 0" @click="openBatchModal">批量切换IP</button>
+        <button class="btn" :disabled="speedTesting" @click="speedTestAll">{{ speedTesting ? '测速中…' : '全部测速' }}</button>
         <button class="btn" @click="nodes.load().catch(() => {})">刷新</button>
         <button class="btn" @click="logout">退出登录</button>
       </div>
