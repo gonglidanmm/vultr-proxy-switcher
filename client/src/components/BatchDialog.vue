@@ -7,6 +7,10 @@ const emit = defineEmits(["close", "confirm"]);
 
 // 每台的区域选择：resource_id -> region（空字符串 = 随机）
 const selections = ref({});
+// 初始化默认值：每台默认"随机"（空字符串），否则 select 因 undefined 不匹配 option 而显示空白
+props.nodes.forEach((n) => {
+  if (selections.value[n.resource_id] === undefined) selections.value[n.resource_id] = "";
+});
 
 function countryOf(n) {
   const loc = n.location || "";
