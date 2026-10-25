@@ -364,7 +364,7 @@ body {
 .nav-item.active { background: var(--accent); color: #fff; }
 .sidebar-footer { display: flex; flex-direction: column; gap: 8px; }
 .sidebar-user { color: var(--muted); font-size: 13px; padding: 0 8px; }
-.sidebar-version { color: var(--muted); font-size: 12px; padding: 0 8px; opacity: 0.7; }
+.sidebar-version { color: var(--foreground); font-size: 13px; padding: 4px 8px; font-weight: 500; }
 .app-main { flex: 1; overflow: auto; }
 
 /* ===== 用户管理页 ===== */
