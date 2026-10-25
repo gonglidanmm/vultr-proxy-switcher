@@ -232,6 +232,7 @@ export const useProxyStore = defineStore("proxy", {
       this.mode = "off";
       this.proto = "reality";
       this.upstreamNode = null;
+      this.clearLogs();
     },
   },
 });

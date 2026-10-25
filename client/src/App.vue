@@ -2,6 +2,7 @@
 import { ref, computed } from "vue";
 import { useAuthStore } from "./stores/auth.js";
 import { useProxyStore } from "./stores/proxy.js";
+import { useNodesStore } from "./stores/nodes.js";
 import { closeWs } from "./api/ws.js";
 import LoginView from "./components/LoginView.vue";
 import NodesView from "./components/NodesView.vue";
@@ -14,6 +15,7 @@ const activeView = ref("vultr"); // 默认选中 Vultr
 function logout() {
   closeWs();
   useProxyStore().reset();
+  useNodesStore().reset();
   auth.logout();
 }
 </script>

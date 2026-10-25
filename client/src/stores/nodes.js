@@ -29,5 +29,11 @@ export const useNodesStore = defineStore("nodes", {
         this.loading = false;
       }
     },
+    // 退出登录时清空，避免切换账号后残留上一个账号的节点/测试信息
+    reset() {
+      this.nodes = [];
+      this.expiry = "";
+      this.error = "";
+    },
   },
 });
