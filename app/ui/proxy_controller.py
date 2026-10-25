@@ -216,8 +216,9 @@ class ProxyController(QObject):
     def shutdown(self) -> None:
         self._stop_proxy()
         self._proto_client.stop()
+        import shiboken6
         for w in self._workers:
-            if w.isRunning():
+            if shiboken6.isValid(w) and w.isRunning():
                 w.wait(2000)
 
 

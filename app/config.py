@@ -18,7 +18,7 @@ DEFAULTS: dict = {
     "vultr_api_key": "",
     "label": "vultr-proxy-node",
     "regions": ["nrt", "osa"],
-    "plans": ["vc2-1c-1gb", "vhp-1c-1gb-amd"],
+    "plans": ["vhf-1c-1gb", "vc2-1c-1gb"],
     # 远端 gost 代理的账号密码端口（cloud-init 安装时写入）
     "proxy_user": "yduas4980",
     "proxy_pass": "a9966996",
@@ -55,6 +55,8 @@ DEFAULTS: dict = {
     "hysteria_mport": "20000-20100",
     # 中转节点（把第三方 SOCKS5 包装成本机加密 SS 中转）
     "relays": [],
+    # webshare 静态住宅 / 代理服务器（API 密钥由用户在 webshare 页输入）
+    "webshare_api_key": "",
     # 服务器备注（server_id -> 备注文本，用户手动输入便于区分多台）
     "server_notes": {},
     # 服务器显示名称（server_id -> 自定义名称，本地显示用，不影响 Vultr label / 切换IP）
