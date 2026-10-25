@@ -214,6 +214,19 @@ body {
 }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .batch-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.batch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.batch-node { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.batch-name { font-weight: 500; }
+.batch-loc { color: var(--muted); font-size: 12px; }
+.batch-select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  min-width: 140px;
+}
 .update-note { color: var(--muted); margin-top: 6px; }
 
 /* ===== 复制节点弹窗 ===== */

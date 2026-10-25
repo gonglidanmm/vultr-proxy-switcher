@@ -59,12 +59,13 @@ function openBatchModal() {
   batchModal.value = true;
 }
 
-function doBatchSwitch() {
+function doBatchSwitch(regions = {}) {
   const list = batchPending.value;
   batchPending.value = [];
   batchModal.value = false;
   proxy.log(`开始批量切换 ${list.length} 台节点…`, "info");
-  list.forEach((n) => switchIp(n, true)); // auto=true 跳过地区弹窗
+  // 每台用指定区域（regions[rid] 为空=随机），并行切换
+  list.forEach((n) => switchIp(n, { region: regions[n.resource_id] ?? "" }));
   selectedIds.value = new Set();
 }
 
@@ -168,13 +169,17 @@ async function afterSwitch(newIp) {
   }
 }
 
-async function switchIp(n, auto = false) {
+async function switchIp(n, opts = {}) {
+  const auto = !!opts.auto;
+  const explicitRegion = opts.region; // undefined=弹窗，""=随机，指定值=用该区域
   if (switching[n.resource_id]?.disabled) return;
   switching[n.resource_id] = { text: "切换中…", disabled: true };
   try {
     proxy.log(`正在切换 ${n.name || n.ip || n.resource_id} 的 IP…`, "info");
     let region = "";
-    if (!auto) {
+    if (explicitRegion !== undefined) {
+      region = explicitRegion; // 批量切换：显式指定区域（或空=随机）
+    } else if (!auto) {
       const loc = n.location || "";
       const country = loc.split("·")[0].trim();
       const knownCountries = ["美国", "日本", "韩国", "新加坡", "英国", "德国", "荷兰", "法国", "加拿大", "澳大利亚", "印度"];
@@ -386,7 +391,7 @@ onMounted(() => {
     <ShareDialog v-if="shareNode" :node="shareNode" @close="shareNode = null" @show-qr="qr = $event" />
     <QrDialog v-if="qr" :name="qr.name" :link="qr.link" @close="qr = null" />
     <RegionModal v-if="regionNode" :node="regionNode" @pick="onRegionPick" @close="onRegionClose" />
-    <BatchDialog v-if="batchModal" :count="batchPending.length" @close="batchModal = false" @confirm="doBatchSwitch" />
+    <BatchDialog v-if="batchModal" :nodes="batchPending" @close="batchModal = false" @confirm="doBatchSwitch" />
     <UpdateDialog ref="updateDialog" />
   </div>
 </template>
