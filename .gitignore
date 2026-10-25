@@ -6,6 +6,7 @@ __pycache__/
 
 # Node
 node_modules/
+client/dist/
 
 # Rust / Tauri
 client/src-tauri/target/
