@@ -7,9 +7,9 @@ import mainJs from "../assets/main.js" with { type: "text" };
 import styleCss from "../assets/style.css" with { type: "text" };
 
 // 客户端版本管理：发新客户端（Rust）版本时改这里，前端据此提示老客户端升级
-const CLIENT_VERSION = "0.1.0";
+const CLIENT_VERSION = "0.1.1";
 const CLIENT_DOWNLOAD_URL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
-const CLIENT_RELEASE_NOTE = "";
+const CLIENT_RELEASE_NOTE = "切换IP提速、列表拖拽排序/列宽调整、侧边栏+用户管理、多项稳定性修复";
 function apiBase(env, kind) {
   const c = env.CONTROL_URL || "";
   return c ? `${c}/${kind}` : (kind === "vultr" ? "https://api.vultr.com" : "https://api.cloudflare.com");
