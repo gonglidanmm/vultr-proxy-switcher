@@ -100,11 +100,23 @@ body {
   right: 0;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 8px;
   cursor: col-resize;
   z-index: 2;
 }
+/* 中间竖线始终可见，提示可拖拽 */
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
 .col-resizer:hover { background: var(--accent); }
+.col-resizer:hover::after { background: #fff; }
 /* 行拖拽视觉反馈 */
 .nodes-table tr.drag-over td { border-top: 2px solid var(--accent); }
 .nodes-table tr[draggable="true"] { cursor: grab; }
