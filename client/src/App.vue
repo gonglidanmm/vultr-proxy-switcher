@@ -48,7 +48,7 @@ function logout() {
     <aside class="sidebar">
       <div class="sidebar-brand">代理客户端</div>
       <nav class="sidebar-nav">
-        <button :class="['nav-item', { active: activeView === 'vultr' }]" @click="activeView = 'vultr'">Vultr</button>
+        <button :class="['nav-item', { active: activeView === 'vultr' }]" @click="activeView = 'vultr'">Vultr数据中心</button>
       </nav>
       <div class="sidebar-footer">
         <button class="user-row" :class="{ active: activeView === 'account' }" @click="activeView = 'account'" title="用户管理">
