@@ -74,7 +74,9 @@ export function buildGostUserData(creds, domain = "", cert = null, workerUrl = "
 if [ ! -x /usr/local/bin/xray ]; then
   # 下载加重试（cloud-init 时 GitHub 下载常因网络抖动失败，导致 443 不通）
   for i in 1 2 3 4 5; do
-    wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && break
+    # 固定 v25.9.5（勿用 latest）：Xray v26.9.8+ 要求后量子密钥 X25519MLKEM768，
+    # 而 sing-box 客户端会过滤该密钥，导致 reality verification failed（sing-box#4520）
+    wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/download/v25.9.5/Xray-linux-64.zip && break
     sleep 10
   done
   unzip -q -o /tmp/xray.zip -d /usr/local/bin/
