@@ -32,6 +32,23 @@ onMounted(async () => {
       proxy.log(`侧边栏版本：服务器也失败（${e2 && e2.message ? e2.message : e2}）`, "err");
     }
   }
+
+  // 前端热更新：每 60 秒检查构建时间戳，变化则自动刷新（客户无需退出重登）
+  let currentStamp = null;
+  const checkFrontendUpdate = async () => {
+    try {
+      const resp = await fetch(API + "/build-stamp");
+      const data = await resp.json().catch(() => ({}));
+      if (!data.stamp) return;
+      if (currentStamp === null) {
+        currentStamp = data.stamp;
+      } else if (currentStamp !== data.stamp) {
+        location.reload();
+      }
+    } catch (_) {}
+  };
+  setInterval(checkFrontendUpdate, 60000);
+  checkFrontendUpdate();
 });
 
 function logout() {

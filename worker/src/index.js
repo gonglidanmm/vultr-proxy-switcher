@@ -10,6 +10,8 @@ import styleCss from "../assets/style.css" with { type: "text" };
 const CLIENT_VERSION = "0.1.1";
 const CLIENT_DOWNLOAD_URL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
 const CLIENT_RELEASE_NOTE = "切换IP提速、列表拖拽排序/列宽调整、侧边栏+用户管理、多项稳定性修复";
+// 前端构建时间戳（从 index.html 的 ?v= 参数解析，部署时自动更新；用于客户端热更新检测）
+const FRONTEND_STAMP = (indexHtml.match(/\?v=(\d+)/) || [])[1] || "0";
 function apiBase(env, kind) {
   const c = env.CONTROL_URL || "";
   return c ? `${c}/${kind}` : (kind === "vultr" ? "https://api.vultr.com" : "https://api.cloudflare.com");
@@ -1346,6 +1348,11 @@ export default {
       // 客户端版本检查（无需登录）
       if (method === "GET" && path === "/version") {
         return json({ version: CLIENT_VERSION, download_url: CLIENT_DOWNLOAD_URL, note: CLIENT_RELEASE_NOTE });
+      }
+
+      // 前端构建时间戳（客户端轮询检测热更新）
+      if (method === "GET" && path === "/build-stamp") {
+        return json({ stamp: FRONTEND_STAMP });
       }
 
       // WebSocket：切换进度实时推送（路由到该用户的 SwitchRoom DO）
