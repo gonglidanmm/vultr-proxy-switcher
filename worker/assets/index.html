@@ -56,6 +56,8 @@
           </div>
           <div class="page-actions">
             <span class="expiry" id="user-expiry"></span>
+            <span class="sel-count" id="sel-count"></span>
+            <button class="btn" id="batch-switch-btn" disabled>批量切换IP</button>
             <button class="ghost" id="refresh-btn">刷新</button>
           </div>
         </div>
@@ -85,6 +87,7 @@
           <table class="nodes-table">
             <thead>
               <tr>
+                <th class="col-sel"><input type="checkbox" id="select-all" title="全选"></th>
                 <th class="col-idx">序号</th>
                 <th>类型</th>
                 <th>名称</th>
@@ -101,7 +104,7 @@
               </tr>
             </thead>
             <tbody id="nodes-content">
-              <tr><td colspan="13" class="empty">加载中…</td></tr>
+              <tr><td colspan="14" class="empty">加载中…</td></tr>
             </tbody>
           </table>
         </div>
@@ -190,6 +193,24 @@
     <div class="modal-footer">
       <button class="btn" id="update-later">稍后再说</button>
       <button class="btn primary" id="update-download">前往下载</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量切换确认弹窗 -->
+<div class="modal-backdrop" id="batch-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title">批量切换确认</span>
+      <button class="modal-close" id="batch-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>确定批量切换 <b id="batch-count"></b> 台节点的 IP 吗？</p>
+      <p style="color:var(--muted)">切换随机同国家地区，每台约需几分钟。</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="batch-cancel">取消</button>
+      <button class="btn primary" id="batch-ok">确认切换</button>
     </div>
   </div>
 </div>

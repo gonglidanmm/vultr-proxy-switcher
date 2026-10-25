@@ -304,6 +304,9 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .nodes-table tbody tr:last-child td { border-bottom: none; }
 .nodes-table tbody tr:hover { background: rgba(255,255,255,0.03); }
 .col-idx { width: 44px; color: var(--muted); text-align: center; }
+.col-sel { width: 34px; text-align: center; }
+.col-sel input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; vertical-align: middle; }
+.sel-count { color: var(--muted); font-size: 12px; }
 .col-ops { width: 290px; white-space: nowrap; }
 .row-ops { display: flex; gap: 6px; justify-content: center; }
 .row-ops .btn { padding: 0 9px; }

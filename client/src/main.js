@@ -489,7 +489,7 @@ function renderNodes(nodes) {
   nodeCache = nodes;
   const content = $("nodes-content");
   if (!nodes.length) {
-    content.innerHTML = '<tr><td colspan="12" class="empty">暂无分配的节点，请联系管理员。</td></tr>';
+    content.innerHTML = '<tr><td colspan="13" class="empty">暂无分配的节点，请联系管理员。</td></tr>';
     return;
   }
   content.innerHTML = "";
@@ -541,6 +541,15 @@ function enableDragSort(tr, rid) {
 function buildNodeRow(n, idx) {
   const isVultr = n.resource_type === "vultr";
   const tr = document.createElement("tr");
+
+  const tdSel = document.createElement("td");
+  tdSel.className = "col-sel";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "row-sel";
+  cb.dataset.rid = n.resource_id || "";
+  tdSel.appendChild(cb);
+  tr.appendChild(tdSel);
 
   const tdIdx = document.createElement("td");
   tdIdx.className = "col-idx";
@@ -1122,7 +1131,77 @@ async function saveAccount() {
   }
 }
 
+// ===== 批量切换 =====
+function updateSelCount() {
+  const checked = document.querySelectorAll(".row-sel:checked").length;
+  const selCount = $("sel-count");
+  const btn = $("batch-switch-btn");
+  if (selCount) selCount.textContent = checked ? `已选 ${checked} 台` : "";
+  if (btn) btn.disabled = checked === 0;
+}
+
+function getSelectedNodes() {
+  const checked = document.querySelectorAll(".row-sel:checked");
+  const rids = new Set();
+  checked.forEach((cb) => rids.add(cb.dataset.rid));
+  return nodeCache.filter((n) => rids.has(n.resource_id));
+}
+
+let batchPending = []; // 待确认的批量切换节点
+
+async function batchSwitch() {
+  const selected = getSelectedNodes();
+  if (!selected.length) return;
+  // 过滤掉不可切换的（切换按钮 disabled：已到期/流量用尽/次数用完）
+  const swappable = selected.filter((n) => {
+    const btn = $("switch-" + n.resource_id);
+    return btn && !btn.disabled;
+  });
+  if (!swappable.length) {
+    showMsg("选中的节点都不可切换（已到期/流量用尽/次数用完）", "warn");
+    return;
+  }
+  batchPending = swappable;
+  const cnt = $("batch-count");
+  if (cnt) cnt.textContent = swappable.length;
+  const m = $("batch-modal");
+  if (m) m.style.display = "flex";
+}
+
+function doBatchSwitch() {
+  const swappable = batchPending;
+  batchPending = [];
+  const m = $("batch-modal");
+  if (m) m.style.display = "none";
+  logMsg(`开始批量切换 ${swappable.length} 台节点…`, "info");
+  // 并行切换（每台独立轮询自己的 resource_id，不串行）
+  swappable.forEach((n) => {
+    const btn = $("switch-" + n.resource_id);
+    if (btn) switchIp(n, btn, true); // auto=true 跳过地区弹窗
+  });
+  // 清空选择
+  document.querySelectorAll(".row-sel:checked").forEach((cb) => (cb.checked = false));
+  const selectAll = $("select-all");
+  if (selectAll) selectAll.checked = false;
+  updateSelCount();
+}
+
 // ===== 事件绑定 =====
+$("select-all").addEventListener("change", (e) => {
+  document.querySelectorAll(".row-sel").forEach((cb) => (cb.checked = e.target.checked));
+  updateSelCount();
+});
+// 行 checkbox 变化（事件委托，行是动态渲染的）
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.classList && e.target.classList.contains("row-sel")) {
+    updateSelCount();
+    const all = document.querySelectorAll(".row-sel");
+    const checked = document.querySelectorAll(".row-sel:checked");
+    const selectAll = $("select-all");
+    if (selectAll) selectAll.checked = all.length > 0 && checked.length === all.length;
+  }
+});
+$("batch-switch-btn").addEventListener("click", batchSwitch);
 $("login-btn").addEventListener("click", login);
 $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("refresh-btn").addEventListener("click", loadNodes);
@@ -1236,6 +1315,16 @@ document.addEventListener("click", (e) => {
       }
     }
     closeUpdateModal();
+  } else if (t && t.id === "batch-ok") {
+    doBatchSwitch();
+  } else if (t && (t.id === "batch-cancel" || t.id === "batch-close")) {
+    const bm = $("batch-modal");
+    if (bm) bm.style.display = "none";
+    batchPending = [];
+  } else if (t && t.id === "batch-modal") {
+    const bm = $("batch-modal");
+    if (bm) bm.style.display = "none";
+    batchPending = [];
   }
 });
 
