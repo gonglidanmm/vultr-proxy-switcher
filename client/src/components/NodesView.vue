@@ -118,7 +118,7 @@ async function speedTestAll() {
       const name = n.name || n.ip || n.resource_id;
       const results = await proxy.testNodeProtocols(n);
       updateNodeStatus(n.resource_id, results);
-      const reachable = ["socks5", "ss", "reality"].filter((p) => results[p] > 0);
+      const reachable = PROTOCOLS.filter((p) => results[p] > 0);
       proxy.log(`  ${name}：${reachable.length > 0 ? reachable.length + " 协议可达" : "全部不可达"}`, reachable.length > 0 ? "ok" : "err");
     }));
     proxy.log("测速完成", "ok");
@@ -347,7 +347,7 @@ async function checkNode(n) {
       proxy.log(`   ${protoName(p)}：${ms > 0 ? ms + "ms（真实转发）" : "不可达"}`, ms > 0 ? "ok" : "err");
     });
     updateNodeStatus(rid, results);
-    const reachable = ["socks5", "ss", "reality"].filter((p) => results[p] > 0).length;
+    const reachable = configured.filter((p) => results[p] > 0).length;
     connectivityTests[rid].active = false;
     proxy.log(`检测完成：${reachable > 0 ? reachable + " 协议可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
   } catch (e) {
