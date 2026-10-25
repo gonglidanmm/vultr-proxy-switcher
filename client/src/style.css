@@ -321,3 +321,62 @@ body {
 .log-empty { color: var(--muted); padding: 8px 0; }
 .log-divider { border-top: 1px dashed var(--muted); margin: 10px 0; }
 
+/* ===== 侧边栏布局 ===== */
+.app-shell { display: flex; height: 100vh; }
+.sidebar {
+  width: 180px;
+  min-width: 180px;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 16px;
+}
+.sidebar-brand { font-size: 16px; font-weight: 700; color: var(--fg); padding: 0 8px; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-item {
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.nav-item:hover { background: var(--border); color: var(--fg); }
+.nav-item.active { background: var(--accent); color: #fff; }
+.sidebar-footer { display: flex; flex-direction: column; gap: 8px; }
+.sidebar-user { color: var(--muted); font-size: 13px; padding: 0 8px; }
+.app-main { flex: 1; overflow: auto; }
+
+/* ===== 用户管理页 ===== */
+.user-view { padding: 24px; max-width: 480px; }
+.user-view h2 { font-size: 20px; margin-bottom: 20px; }
+.account-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.account-card h3 { font-size: 15px; margin-bottom: 16px; }
+.account-row { display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px; }
+.account-row span { color: var(--muted); }
+.account-row strong { color: var(--fg); }
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field span { font-size: 13px; color: var(--muted); }
+.field input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+.field input:focus { border-color: var(--accent); outline: none; }
+.ok-msg { color: #6bdb8a; font-size: 13px; margin: 8px 0; }
+.err-msg { color: var(--danger); font-size: 13px; margin: 8px 0; }
+.btn.primary { background: var(--accent); color: #fff; }
+

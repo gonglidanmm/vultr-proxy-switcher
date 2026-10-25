@@ -4,7 +4,7 @@ import { useNodesStore } from "../stores/nodes.js";
 import { useAuthStore } from "../stores/auth.js";
 import { useProxyStore } from "../stores/proxy.js";
 import { api, invokeRust, API } from "../api/index.js";
-import { connectWs, onSwitchMessage, closeWs } from "../api/ws.js";
+import { connectWs, onSwitchMessage } from "../api/ws.js";
 import { protoName, sleep, STAGE_TEXT, compareVersion } from "../utils/index.js";
 import RegionModal from "./RegionModal.vue";
 import ShareDialog from "./ShareDialog.vue";
@@ -366,12 +366,6 @@ function checkProgress(n) {
   return `${done}/${values.length}`;
 }
 
-function logout() {
-  closeWs();
-  proxy.reset();
-  auth.logout();
-}
-
 onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
   checkVersion();
@@ -392,7 +386,6 @@ onMounted(() => {
         <button class="btn" :disabled="selCount === 0" @click="openBatchModal">批量切换IP</button>
         <button class="btn" :disabled="speedTesting" @click="speedTestAll">{{ speedTesting ? '测速中…' : '全部测速' }}</button>
         <button class="btn" @click="nodes.load().catch(() => {})">刷新</button>
-        <button class="btn" @click="logout">退出登录</button>
       </div>
     </header>
 
