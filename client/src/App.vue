@@ -53,7 +53,7 @@ function logout() {
       <div class="sidebar-footer">
         <button class="user-row" :class="{ active: activeView === 'account' }" @click="activeView = 'account'" title="用户管理">
           <span class="user-avatar">{{ (auth.user?.username || "?").charAt(0).toUpperCase() }}</span>
-          <span class="user-name">{{ auth.user?.username || "" }}</span>
+          <span class="sidebar-username">{{ auth.user?.username || "" }}</span>
         </button>
         <div v-if="version" class="sidebar-version">版本 v{{ version }}</div>
         <button class="logout-btn" @click="logout">退出登录</button>
