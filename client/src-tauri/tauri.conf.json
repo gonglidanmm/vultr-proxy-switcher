@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "https://user.yduas.cc/",
     "devUrl": "http://localhost:1424",
-    "beforeDevCommand": "python3 dev_server.py",
+    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": ""
   },
   "app": {

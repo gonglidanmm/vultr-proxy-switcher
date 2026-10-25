@@ -4,7 +4,12 @@
   "description": "主窗口及远程前端（热更新）的 IPC 访问权限",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://user.yduas.cc", "https://vultr-proxy-users.yduas4980.workers.dev"]
+    "urls": [
+      "https://user.yduas.cc",
+      "https://vultr-proxy-users.yduas4980.workers.dev",
+      "http://localhost:1424",
+      "http://127.0.0.1:1424"
+    ]
   },
   "permissions": ["core:default"]
 }
