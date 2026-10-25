@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>代理客户端</title>
-  <link rel="stylesheet" href="style.css?v=25" />
+  <link rel="stylesheet" href="style.css?v=26" />
 </head>
 <body>
   <!-- ===== 登录页 ===== -->
@@ -143,7 +143,7 @@
     </main>
   </div>
 
-  <script src="main.js?v=25"></script>
+  <script src="main.js?v=26"></script>
 
 <!-- 复制节点弹窗 -->
 <div class="modal-backdrop" id="share-modal" style="display:none">
@@ -172,6 +172,24 @@
     <div class="modal-footer">
       <button class="btn" id="region-random">随机</button>
       <button class="btn primary" id="region-cancel">取消切换</button>
+    </div>
+  </div>
+</div>
+
+<!-- 版本更新弹窗 -->
+<div class="modal-backdrop" id="update-modal" style="display:none">
+  <div class="modal update-modal">
+    <div class="modal-head">
+      <span class="modal-title">发现新版本</span>
+      <button class="modal-close" id="update-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>当前版本 <b id="update-current"></b>，最新版本 <b id="update-latest"></b></p>
+      <p id="update-note" style="color:var(--muted)"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="update-later">稍后再说</button>
+      <button class="btn primary" id="update-download">前往下载</button>
     </div>
   </div>
 </div>

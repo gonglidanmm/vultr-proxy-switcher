@@ -226,6 +226,7 @@ async function login() {
     switchView("nodes");
     loadNodes();
     startPolling();
+    checkVersion();
   } catch (e) {
     err.textContent = "网络错误：" + e.message;
   } finally {
@@ -252,6 +253,41 @@ async function logout(reason = "") {
     if (err) err.textContent = reason;
   }
   showLogin();
+}
+
+// ===== 版本检查（老客户端升级提示）=====
+function compareVersion(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+
+async function checkVersion() {
+  try {
+    let localVer = "";
+    try {
+      localVer = await invokeRust("get_version");
+    } catch (_) {
+      return; // 非桌面环境（浏览器调试）跳过
+    }
+    const resp = await fetch(API + "/version");
+    const data = await resp.json().catch(() => ({}));
+    if (!data.version) return;
+    if (compareVersion(data.version, localVer) > 0) {
+      window.__updateUrl = data.download_url || "";
+      const cur = $("update-current"), lat = $("update-latest"), note = $("update-note");
+      if (cur) cur.textContent = localVer;
+      if (lat) lat.textContent = data.version;
+      if (note) note.textContent = data.note || "";
+      const m = $("update-modal");
+      if (m) m.style.display = "flex";
+    }
+  } catch (_) { /* 忽略版本检查失败 */ }
 }
 
 // ===== 加载节点 =====
@@ -544,9 +580,10 @@ function buildNodeRow(n, idx) {
   tdStatus.appendChild(st);
   tr.appendChild(tdStatus);
 
-  // 分配时间
+  // 分配时间（只显示日期，缩短列宽）
   const tdCreated = document.createElement("td");
-  tdCreated.textContent = n.created_at || "—";
+  tdCreated.className = "cell-muted";
+  tdCreated.textContent = (n.created_at || "").slice(0, 10) || "—";
   tr.appendChild(tdCreated);
 
   // 到期时间（优先客户到期 client_expiry，fallback 服务器到期 expiry；提前 3 天橙色提醒，已过期红色）
@@ -1171,12 +1208,34 @@ function closeShareModal() {
   const m = $("share-modal");
   if (m) m.style.display = "none";
 }
+function closeUpdateModal() {
+  const m = $("update-modal");
+  if (m) m.style.display = "none";
+}
 document.addEventListener("click", (e) => {
   const t = e.target;
   if (t && (t.id === "share-close" || t.id === "share-close-btn")) {
     closeShareModal();
   } else if (t && t.id === "share-modal") {
     closeShareModal();
+  } else if (t && (t.id === "update-close" || t.id === "update-later")) {
+    closeUpdateModal();
+  } else if (t && t.id === "update-modal") {
+    closeUpdateModal();
+  } else if (t && t.id === "update-download") {
+    const url = window.__updateUrl || "";
+    if (url) {
+      try {
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke("open_url", { url });
+        } else {
+          window.open(url, "_blank");
+        }
+      } catch (_) {
+        window.open(url, "_blank");
+      }
+    }
+    closeUpdateModal();
   }
 });
 
@@ -1189,6 +1248,7 @@ if (token) {
   loadNodes();
   initColumnResize();
   startPolling();
+  checkVersion();
 } else {
   showLogin();
 }

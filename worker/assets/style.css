@@ -273,7 +273,7 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .nodes-table thead th {
   background: var(--sidebar);
   color: var(--muted);
-  padding: 10px 12px;
+  padding: 10px 8px;
   text-align: center;
   font-size: 12px;
   font-weight: 500;
@@ -281,7 +281,7 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
   white-space: nowrap;
 }
 .nodes-table tbody td {
-  padding: 10px 12px;
+  padding: 10px 8px;
   border-bottom: 1px solid var(--card2);
   font-size: 12px;
   color: var(--text);
@@ -303,9 +303,10 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .note-input::placeholder { color: var(--muted2); }
 .nodes-table tbody tr:last-child td { border-bottom: none; }
 .nodes-table tbody tr:hover { background: rgba(255,255,255,0.03); }
-.col-idx { width: 48px; color: var(--muted); text-align: center; }
-.col-ops { width: 380px; white-space: nowrap; }
-.row-ops { display: flex; gap: 8px; justify-content: center; }
+.col-idx { width: 44px; color: var(--muted); text-align: center; }
+.col-ops { width: 290px; white-space: nowrap; }
+.row-ops { display: flex; gap: 6px; justify-content: center; }
+.row-ops .btn { padding: 0 9px; }
 .status { font-weight: 500; }
 .status.ok { color: var(--green); }
 .status.bad { color: var(--red); }

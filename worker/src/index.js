@@ -3,6 +3,11 @@ import { REGION_COUNTRY, REGION_CITY, COUNTRY_NAMES } from "./region.js";
 import indexHtml from "../assets/index.html";
 import mainJs from "../assets/main.js" with { type: "text" };
 import styleCss from "../assets/style.css" with { type: "text" };
+
+// 客户端版本管理：发新客户端（Rust）版本时改这里，前端据此提示老客户端升级
+const CLIENT_VERSION = "0.1.0";
+const CLIENT_DOWNLOAD_URL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
+const CLIENT_RELEASE_NOTE = "";
 function apiBase(env, kind) {
   const c = env.CONTROL_URL || "";
   return c ? `${c}/${kind}` : (kind === "vultr" ? "https://api.vultr.com" : "https://api.cloudflare.com");
@@ -1318,6 +1323,11 @@ export default {
         if (path === "/style.css") {
           return new Response(styleCss, { headers: { "Content-Type": "text/css; charset=utf-8", ...CORS } });
         }
+      }
+
+      // 客户端版本检查（无需登录）
+      if (method === "GET" && path === "/version") {
+        return json({ version: CLIENT_VERSION, download_url: CLIENT_DOWNLOAD_URL, note: CLIENT_RELEASE_NOTE });
       }
 
       // 客户端端点

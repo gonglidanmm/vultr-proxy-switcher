@@ -411,6 +411,22 @@ fn test_proxy(config_json: String, test_port: u16) -> Result<f64, String> {
     }
 }
 
+#[tauri::command]
+fn get_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    Ok(())
+}
+
 fn main() {
     // Windows 高 DPI：Per-Monitor V2（否则 125%/150% 缩放屏上界面模糊）
     #[cfg(target_os = "windows")]
@@ -438,7 +454,9 @@ fn main() {
             set_system_proxy,
             start_proxy,
             stop_proxy,
-            test_proxy
+            test_proxy,
+            get_version,
+            open_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
