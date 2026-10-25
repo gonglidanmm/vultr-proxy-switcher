@@ -1333,13 +1333,13 @@ export default {
       // 前端静态资源（热更新：改前端重新部署 Worker 即可，客户端远程加载）
       if (method === "GET") {
         if (path === "/" || path === "/app" || path === "/index.html") {
-          return new Response(indexHtml, { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
+          return new Response(indexHtml, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate", ...CORS } });
         }
         if (path === "/main.js") {
-          return new Response(mainJs, { headers: { "Content-Type": "application/javascript; charset=utf-8", ...CORS } });
+          return new Response(mainJs, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate", ...CORS } });
         }
         if (path === "/style.css") {
-          return new Response(styleCss, { headers: { "Content-Type": "text/css; charset=utf-8", ...CORS } });
+          return new Response(styleCss, { headers: { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate", ...CORS } });
         }
       }
 
