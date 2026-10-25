@@ -68,21 +68,26 @@ export const useProxyStore = defineStore("proxy", {
       return JSON.stringify(config);
     },
     // 测试节点各协议「真实转发」（不是只测端口通）——并发测，各协议用独立端口避免冲突
-    async testNodeProtocols(n, showDiagnostics = false) {
+    // onProgress(p, ms)：每测完一个协议立即回调（用于逐协议实时回显）
+    async testNodeProtocols(n, showDiagnostics = false, onProgress = null) {
       const protos = ["socks5", "ss", "reality", "hysteria2"];
       const results = {};
       await Promise.all(protos.map(async (p, idx) => {
         const cfg = n[p];
         if (!cfg || !cfg.port) { results[p] = null; return; }
         const port = TEST_PROXY_PORT + idx; // 7891~7894 各协议独立端口
+        let ms = -1;
+        // 轻微错峰启动：保留并发，但避免同时拉起多个 sing-box/curl 造成瞬时卡顿；结果更自然地逐项出现
+        if (idx) await new Promise((resolve) => setTimeout(resolve, idx * 180));
         try {
           const configJson = this.buildSingBoxConfig(n, p, port);
-          const ms = await invokeRust("test_proxy", { configJson, testPort: port });
-          results[p] = Math.round(ms);
+          ms = Math.round(await invokeRust("test_proxy", { configJson, testPort: port }));
+          results[p] = ms;
         } catch (e) {
           if (showDiagnostics) this.log(`   [诊断] ${p} 真实转发测试失败: ${e}`, "warn");
           results[p] = -1;
         }
+        if (onProgress) onProgress(p, results[p]);
       }));
       return results;
     },

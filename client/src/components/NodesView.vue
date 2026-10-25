@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useNodesStore } from "../stores/nodes.js";
 import { useAuthStore } from "../stores/auth.js";
 import { useProxyStore } from "../stores/proxy.js";
@@ -18,6 +18,8 @@ const auth = useAuthStore();
 const proxy = useProxyStore();
 
 const nodeStatus = reactive({}); // resource_id -> { text, cls }
+const connectivityTests = reactive({}); // resource_id -> { active, protocols: {proto:{state,ms}} }
+const PROTOCOLS = ["socks5", "ss", "reality", "hysteria2"];
 
 const shareNode = ref(null);
 const regionNode = ref(null);
@@ -318,22 +320,44 @@ function onRegionClose() {
 }
 
 async function checkNode(n) {
-  switching[n.resource_id] = { ...switching[n.resource_id], checking: true };
-  const name = n.name || n.ip || n.resource_id;
+  const rid = n.resource_id;
+  const configured = PROTOCOLS.filter((p) => n[p] && n[p].port);
+  if (configured.length === 0) {
+    proxy.log(`节点 ${n.name || n.ip || rid} 没有可检测的协议配置`, "warn");
+    return;
+  }
+  switching[rid] = { ...switching[rid], checking: true };
+  connectivityTests[rid] = {
+    active: true,
+    protocols: Object.fromEntries(configured.map((p) => [p, { state: "checking", ms: null }])),
+  };
+  const name = n.name || n.ip || rid;
+  proxy.log(`开始检测 ${name}：${configured.length} 个协议并行启动…`, "info");
+  await nextTick(); // 先把“检测中”状态画出来，再启动原生检测，避免用户看到空等
   try {
-    const results = await proxy.testNodeProtocols(n, true);
-    updateNodeStatus(n.resource_id, results);
+    const results = await proxy.testNodeProtocols(n, true, (p, ms) => {
+      if (ms === null) return;
+      connectivityTests[rid].protocols[p] = { state: ms > 0 ? "ok" : "bad", ms };
+      proxy.log(`   ${protoName(p)}：${ms > 0 ? ms + "ms（真实转发）" : "不可达"}`, ms > 0 ? "ok" : "err");
+    });
+    updateNodeStatus(rid, results);
     const reachable = ["socks5", "ss", "reality"].filter((p) => results[p] > 0).length;
-    proxy.log(`检测节点 ${name}：${reachable > 0 ? "可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
-    for (const [p, v] of Object.entries(results)) {
-      if (v === null) continue;
-      proxy.log(`   ${protoName(p)}：${v > 0 ? v + "ms（真实转发）" : "不可达"}`, v > 0 ? "ok" : "err");
-    }
+    connectivityTests[rid].active = false;
+    proxy.log(`检测完成：${reachable > 0 ? reachable + " 协议可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
   } catch (e) {
+    connectivityTests[rid].active = false;
     proxy.log(`检测失败：${e.message || e}`, "err");
   } finally {
-    switching[n.resource_id] = { ...switching[n.resource_id], checking: false };
+    switching[rid] = { ...switching[rid], checking: false };
   }
+}
+
+function checkProgress(n) {
+  const test = connectivityTests[n.resource_id];
+  if (!test) return "";
+  const values = Object.values(test.protocols);
+  const done = values.filter((x) => x.state !== "checking").length;
+  return `${done}/${values.length}`;
 }
 
 function logout() {
@@ -424,9 +448,16 @@ onMounted(() => {
             <td class="mono">{{ n.ip || "—" }}</td>
             <td class="mono">{{ n.domain || n.host || "—" }}</td>
             <td>
-              <span class="status" :class="nodeStatus[n.resource_id]?.cls || 'pending'">
-                {{ nodeStatus[n.resource_id]?.text || '未检测' }}
-              </span>
+              <div class="node-check-status">
+                <span class="status" :class="connectivityTests[n.resource_id]?.active ? 'pending' : (nodeStatus[n.resource_id]?.cls || 'pending')" :role="connectivityTests[n.resource_id]?.active ? 'status' : undefined">
+                  {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : (nodeStatus[n.resource_id]?.text || '未检测') }}
+                </span>
+                <div v-if="connectivityTests[n.resource_id]" class="check-protocols" aria-live="polite">
+                  <span v-for="(item, p) in connectivityTests[n.resource_id].protocols" :key="p" class="check-chip" :class="item.state">
+                    {{ protoName(p) }}：{{ item.state === 'checking' ? '检测中…' : (item.state === 'ok' ? `${item.ms}ms` : '不可达') }}
+                  </span>
+                </div>
+              </div>
             </td>
             <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
             <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
@@ -442,7 +473,7 @@ onMounted(() => {
                   {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
-                  {{ switching[n.resource_id]?.checking ? '检测中…' : '查联通性' }}
+                  {{ switching[n.resource_id]?.checking ? `检测中 ${checkProgress(n)}` : '查联通性' }}
                 </button>
                 <button v-if="n.links && Object.keys(n.links).length" class="btn" @click="shareNode = n">复制节点</button>
               </div>

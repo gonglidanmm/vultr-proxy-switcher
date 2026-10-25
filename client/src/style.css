@@ -174,6 +174,12 @@ body {
 /* ===== 状态列 ===== */
 .status.ok { background: #1e3a2a; color: #6bdb8a; }
 .status.bad { background: #3a1e1e; color: var(--danger); }
+.node-check-status { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 130px; }
+.check-protocols { display: flex; flex-direction: column; gap: 3px; white-space: normal; }
+.check-chip { font-size: 11px; line-height: 1.35; color: var(--muted); }
+.check-chip.checking { color: var(--accent); }
+.check-chip.ok { color: #6bdb8a; }
+.check-chip.bad { color: var(--danger); }
 
 /* ===== 弹窗通用 ===== */
 .modal-backdrop {
