@@ -72,6 +72,17 @@ async function saveOrder(arr) {
     proxy.log("保存排序失败：" + (e.message || e), "err");
   }
 }
+// 保存备注（失焦/回车时调用，持久化到后端）
+async function saveNote(n) {
+  const note = String(n.note || "").trim();
+  try {
+    await api("/me/note", "POST", { resource_id: n.resource_id, note });
+    n.note = note;
+    proxy.log(`已保存备注：${note || "(已清空)"}`, "ok");
+  } catch (e) {
+    proxy.log("保存备注失败：" + (e.message || e), "err");
+  }
+}
 
 // ===== 列宽拖拽 + localStorage 持久化（跨账号共享，Mac/Windows 通用）=====
 const COL_WIDTH_KEY = "proxy_col_widths";
@@ -549,7 +560,7 @@ onMounted(() => {
             <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
-            <td><input type="text" class="note-input" placeholder="备注" :value="n.note || ''" /></td>
+            <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
               <div class="row-ops">
                 <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" @click="proxy.toggleUpstream(n)">
