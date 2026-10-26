@@ -422,7 +422,15 @@ function onRegionClose() {
   if (resolve) resolve(null);
 }
 
+// 串行化：快速点多个"查联通性"时排队执行，日志一台一台显示（避免并发交错）
+let checkChain = Promise.resolve();
+
 async function checkNode(n) {
+  checkChain = checkChain.then(() => doCheckNode(n)).catch(() => {});
+  await checkChain;
+}
+
+async function doCheckNode(n) {
   const rid = n.resource_id;
   const configured = PROTOCOLS.filter((p) => n[p] && n[p].port);
   if (configured.length === 0) {
