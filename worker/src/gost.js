@@ -174,6 +174,15 @@ for i in 1 2 3; do
   [ -f "/root/.acme.sh/\${DOMAIN}_ecc/fullchain.cer" ] && break
   sleep 20
 done
+# 签发失败 fallback：自签含域名 SAN 的证书，保证 hysteria 能起来（避免空证书导致服务挂）
+if [ ! -f "/root/.acme.sh/${DOMAIN}_ecc/fullchain.cer" ]; then
+  echo "[$(date)] 签发正式证书失败，回退自签证书(含SAN)" >> /var/log/sign-cert.log
+  openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
+    -days 3650 -subj "/CN=$DOMAIN" -addext "subjectAltName=DNS:$DOMAIN" 2>/dev/null
+  systemctl restart hysteria
+  exit 0
+fi
 # 部署到 hysteria 并重启
 /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \\
   --key-file /etc/hysteria/server.key \\
