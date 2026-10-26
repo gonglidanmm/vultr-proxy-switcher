@@ -436,7 +436,6 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
     from . import config
 
     plan_bw = {p.get("id"): int(p.get("bandwidth", 0) or 0) for p in plans}
-    cumulative = dict(config.get("server_cumulative_used", {}) or {})
     flow_reset = dict(config.get("server_flow_reset", {}) or {})
     running = [i for i in instances if i.get("power_status") == "running" and i.get("id")]
     if not running:
@@ -459,16 +458,15 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
         for iid, bw in pool.map(_fetch, [i["id"] for i in running]):
             total_out = sum(day.get("outgoing_bytes", 0) for day in bw.values())
             used_gb = total_out / 1e9
-            # 累计已用 = 该服务器历史累计（切换 IP 时随服务器迁移）+ 当前实例出站
-            # 减去重置基准：重置流量后从 0 重新算（否则 sync_flow 会用当前实例出站覆盖，重置失效）
-            cum = float(cumulative.get(iid, 0) or 0)
+            # 只算当前实例出站（历史累计改由 Worker 从 switch_requests 表 sum old_used_gb 计算，
+            # 不再用 server_cumulative_used 累加，避免切换时重复累加导致流量虚高）
             reset_base = float(flow_reset.get(iid, 0) or 0)
-            total_used = cum + max(0.0, used_gb - reset_base)
+            cur_used = max(0.0, used_gb - reset_base)
             quota = plan_bw.get(plan_by_id.get(iid, ""), 0)
             result[iid] = {
-                "used_gb": total_used,
+                "used_gb": cur_used,
                 "quota_gb": quota,
-                "remaining_gb": quota - total_used,
+                "remaining_gb": quota - cur_used,
             }
     return result
 

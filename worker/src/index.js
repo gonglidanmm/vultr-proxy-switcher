@@ -260,7 +260,7 @@ async function handleLogin(request, env) {
 async function handleMeNodes(env, user) {
   const today = bjToday();
   const rows = await env.DB.prepare(
-    "SELECT resource_type, resource_id, node_data, switch_count, switch_limit, switch_date, quota_gb, used_gb, note, created_at FROM assignments WHERE user_id = ? ORDER BY sort_order, id",
+    "SELECT a.resource_type, a.resource_id, a.node_data, a.switch_count, a.switch_limit, a.switch_date, a.quota_gb, a.used_gb, a.note, a.created_at, COALESCE((SELECT SUM(old_used_gb) FROM switch_requests s WHERE s.assignment_id = a.id AND s.status = 'done'), 0) AS hist_gb FROM assignments a WHERE a.user_id = ? ORDER BY a.sort_order, a.id",
   )
     .bind(user.id)
     .all();
@@ -279,8 +279,9 @@ async function handleMeNodes(env, user) {
     const limit = nodeLimit > 0 ? nodeLimit : (userLimit > 0 ? userLimit : 5);
     if ((r.switch_date || "") !== today) count = 0;
     // 流量配额：quota_gb > 0 才限流；用完标记 exhausted（客户端据此断流）
+    // 真实已用 = 历史累计（切换链 sum old_used_gb）+ 当前实例出站（assignments.used_gb，管理端同步）
     const quota = Number(r.quota_gb) || 0;
-    const used = Number(r.used_gb) || 0;
+    const used = (Number(r.hist_gb) || 0) + (Number(r.used_gb) || 0);
     return {
       resource_type: r.resource_type,
       resource_id: r.resource_id,

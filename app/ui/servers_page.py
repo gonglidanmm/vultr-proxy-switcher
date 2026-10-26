@@ -604,8 +604,8 @@ class ServersPage(QWidget):
         return False
 
     def _migrate_server_config(self, old_id: str, new_id: str) -> None:
-        """把旧实例 ID 的 per-server 配置（域名/凭据/备注/名称/到期/累计流量）迁移到新实例 ID。"""
-        for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry", "server_cumulative_used"):
+        """把旧实例 ID 的 per-server 配置（域名/凭据/备注/名称/到期）迁移到新实例 ID。"""
+        for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry"):
             def _migrate(m):
                 m = dict(m or {})
                 if old_id in m:
@@ -656,18 +656,10 @@ class ServersPage(QWidget):
             final_id = _trace(old_id)
             if final_id == old_id or final_id not in current_ids:
                 continue
-            old_used = self._switch_old_flow.get(old_id, 0)
-            if old_used <= 0:
-                old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
-            if old_used > 0:
-                def _accum(m):
-                    m = dict(m or {})
-                    # 累加（不是覆盖）：历史累计 + 这次旧实例出站
-                    m[old_id] = float(m.get(old_id, 0) or 0) + old_used
-                    return m
-                config.mutate("server_cumulative_used", _accum)
+            # 流量累计改由 Worker 从 switch_requests 表 sum old_used_gb 计算，
+            # 这里不再维护 server_cumulative_used（避免重复累加导致流量虚高）
             self._migrate_server_config(old_id, final_id)
-            self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {final_id[:8]}，已同步域名/配置/流量")
+            self._log(f"🔄 检测到 IP 切换：{old_id[:8]} → {final_id[:8]}，已同步域名/配置")
             migrated += 1
         # 切换记录里匹配不到的，只在 gone/added 各 1 个时保守迁移；否则跳过（宁可不同步也不乱迁）
         if migrated == 0 and len(gone) == 1 and len(added) == 1:
@@ -1482,28 +1474,10 @@ class ServersPage(QWidget):
             if changed:
                 config.set_value("relays", relays)
                 self._log(f"  已迁移中转节点到新实例，记得点「中转」→「应用到服务器」重新下发")
-            # 切换前：优先用 Worker 销毁旧机前抓的流量，fallback 本地带宽缓存
-            old_used = 0
-            try:
-                flow_data = api_client.list_switch_flow()
-                for s in flow_data.get("switches", []):
-                    if s.get("old_id") == old_id:
-                        old_used = float(s.get("old_used_gb", 0) or 0)
-                        break
-            except Exception:
-                pass
-            if old_used <= 0:
-                old_used = (self._bandwidth.get(old_id, {}) or {}).get("used_gb", 0)
-            if old_used > 0:
-                def _accum2(m):
-                    m = dict(m or {})
-                    # 累加（不是覆盖）：历史累计 + 这次旧实例出站
-                    m[old_id] = float(m.get(old_id, 0) or 0) + old_used
-                    return m
-                config.mutate("server_cumulative_used", _accum2)
-                self._log(f"  已用流量已记录：{old_used:.1f}G（切换后随服务器迁移）")
-            # 迁移 per-server 配置（域名/凭据/备注/名称/到期/累计流量）从旧实例 ID 到新实例 ID
-            for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry", "server_cumulative_used"):
+            # 流量累计改由 Worker 从 switch_requests 表 sum old_used_gb 计算，
+            # 这里不再维护 server_cumulative_used（避免重复累加导致流量虚高）
+            # 迁移 per-server 配置（域名/凭据/备注/名称/到期）从旧实例 ID 到新实例 ID
+            for key in ("server_domains", "server_configs", "server_notes", "server_names", "server_expiry"):
                 def _migrate(m):
                     m = dict(m or {})
                     if old_id in m:
