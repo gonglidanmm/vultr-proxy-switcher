@@ -8,7 +8,7 @@ import styleCss from "../assets/style.css" with { type: "text" };
 
 // 客户端版本管理：发新客户端（Rust）版本时改这里，前端据此提示老客户端升级
 const CLIENT_VERSION = "0.1.2";
-const CLIENT_DOWNLOAD_URL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
+const CLIENT_DOWNLOAD_URL = "https://ghfast.top/https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
 const CLIENT_RELEASE_NOTE = "切换IP提速、列表拖拽排序/列宽调整、侧边栏+用户管理、多项稳定性修复";
 // 前端构建时间戳（从 index.html 的 ?v= 参数解析，部署时自动更新；用于客户端热更新检测）
 const FRONTEND_STAMP = (indexHtml.match(/\?v=(\d+)/) || [])[1] || "0";
