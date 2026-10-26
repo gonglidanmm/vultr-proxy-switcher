@@ -45,9 +45,8 @@ def hysteria2_link(
 ) -> str:
     """生成 Hysteria2 分享链接。
 
-    官方 URI 格式：hysteria2://[auth@]host[:port]/[?params][#name]，端口部分支持端口跳跃的
-    多端口范围格式（如 host:20000-20100 或 host:8443,20000-20100）。mport 不是官方参数，
-    之前的 ?mport=20000-20100 软路由不识别导致导入失败。有跳跃范围时端口部分直接用范围。
+    官方 URI 格式：hysteria2://[auth@]host[:port]/[?params][#name]。端口跳跃用 ?mport= 参数
+    （v2rayN 实测认 ?mport=20000-20100，不认逗号分隔的端口范围）。mport 为空时省略参数。
     """
-    port_part = f"{port},{mport}" if mport else str(port)  # 实际端口 + 逗号 + 跳跃范围（hysteria2 官方 URI 端口跳跃格式）
-    return f"hysteria2://{password}@{host}:{port_part}/#{remark}"
+    mport_part = f"?mport={mport}" if mport else ""
+    return f"hysteria2://{password}@{host}:{port}/{mport_part}#{remark}"
