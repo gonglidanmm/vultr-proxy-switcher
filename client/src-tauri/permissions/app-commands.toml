@@ -13,4 +13,5 @@ commands.allow = [
   "test_proxy_multi",
   "get_version",
   "open_url",
+  "probe_url",
 ]

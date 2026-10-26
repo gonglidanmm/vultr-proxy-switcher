@@ -515,6 +515,37 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 探测一个 URL 是否可下载（curl HEAD，HTTP 200 才算可用）。用于下载镜像自动 fallback。
+#[tauri::command]
+async fn probe_url(url: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let mut curl_cmd = Command::new("curl");
+        curl_cmd.args([
+            "-s", "-I",
+            "--connect-timeout", "5",
+            "--max-time", "8",
+            "-o", null_dev,
+            "-w", "%{http_code}",
+            &url,
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            curl_cmd.creation_flags(0x08000000);
+        }
+        match curl_cmd.output() {
+            Ok(out) => {
+                let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(code == "200")
+            }
+            Err(e) => Err(format!("探测失败: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("探测任务失败: {e}"))?
+}
+
 fn main() {
     // Windows 高 DPI：Per-Monitor V2（否则 125%/150% 缩放屏上界面模糊）
     #[cfg(target_os = "windows")]
@@ -545,7 +576,8 @@ fn main() {
             test_proxy,
             test_proxy_multi,
             get_version,
-            open_url
+            open_url,
+            probe_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -9,8 +9,13 @@ import styleCss from "../assets/style.css" with { type: "text" };
 // 客户端版本管理：发新客户端（Rust）版本时改这里，前端据此提示老客户端升级
 const CLIENT_VERSION = "0.1.2";
 const CLIENT_DOWNLOAD_URL = "https://ghfast.top/https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
-const CLIENT_DOWNLOAD_URL_WIN = "https://ghfast.top/https://github.com/gonglidanmm/vultr-proxy-switcher/releases/download/win-v0.1.2/proxy-client_0.1.2_x64-setup.exe";
-const CLIENT_DOWNLOAD_URL_MAC = "https://ghfast.top/https://github.com/gonglidanmm/vultr-proxy-switcher/releases/download/mac-v0.1.2/proxy-client_0.1.2_aarch64.dmg";
+// 下载镜像（国内加速，按可靠性排序，客户端自动 fallback）
+const GH_DL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/download";
+const WIN_FILE = "win-v0.1.2/proxy-client_0.1.2_x64-setup.exe";
+const MAC_FILE = "mac-v0.1.2/proxy-client_0.1.2_aarch64.dmg";
+const MIRRORS = ["ghfast.top", "gh-proxy.com", "ghproxy.net"];
+const CLIENT_DOWNLOAD_URLS_WIN = MIRRORS.map((m) => `https://${m}/${GH_DL}/${WIN_FILE}`);
+const CLIENT_DOWNLOAD_URLS_MAC = MIRRORS.map((m) => `https://${m}/${GH_DL}/${MAC_FILE}`);
 const CLIENT_RELEASE_NOTE = "切换IP提速、列表拖拽排序/列宽调整、侧边栏+用户管理、多项稳定性修复";
 // 前端构建时间戳（从 index.html 的 ?v= 参数解析，部署时自动更新；用于客户端热更新检测）
 const FRONTEND_STAMP = (indexHtml.match(/\?v=(\d+)/) || [])[1] || "0";
@@ -1350,7 +1355,7 @@ export default {
 
       // 客户端版本检查（无需登录）
       if (method === "GET" && path === "/version") {
-        return json({ version: CLIENT_VERSION, download_url: CLIENT_DOWNLOAD_URL, download_url_win: CLIENT_DOWNLOAD_URL_WIN, download_url_mac: CLIENT_DOWNLOAD_URL_MAC, note: CLIENT_RELEASE_NOTE });
+        return json({ version: CLIENT_VERSION, download_url: CLIENT_DOWNLOAD_URL, download_urls_win: CLIENT_DOWNLOAD_URLS_WIN, download_urls_mac: CLIENT_DOWNLOAD_URLS_MAC, note: CLIENT_RELEASE_NOTE });
       }
 
       // 前端构建时间戳（客户端轮询检测热更新）

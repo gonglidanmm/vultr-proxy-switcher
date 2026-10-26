@@ -194,8 +194,9 @@ async function checkVersion() {
       lastPromptedVersion = data.version;
       const ua = navigator.userAgent || "";
       const isMac = /Mac|iPhone|iPad/i.test(ua);
-      const url = isMac ? (data.download_url_mac || data.download_url) : (data.download_url_win || data.download_url);
-      updateDialog.value?.show(data.version, localVer, data.note || "", url || "");
+      const urls = isMac ? (data.download_urls_mac || []) : (data.download_urls_win || []);
+      const fallback = data.download_url || "";
+      updateDialog.value?.show(data.version, localVer, data.note || "", urls, fallback);
     }
   } catch (e) {
     proxy.log("版本检查异常：" + (e && e.message ? e.message : e), "warn");
