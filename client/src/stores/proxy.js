@@ -161,7 +161,7 @@ export const useProxyStore = defineStore("proxy", {
       const activeProtos = protos.filter((p) => n[p] && n[p].port);
       if (!activeProtos.length) return results;
       // 动态端口基准：避免多节点并发测试时端口冲突（每台各用一段随机端口）
-      const basePort = 20000 + Math.floor(Math.random() * 2000); // 20000~22000
+      const basePort = 20000 + Math.floor(Math.random() * 20000); // 20000~40000（范围扩大10倍，避免并发端口冲突）
       const ports = activeProtos.map((_, i) => basePort + i);
       try {
         const configJson = this.buildXrayConfig(n, activeProtos, ports);
