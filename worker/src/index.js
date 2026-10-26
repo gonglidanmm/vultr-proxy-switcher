@@ -37,7 +37,7 @@ function bjToday() {
 }
 
 // 生成分享链接（补 links 用）：域名不变（卖点：切 IP 域名自动指向新 IP），links 的 host 用域名。
-// 与 app/share.py 保持一致：SS 用 websafe-base64 带 padding（SIP002），hysteria2 端口部分用 mport 范围。
+// 与 app/share.py 保持一致：SS 用 websafe-base64 带 padding（SIP002），hysteria2 端口用实际监听端口（不用 mport 范围，否则 v2rayN 等客户端导入失败）。
 function b64url(s) {
   return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-").replace(/\//g, "_");
 }
@@ -52,7 +52,7 @@ function buildLinks(nodeData) {
     socks5: `socks5://${s.username || ""}:${s.password}@${dom}:${s.port || 1080}#SOCKS5`,
     ss: `ss://${b64url(`${ss.method || "aes-256-gcm"}:${ss.password}`)}@${dom}:${ss.port || 45678}#SS`,
     reality: `vless://${rl.uuid || ""}@${dom}:${rl.port || 443}?encryption=none&flow=${rl.flow || "xtls-rprx-vision"}&security=reality&sni=${rl.sni || "www.cloudflare.com"}&fp=${rl.fp || "chrome"}&pbk=${rl.public_key || ""}&sid=${rl.short_id || ""}&type=tcp#Reality`,
-    hysteria2: `hysteria2://${hy.password || ""}@${dom}:${hy.mport || hy.port || 8443}/#Hysteria2`,
+    hysteria2: `hysteria2://${hy.password || ""}@${dom}:${hy.port || 8443}/#Hysteria2`,
   };
 }
 
