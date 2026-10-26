@@ -43,6 +43,15 @@ jobs:
           Copy-Item "$env:TEMP\sing-box-win\sing-box-1.14.2-windows-amd64\sing-box.exe" "client/src-tauri/binaries/sing-box-x86_64-pc-windows-msvc.exe" -Force
           Get-ChildItem client/src-tauri/binaries
 
+      - name: Download xray sidecar (Windows x86-64)
+        shell: pwsh
+        run: |
+          $zip = "$env:TEMP\xray-win.zip"
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-windows-64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:TEMP\xray-win" -Force
+          Copy-Item "$env:TEMP\xray-win\xray.exe" "client/src-tauri/binaries/xray-x86_64-pc-windows-msvc.exe" -Force
+          Get-ChildItem client/src-tauri/binaries
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

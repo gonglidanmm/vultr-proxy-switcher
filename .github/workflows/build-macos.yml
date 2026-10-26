@@ -42,6 +42,14 @@ jobs:
           chmod +x client/src-tauri/binaries/sing-box-aarch64-apple-darwin
           ls -la client/src-tauri/binaries
 
+      - name: Download xray sidecar (macOS arm64)
+        run: |
+          curl -sfL -o /tmp/xray-macos.zip "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-macos-arm64-v8a.zip"
+          unzip -o -q /tmp/xray-macos.zip -d /tmp/xray-macos
+          cp /tmp/xray-macos/xray client/src-tauri/binaries/xray-aarch64-apple-darwin
+          chmod +x client/src-tauri/binaries/xray-aarch64-apple-darwin
+          ls -la client/src-tauri/binaries
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
