@@ -40,3 +40,6 @@ tmp/
 client/bin/
 bin/
 client/src-tauri/binaries/
+
+# wrangler 本地缓存
+.wrangler/
