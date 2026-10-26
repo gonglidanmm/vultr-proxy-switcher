@@ -634,9 +634,7 @@ class ServersPage(QWidget):
         # 从 Worker 读切换记录（old_id → new_id 精确映射，避免 gone/added 排序错配把配置迁到错误实例）
         try:
             flow_data = api_client.list_switch_flow()
-            self._switch_old_flow = {s.get("old_id"): float(s.get("old_used_gb", 0) or 0) for s in flow_data.get("switches", [])}
         except Exception:
-            self._switch_old_flow = {}
             flow_data = {"switches": []}
         # 建立完整切换链（old → new），支持多步追踪（含 pending 记录，新机已 running 但客户端没轮询完成）
         flow_map = {s.get("old_id"): s.get("new_id") for s in flow_data.get("switches", []) if s.get("old_id") and s.get("new_id")}
