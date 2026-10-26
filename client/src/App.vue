@@ -80,7 +80,7 @@ function logout() {
     </aside>
     <main class="app-main">
       <NodesView v-if="activeView === 'vultr'" />
-      <UserView v-else-if="activeView === 'account'" />
+      <UserView v-else-if="activeView === 'account'" @back="activeView = 'vultr'" />
     </main>
   </div>
 </template>

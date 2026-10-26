@@ -6,6 +6,7 @@ import { api } from "../api/index.js";
 
 const auth = useAuthStore();
 const nodes = useNodesStore();
+const emit = defineEmits(["back"]);
 
 const curPassword = ref("");
 const newPassword = ref("");
@@ -48,7 +49,10 @@ async function changePassword() {
 
 <template>
   <div class="user-view">
-    <h2>用户管理</h2>
+    <div class="user-view-head">
+      <button class="back-btn" @click="emit('back')">← 返回</button>
+      <h2>用户管理</h2>
+    </div>
     <div class="account-card">
       <div class="account-row"><span class="row-label">用户名</span><strong class="row-value">{{ auth.user?.username || "未设置" }}</strong></div>
       <div class="account-row"><span class="row-label">到期时间</span><strong class="row-value">{{ expiryText }}</strong></div>

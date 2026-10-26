@@ -407,8 +407,16 @@ body {
 .app-main { flex: 1; overflow: auto; }
 
 /* ===== 用户管理页 ===== */
-.user-view { padding: 24px; max-width: 480px; }
-.user-view h2 { font-size: 20px; margin-bottom: 20px; }
+.user-view { padding: 24px; max-width: 520px; }
+.user-view-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.user-view-head h2 { font-size: 20px; margin: 0; }
+.back-btn {
+  display: inline-flex; align-items: center;
+  padding: 6px 12px; border-radius: 8px;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); font-size: 13px; cursor: pointer;
+}
+.back-btn:hover { background: var(--border); color: var(--fg); }
 .account-card {
   background: var(--card);
   border: 1px solid var(--border);
