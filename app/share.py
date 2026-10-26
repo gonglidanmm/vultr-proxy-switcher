@@ -49,5 +49,5 @@ def hysteria2_link(
     多端口范围格式（如 host:20000-20100 或 host:8443,20000-20100）。mport 不是官方参数，
     之前的 ?mport=20000-20100 软路由不识别导致导入失败。有跳跃范围时端口部分直接用范围。
     """
-    port_part = str(port)  # 用实际监听端口 8443，不用 mport 范围（v2rayN 等客户端不支持端口范围）
+    port_part = f"{port},{mport}" if mport else str(port)  # 实际端口 + 逗号 + 跳跃范围（hysteria2 官方 URI 端口跳跃格式）
     return f"hysteria2://{password}@{host}:{port_part}/#{remark}"

@@ -52,7 +52,7 @@ function buildLinks(nodeData) {
     socks5: `socks5://${s.username || ""}:${s.password}@${dom}:${s.port || 1080}#SOCKS5`,
     ss: `ss://${b64url(`${ss.method || "aes-256-gcm"}:${ss.password}`)}@${dom}:${ss.port || 45678}#SS`,
     reality: `vless://${rl.uuid || ""}@${dom}:${rl.port || 443}?encryption=none&flow=${rl.flow || "xtls-rprx-vision"}&security=reality&sni=${rl.sni || "www.cloudflare.com"}&fp=${rl.fp || "chrome"}&pbk=${rl.public_key || ""}&sid=${rl.short_id || ""}&type=tcp#Reality`,
-    hysteria2: `hysteria2://${hy.password || ""}@${dom}:${hy.port || 8443}/#Hysteria2`,
+    hysteria2: `hysteria2://${hy.password || ""}@${dom}:${hy.port || 8443}${hy.mport ? "," + hy.mport : ""}/#Hysteria2`,
   };
 }
 
