@@ -426,7 +426,14 @@ function onRegionClose() {
 let checkChain = Promise.resolve();
 
 async function checkNode(n) {
-  checkChain = checkChain.then(() => doCheckNode(n)).catch(() => {});
+  const rid = n.resource_id;
+  // 已在排队/检测中，忽略重复点击（避免队列堆积卡住）
+  if (switching[rid]?.checking) return;
+  switching[rid] = { ...switching[rid], checking: true, queued: true };
+  checkChain = checkChain.then(async () => {
+    switching[rid] = { ...switching[rid], queued: false };
+    await doCheckNode(n);
+  }).catch(() => {});
   await checkChain;
 }
 
@@ -586,7 +593,7 @@ onMounted(() => {
                   {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
-                  {{ switching[n.resource_id]?.checking ? `检测中 ${checkProgress(n)}` : '查联通性' }}
+                  {{ switching[n.resource_id]?.queued ? '排队中…' : switching[n.resource_id]?.checking ? `检测中 ${checkProgress(n)}` : '查联通性' }}
                 </button>
                 <button v-if="n.links && Object.keys(n.links).length" class="btn" @click="shareNode = n">复制节点</button>
               </div>
