@@ -29,6 +29,21 @@ export const useNodesStore = defineStore("nodes", {
         this.loading = false;
       }
     },
+    // 静默刷新：不显示 loading、不抛错（定时自动刷新用，避免界面闪烁）
+    async silentLoad() {
+      try {
+        const data = await api("/me/nodes");
+        this.nodes = data.nodes || [];
+        let maxExpiry = "";
+        for (const n of this.nodes) {
+          const e = (n.client_expiry || n.expiry || "").slice(0, 10);
+          if (e && e > maxExpiry) maxExpiry = e;
+        }
+        this.expiry = maxExpiry;
+      } catch (_) {
+        // 静默失败，保留旧数据
+      }
+    },
     // 退出登录时清空，避免切换账号后残留上一个账号的节点/测试信息
     reset() {
       this.nodes = [];

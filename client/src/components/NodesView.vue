@@ -468,6 +468,7 @@ onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
   checkVersion();
   setInterval(checkVersion, 60000); // 每 60 秒检查大版本更新（提示下载）
+  setInterval(() => nodes.silentLoad(), 60000); // 每 60 秒静默刷新节点数据（链接/配置/到期等）
   connectWs();
   onSwitchMessage(handleWsMessage);
 });
