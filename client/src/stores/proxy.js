@@ -113,6 +113,45 @@ export const useProxyStore = defineStore("proxy", {
       });
       return JSON.stringify(config);
     },
+    // 构建 xray 多协议配置（查联通性用 xray 内核，替代 sing-box——xray 在部分网络环境握手更稳）
+    buildXrayConfig(n, activeProtos, ports) {
+      const host = (n.domain && String(n.domain).includes(".")) ? n.domain : (n.host || n.ip || "");
+      const inbounds = [];
+      const outbounds = [{ tag: "direct", protocol: "freedom" }];
+      const rules = [];
+      activeProtos.forEach((p, idx) => {
+        const cfg = n[p];
+        if (!cfg || !cfg.port) return;
+        const tag = `in-${p}`;
+        inbounds.push({ tag, listen: "127.0.0.1", port: ports[idx], protocol: "socks", settings: { auth: "noauth", udp: true } });
+        let upstream = null;
+        if (p === "socks5") {
+          upstream = { tag: `up-${p}`, protocol: "socks", settings: { servers: [{ address: host, port: cfg.port, users: [{ user: cfg.username || "", pass: cfg.password || "" }] }] } };
+        } else if (p === "ss") {
+          upstream = { tag: `up-${p}`, protocol: "shadowsocks", settings: { servers: [{ address: host, port: cfg.port, method: cfg.method || "aes-256-gcm", password: cfg.password || "" }] } };
+        } else if (p === "reality") {
+          upstream = {
+            tag: `up-${p}`, protocol: "vless",
+            settings: { vnext: [{ address: host, port: cfg.port, users: [{ id: cfg.uuid || "", flow: cfg.flow || "xtls-rprx-vision", encryption: "none" }] }] },
+            streamSettings: { network: "tcp", security: "reality", realitySettings: { serverName: cfg.sni || "www.cloudflare.com", fingerprint: cfg.fp || "chrome", publicKey: cfg.public_key || "", shortId: cfg.short_id || "" } },
+          };
+        } else if (p === "hysteria2") {
+          upstream = {
+            tag: `up-${p}`, protocol: "hysteria",
+            settings: { version: 2, address: host, port: cfg.port },
+            streamSettings: {
+              network: "hysteria", security: "tls",
+              tlsSettings: { serverName: host, verifyPeerCertByName: "" },
+              hysteriaSettings: { version: 2, auth: cfg.password || "", udpIdleTimeout: 120 },
+            },
+          };
+        }
+        if (!upstream) return;
+        outbounds.push(upstream);
+        rules.push({ type: "field", inboundTag: [tag], outboundTag: `up-${p}` });
+      });
+      return JSON.stringify({ log: { loglevel: "warning" }, inbounds, outbounds, routing: { rules } });
+    },
     // 测试节点各协议「真实转发」（不是只测端口通）——并发测，各协议用独立端口避免冲突
     // onProgress(p, ms)：测完回调（用于状态回显）
     async testNodeProtocols(n, showDiagnostics = false, onProgress = null) {
@@ -125,8 +164,8 @@ export const useProxyStore = defineStore("proxy", {
       const basePort = 20000 + Math.floor(Math.random() * 2000); // 20000~22000
       const ports = activeProtos.map((_, i) => basePort + i);
       try {
-        const configJson = this.buildMultiConfig(n, activeProtos, ports);
-        // 单进程多协议：一次起一个 sing-box（共享进程），并发 curl 各协议，
+        const configJson = this.buildXrayConfig(n, activeProtos, ports);
+        // 单进程多协议：一次起一个 xray（共享进程），并发 curl 各协议，
         // 避免每协议各起一个进程导致 8~19 秒（Windows 进程启动慢）
         const msList = await Promise.race([
           invokeRust("test_proxy_multi", { configJson, ports }),

@@ -289,6 +289,21 @@ fn sing_box_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bin/sing-box")
 }
 
+fn xray_path() -> PathBuf {
+    // 打包后：xray sidecar 二进制在主程序同目录（Tauri 打包时重命名为 xray[.exe]）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let name = if cfg!(windows) { "xray.exe" } else { "xray" };
+            let p = dir.join(name);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    // dev 模式 fallback：client/bin/xray/xray
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bin/xray/xray")
+}
+
 /// 启动本地代理：写 sing-box 配置 + 启动进程（先停旧的）。
 #[tauri::command]
 fn start_proxy(config_json: String, state: State<ProxyState>) -> Result<(), String> {
@@ -457,14 +472,14 @@ async fn test_proxy_multi(config_json: String, ports: Vec<u16>) -> Result<Vec<Op
         let cfg = config_dir().join(format!("config-test-multi-{}.json", ports.first().unwrap_or(&0)));
         std::fs::write(&cfg, &config_json).map_err(|e| format!("写测试配置失败: {e}"))?;
 
-        let mut cmd = Command::new(sing_box_path());
-        cmd.args(["-c", cfg.to_str().unwrap_or_default(), "run"]);
+        let mut cmd = Command::new(xray_path());
+        cmd.args(["run", "-c", cfg.to_str().unwrap_or_default()]);
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
         }
-        let mut child = cmd.spawn().map_err(|e| format!("启动 sing-box 失败: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| format!("启动 xray 失败: {e}"))?;
 
         // 等所有端口就绪（sing-box 启动约 1-2 秒）
         let mut ready = false;
@@ -478,7 +493,7 @@ async fn test_proxy_multi(config_json: String, ports: Vec<u16>) -> Result<Vec<Op
         if !ready {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("sing-box 启动超时（端口未就绪）".to_string());
+            return Err("xray 启动超时（端口未就绪）".to_string());
         }
 
         // 并发 curl 各端口（共享一个 sing-box 进程，避免串行等待）

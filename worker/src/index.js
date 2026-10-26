@@ -7,12 +7,12 @@ import mainJs from "../assets/main.js" with { type: "text" };
 import styleCss from "../assets/style.css" with { type: "text" };
 
 // 客户端版本管理：发新客户端（Rust）版本时改这里，前端据此提示老客户端升级
-const CLIENT_VERSION = "0.1.2";
+const CLIENT_VERSION = "0.1.3";
 const CLIENT_DOWNLOAD_URL = "https://ghfast.top/https://github.com/gonglidanmm/vultr-proxy-switcher/releases/latest";
 // 下载镜像（国内加速，按可靠性排序，客户端自动 fallback）
 const GH_DL = "https://github.com/gonglidanmm/vultr-proxy-switcher/releases/download";
-const WIN_FILE = "win-v0.1.2/proxy-client_0.1.2_x64-setup.exe";
-const MAC_FILE = "mac-v0.1.2/proxy-client_0.1.2_aarch64.dmg";
+const WIN_FILE = "win-v0.1.3/proxy-client_0.1.3_x64-setup.exe";
+const MAC_FILE = "mac-v0.1.3/proxy-client_0.1.3_aarch64.dmg";
 const MIRRORS = ["ghfast.top", "gh-proxy.com", "ghproxy.net"];
 const CLIENT_DOWNLOAD_URLS_WIN = MIRRORS.map((m) => `https://${m}/${GH_DL}/${WIN_FILE}`);
 const CLIENT_DOWNLOAD_URLS_MAC = MIRRORS.map((m) => `https://${m}/${GH_DL}/${MAC_FILE}`);
