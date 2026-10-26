@@ -192,7 +192,10 @@ async function checkVersion() {
     proxy.log(`版本检查：本地 ${localVer}，服务器 ${data.version}，比较结果=${cmp}`, "info");
     if (cmp > 0 && lastPromptedVersion !== data.version) {
       lastPromptedVersion = data.version;
-      updateDialog.value?.show(data.version, localVer, data.note || "", data.download_url || "");
+      const ua = navigator.userAgent || "";
+      const isMac = /Mac|iPhone|iPad/i.test(ua);
+      const url = isMac ? (data.download_url_mac || data.download_url) : (data.download_url_win || data.download_url);
+      updateDialog.value?.show(data.version, localVer, data.note || "", url || "");
     }
   } catch (e) {
     proxy.log("版本检查异常：" + (e && e.message ? e.message : e), "warn");
