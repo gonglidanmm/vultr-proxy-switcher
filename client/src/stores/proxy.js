@@ -41,7 +41,6 @@ export const useProxyStore = defineStore("proxy", {
         log: { level: "error", timestamp: false },
         inbounds: [{ type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: listenPort }],
         outbounds: [{ type: "direct", tag: "direct" }],
-        dns: { servers: [{ type: "udp", tag: "dns-cn", server: "119.29.29.29" }] },
       };
       let upstream = null;
       if (proto === "socks5" && n.socks5) {
@@ -67,7 +66,6 @@ export const useProxyStore = defineStore("proxy", {
         };
       }
       if (!upstream) throw new Error("该节点缺少所选协议的配置");
-      upstream.domain_resolver = "dns-cn";
       config.outbounds.push(upstream);
       config.route = { final: "upstream" };
       return JSON.stringify(config);
@@ -79,7 +77,6 @@ export const useProxyStore = defineStore("proxy", {
         log: { level: "error", timestamp: false },
         inbounds: [],
         outbounds: [{ type: "direct", tag: "direct" }],
-        dns: { servers: [{ type: "udp", tag: "dns-cn", server: "119.29.29.29" }] },
         route: { rules: [], final: "direct" },
       };
       activeProtos.forEach((p, idx) => {
@@ -111,7 +108,6 @@ export const useProxyStore = defineStore("proxy", {
           };
         }
         if (!upstream) return;
-        upstream.domain_resolver = "dns-cn";
         config.outbounds.push(upstream);
         config.route.rules.push({ inbound: [tag], outbound: `up-${p}` });
       });
