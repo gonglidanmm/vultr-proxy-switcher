@@ -175,7 +175,7 @@ for i in 1 2 3; do
   sleep 20
 done
 # 签发失败 fallback：自签含域名 SAN 的证书，保证 hysteria 能起来（避免空证书导致服务挂）
-if [ ! -f "/root/.acme.sh/${DOMAIN}_ecc/fullchain.cer" ]; then
+if [ ! -f "/root/.acme.sh/\${DOMAIN}_ecc/fullchain.cer" ]; then
   echo "[$(date)] 签发正式证书失败，回退自签证书(含SAN)" >> /var/log/sign-cert.log
   openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
