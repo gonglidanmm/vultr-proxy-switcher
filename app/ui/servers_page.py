@@ -808,14 +808,11 @@ class ServersPage(QWidget):
             item.setToolTip(self._bandwidth_tip(bw))
 
     def _display_name(self, inst: dict) -> str:
-        """名称：自定义名 > Vultr-域名前缀 > Vultr label。"""
+        """名称：自定义名 > Vultr 官网 label（同步官网）。"""
         custom = config.get("server_names", {}).get(inst["id"], "")
         if custom:
             return custom
-        dom = domain.server_domain(inst["id"])
-        if dom:
-            return "Vultr-" + dom.split(".")[0]
-        return "Vultr-" + (inst.get("label", "") or inst["id"])
+        return inst.get("label", "") or ("Vultr-" + inst["id"])
 
     def _managed_row(self, inst: dict) -> dict:
         creds = gencreds.get_credentials(inst["id"])
@@ -1091,10 +1088,27 @@ class ServersPage(QWidget):
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.table.setItem(r, c, item)
 
+    @staticmethod
+    def _is_cgnat(ip: str) -> bool:
+        """CGNAT 段 100.64.0.0/10（IPv6 转发机的内网 IP）。"""
+        parts = (ip or "").split(".")
+        if len(parts) != 4:
+            return False
+        try:
+            a = int(parts[0])
+            b = int(parts[1])
+        except ValueError:
+            return False
+        return a == 100 and 64 <= b <= 127
+
     def _is_control(self, srv: dict) -> bool:
-        """控制机（如 IPv6 转发机 yduas-IPV6）：label 不是 proxy-node 前缀。禁止切换IP/删除等破坏性操作。"""
-        label = config.get("label", "vultr-proxy-node")
-        return not (srv.get("label", "") or "").startswith(label)
+        """控制机（IPv6 转发机 yduas-IPV6）：CGNAT IP 或 label 含 IPV6/控制机关键字。
+        用户自定义 label 的服务器（如「马克使用」「JP2服务器」）不是控制机，不能误判。"""
+        ip = srv.get("ip", "") or srv.get("main_ip", "")
+        if self._is_cgnat(ip):
+            return True
+        label = (srv.get("label", "") or "").lower()
+        return any(k in label for k in ("ipv6", "控制机", "转发机"))
 
     def _assign_btn(self, srv: dict) -> QPushButton:
         """分配用户按钮：已分配则显示「已分配」+ 禁用 + 悬停用户名；否则「分配用户」可点击。"""
@@ -2037,6 +2051,17 @@ class CreateServerDialog(QDialog):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(edit, 1)
+        copy_btn = QPushButton("复制")
+        copy_btn.setProperty("compact", True)
+        copy_btn.setFixedHeight(28)
+
+        def _do_copy(e=edit, b=copy_btn):
+            QApplication.clipboard().setText(e.text())
+            b.setText("已复制 ✓")
+            QTimer.singleShot(1500, lambda: b.setText("复制"))
+
+        copy_btn.clicked.connect(_do_copy)
+        row.addWidget(copy_btn)
         btn = QPushButton("生成")
         btn.setProperty("compact", True)
         btn.setFixedHeight(28)
@@ -2757,6 +2782,17 @@ class ServerSettingsDialog(QDialog):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(edit, 1)
+        copy_btn = QPushButton("复制")
+        copy_btn.setProperty("compact", True)
+        copy_btn.setFixedHeight(28)
+
+        def _do_copy(e=edit, b=copy_btn):
+            QApplication.clipboard().setText(e.text())
+            b.setText("已复制 ✓")
+            QTimer.singleShot(1500, lambda: b.setText("复制"))
+
+        copy_btn.clicked.connect(_do_copy)
+        row.addWidget(copy_btn)
         btn = QPushButton("生成")
         btn.setProperty("compact", True)
         btn.setFixedHeight(28)

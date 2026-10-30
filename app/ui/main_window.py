@@ -22,6 +22,7 @@ from .servers_page import ServersPage
 from .settings_page import SettingsPage
 from .users_page import UsersPage
 from .webshare_page import WebsharePage
+from .nodes_page import NodesPage
 
 _ASSETS = Path(__file__).resolve().parent.parent.parent / "assets"
 
@@ -64,7 +65,8 @@ class MainWindow(QWidget):
         vultr_item = QListWidgetItem("Vultr-IP")
         vultr_item.setIcon(QIcon(str(_ASSETS / "vultr_icon.svg")))
         self.nav.addItem(vultr_item)
-        self.nav.addItem(QListWidgetItem("Webshare-IP"))
+        self.nav.addItem(QListWidgetItem("🛜 Webshare-IP"))
+        self.nav.addItem(QListWidgetItem("🔗 中转节点"))
         self.nav.addItem(QListWidgetItem("👥 用户管理"))
         self.nav.addItem(QListWidgetItem("⚙️  设置"))
         self.nav.setCurrentRow(0)
@@ -82,10 +84,12 @@ class MainWindow(QWidget):
         self.proxy_controller = ProxyController()
         self.servers_page = ServersPage(self.proxy_controller)
         self.webshare_page = WebsharePage()
+        self.nodes_page = NodesPage()
         self.settings_page = SettingsPage()
         self.users_page = UsersPage()
         self.stack.addWidget(self.servers_page)
         self.stack.addWidget(self.webshare_page)
+        self.stack.addWidget(self.nodes_page)
         self.stack.addWidget(self.users_page)
         self.stack.addWidget(self.settings_page)
         outer.addWidget(self.stack, 1)
@@ -97,6 +101,8 @@ class MainWindow(QWidget):
         elif row == 1:
             self.webshare_page.activate()
         elif row == 2:
+            self.nodes_page.activate()
+        elif row == 3:
             self.users_page.activate()
 
     def shutdown(self) -> None:

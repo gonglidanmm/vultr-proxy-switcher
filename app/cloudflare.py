@@ -43,6 +43,18 @@ def get_zone_id(token: str, domain: str) -> str:
     raise CloudflareError(f"找不到域名 {domain} 所属的 zone（令牌权限不足？）")
 
 
+def list_zones(token: str) -> list[dict]:
+    """列出账号下所有 zone，返回 [{id, name}]（按 name 排序）。"""
+    r = _req("GET", f"{BASE}/zones", token, params={"per_page": 500})
+    if r.status_code != 200:
+        raise CloudflareError(f"列出域名失败 HTTP {r.status_code}")
+    zones = []
+    for z in r.json().get("result", []):
+        zones.append({"id": z["id"], "name": z.get("name", "")})
+    zones.sort(key=lambda x: x["name"])
+    return zones
+
+
 def sync_domain(token: str, zone_id: str, domain: str, ip: str, ttl: int = 60) -> tuple[str, str]:
     """创建或更新 A 记录 domain → ip（DNS-only，不代理）。返回 (action, record_id)。"""
     headers = _headers(token)

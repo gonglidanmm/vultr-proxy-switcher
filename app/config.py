@@ -55,6 +55,10 @@ DEFAULTS: dict = {
     "hysteria_mport": "20000-20100",
     # 中转节点（把第三方 SOCKS5 包装成本机加密 SS 中转）
     "relays": [],
+    # 历史最高已分配的 relay 端口（单调递增，删除后不复用，防止旧链接端口串到新 relay）
+    "relay_port_high_water": 45678,
+    # 取消中转时保留的密码（host:port -> 密码），重新生成同样 IP 复用，客户端不用改
+    "relay_password_pool": {},
     # webshare 静态住宅 / 代理服务器（API 密钥由用户在 webshare 页输入）
     "webshare_api_key": "",
     # 服务器备注（server_id -> 备注文本，用户手动输入便于区分多台）
@@ -66,7 +70,16 @@ DEFAULTS: dict = {
     "server_flow_reset": {},
     # 表格列宽（列索引 -> 宽度，用户手动拖宽后持久化，重开保留）
     "table_column_widths": {},
+    "server_order": [],               # 服务器列表拖拽排序（server_id 列表）
     "users_table_column_widths": {},  # 用户管理列表列宽
+    "user_order": [],                 # 用户列表拖拽排序（user id 列表）
+    "webshare_dc_col_widths": {},     # webshare 机房列表列宽
+    "webshare_res_col_widths": {},    # webshare 住宅列表列宽
+    "webshare_dc_order": [],          # webshare 机房列表拖拽排序（proxy_address:port 列表）
+    "webshare_res_order": [],         # webshare 住宅列表拖拽排序
+    "webshare_notes": {},             # webshare IP 备注（ip_key -> 备注文本）
+    "nodes_col_widths": {},           # 中转节点列表列宽
+    "nodes_order": [],                # 中转节点列表拖拽排序（relay id 列表）
 }
 
 _lock = threading.Lock()

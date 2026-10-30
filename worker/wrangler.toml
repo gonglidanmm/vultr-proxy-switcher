@@ -8,9 +8,9 @@ binding = "DB"
 database_name = "vultr-proxy-users"
 database_id = "d06a9a46-2158-441b-acee-46c8a7053b16"
 
-# 定时收尾：每隔 10 分钟自动处理卡住超过 10 分钟的切换记录（客户端超时放弃后仍能自愈）
+# 定时：每分钟收尾卡住的切换 + relay 流量同步 + relay 到期/用尽自动回收（Cloudflare cron 下限 1 分钟）
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["* * * * *"]
 
 # Durable Object：切换进度实时推送（WebSocket）
 [[durable_objects.bindings]]

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- 分配表（用户 ↔ 资源）
--- resource_type: 'vultr' = Vultr 服务器节点
+-- resource_type: 'vultr' = Vultr 服务器节点；'relay' = webshare 前置中转节点
 -- node_data: JSON 快照（host/端口/协议/订阅链接等），分配时由管理端写入
 -- quota_gb: 流量配额（GB），0 = 不限；由管理端分配时写入
 -- used_gb:  已用流量（GB），由管理端定期同步（Vultr API 出站累计）

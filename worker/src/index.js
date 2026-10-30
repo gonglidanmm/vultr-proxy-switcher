@@ -36,6 +36,13 @@ function bjToday() {
   return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
+// 北京时间「现在」（UTC+8，精确到秒），client_expiry 精确到秒，与此对齐做字符串比较
+function bjNow() {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
 // 生成分享链接（补 links 用）：域名不变（卖点：切 IP 域名自动指向新 IP），links 的 host 用域名。
 // 与 app/share.py 保持一致：SS 用 websafe-base64 带 padding（SIP002），hysteria2 端口用实际监听端口（不用 mport 范围，否则 v2rayN 等客户端导入失败）。
 function b64url(s) {
@@ -266,6 +273,7 @@ async function handleLogin(request, env) {
 
 async function handleMeNodes(env, user) {
   const today = bjToday();
+  const now = bjNow();
   const rows = await env.DB.prepare(
     "SELECT a.resource_type, a.resource_id, a.node_data, a.switch_count, a.switch_limit, a.switch_date, a.quota_gb, a.used_gb, a.note, a.created_at, COALESCE((SELECT SUM(old_used_gb) FROM switch_requests s WHERE s.assignment_id = a.id AND s.status = 'done'), 0) AS hist_gb FROM assignments a WHERE a.user_id = ? ORDER BY a.sort_order, a.id",
   )
@@ -289,6 +297,12 @@ async function handleMeNodes(env, user) {
     // 真实已用 = 历史累计（切换链 sum old_used_gb）+ 当前实例出站（assignments.used_gb，管理端同步）
     const quota = Number(r.quota_gb) || 0;
     const used = (Number(r.hist_gb) || 0) + (Number(r.used_gb) || 0);
+    // 到期判定：client_expiry（客户级，可调低）与 expiry（服务器级）取更早者，精确到秒（UTC+8）
+    const ce = data.client_expiry || "";
+    const exp = data.expiry || "";
+    let eff = exp;
+    if (ce && (!eff || ce < eff)) eff = ce;
+    const expired = !!eff && eff < now;
     return {
       resource_type: r.resource_type,
       resource_id: r.resource_id,
@@ -301,6 +315,7 @@ async function handleMeNodes(env, user) {
       flow_used_gb: used,
       flow_quota_gb: quota,
       flow_exhausted: quota > 0 && used >= quota,
+      expired,
     };
   });
   return json({ nodes });
@@ -1157,13 +1172,24 @@ async function assignResource(request, env) {
   const quotaGb = hasQuota ? Number(body.quota_gb) || 0 : null;
 
   if (!userId) return json({ error: "user_id 必填" }, 400);
-  if (resourceType !== "vultr") {
-    return json({ error: "resource_type 必须是 vultr" }, 400);
+  // resource_type 白名单：vultr（Vultr 服务器节点）或 relay（webshare 前置中转节点）
+  if (resourceType !== "vultr" && resourceType !== "relay") {
+    return json({ error: "resource_type 必须是 vultr 或 relay" }, 400);
   }
   if (!resourceId) return json({ error: "resource_id 必填" }, 400);
 
   const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!user) return json({ error: "用户不存在" }, 404);
+
+  // relay 专享：1 IP = 1 用户，已分配给别的用户则拒绝（部分唯一索引 idx_relay_exclusive 兜底防并发）
+  if (resourceType === "relay") {
+    const existing = await env.DB.prepare(
+      "SELECT user_id FROM assignments WHERE resource_type = 'relay' AND resource_id = ?",
+    ).bind(resourceId).first();
+    if (existing && Number(existing.user_id) !== userId) {
+      return json({ error: "该 IP 已分配给其他用户，不能重复分配" }, 409);
+    }
+  }
 
   const nodeDataJson = typeof nodeData === "string" ? nodeData : JSON.stringify(nodeData);
   if (hasQuota) {
@@ -1328,6 +1354,111 @@ async function sweepPending(env) {
   }
 }
 
+// ---------- relay 流量同步（phase 5）：Worker 每分钟拉前置服务器 /traffic 汇总到 used_gb ----------
+async function syncRelayTraffic(env) {
+  const rows = await env.DB.prepare(
+    "SELECT id, resource_id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
+  ).all();
+  if (!rows.results || !rows.results.length) return;
+  // 按前置服务器分组（同一服务器只拉一次 /traffic）
+  const servers = new Map();
+  for (const r of rows.results) {
+    let nd = {};
+    try { nd = JSON.parse(r.node_data || "{}"); } catch (_) {}
+    const sw = (nd._creds && nd._creds.switch) || {};
+    const sip = sw.server_ip || "";
+    if (!sip) continue;
+    if (!servers.has(sip)) servers.set(sip, { api_key: sw.api_key || "", relays: [] });
+    servers.get(sip).relays.push({ id: r.id, rid: r.resource_id, nd, used: Number(r.used_gb) || 0 });
+  }
+  for (const [sip, info] of servers) {
+    let data;
+    try {
+      const resp = await fetch(`http://${sip}:8080/traffic`, { headers: { "X-Api-Key": info.api_key } });
+      if (!resp.ok) continue;
+      data = await resp.json();
+    } catch (e) {
+      console.error("syncRelayTraffic fetch 失败:", sip, e && e.message ? e.message : e);
+      continue;
+    }
+    const traffic = (data && data.traffic) || {};
+    for (const r of info.relays) {
+      const t = traffic[r.rid];
+      if (!t) continue;
+      const raw = (Number(t.in) || 0) + (Number(t.out) || 0);
+      const creds = r.nd._creds = (r.nd._creds || {});
+      if (creds.traffic_raw === undefined) {
+        // 首次同步（新分配或重分配）：当前计数只做基线，不计入已用（避免把上一任客户的累计流量算进来）
+        creds.traffic_raw = raw;
+        await env.DB.prepare("UPDATE assignments SET node_data = ? WHERE id = ?")
+          .bind(JSON.stringify(r.nd), r.id).run();
+        continue;
+      }
+      const lastRaw = Number(creds.traffic_raw) || 0;
+      let used = r.used;
+      if (raw >= lastRaw) {
+        used += (raw - lastRaw) / 1e9;   // 正常增量
+      } else {
+        used += raw / 1e9;               // iptables 计数重置（服务器重启），只加当前值不倒退
+      }
+      creds.traffic_raw = raw;
+      await env.DB.prepare("UPDATE assignments SET used_gb = ?, node_data = ? WHERE id = ?")
+        .bind(used, JSON.stringify(r.nd), r.id).run();
+    }
+  }
+}
+
+// ---------- relay 到期/流量用尽自动回收（phase 6）：停服务 + 删分配 + 记日志 ----------
+async function recycleExpiredRelays(env) {
+  const now = bjNow();
+  const rows = await env.DB.prepare(
+    "SELECT id, user_id, resource_id, node_data, quota_gb, used_gb FROM assignments WHERE resource_type = 'relay'",
+  ).all();
+  for (const r of rows.results) {
+    let nd = {};
+    try { nd = JSON.parse(r.node_data || "{}"); } catch (_) {}
+    const ce = nd.client_expiry || "";
+    const quota = Number(r.quota_gb) || 0;
+    const used = Number(r.used_gb) || 0;
+    const expired = !!ce && ce < now;
+    const exhausted = quota > 0 && used >= quota;
+    if (!expired && !exhausted) continue;
+    const reason = expired ? "expired" : "exhausted";
+    const sw = (nd._creds && nd._creds.switch) || {};
+    const sip = sw.server_ip || "";
+    const apikey = sw.api_key || "";
+    // 1) 停服务（best-effort，失败不阻断：删分配后客户端 /me/nodes 不再返回该节点，自然停用）
+    if (sip) {
+      try {
+        await fetch(`http://${sip}:8080/stop`, {
+          method: "POST",
+          headers: { "X-Api-Key": apikey, "Content-Type": "application/json" },
+          body: JSON.stringify({ relay_id: r.resource_id }),
+        });
+      } catch (e) {
+        console.error("recycle stop 失败:", r.resource_id, e && e.message ? e.message : e);
+      }
+    }
+    // 2) 记回收日志（管理端回收页据此同步）
+    let username = "";
+    try {
+      const u = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(r.user_id).first();
+      username = (u && u.username) || "";
+    } catch (_) {}
+    await env.DB.prepare(
+      "INSERT INTO recycle_log (resource_id, resource_type, user_id, username, reason, created_at) VALUES (?, 'relay', ?, ?, ?, ?)",
+    ).bind(r.resource_id, r.user_id, username, reason, new Date().toISOString()).run();
+    // 3) 删分配（1 IP = 1 用户，释放唯一索引，回归后可重新分配）
+    await env.DB.prepare("DELETE FROM assignments WHERE id = ?").bind(r.id).run();
+    console.log(`[recycle] relay ${r.resource_id} 已回收(${reason}) user=${username}`);
+  }
+}
+
+async function listRecycleLog(env) {
+  const rows = await env.DB.prepare("SELECT * FROM recycle_log ORDER BY id DESC LIMIT 200").all();
+  return json({ recycle: rows.results || [] });
+}
+
 export default {
   SwitchRoom, // Durable Object 类（WebSocket 实时推送）
   async fetch(request, env) {
@@ -1430,6 +1561,28 @@ export default {
         return json({ error: "管理员认证失败" }, 401);
       }
 
+      // webshare API 代理：管理端免翻墙拉 webshare 列表（复用管理员鉴权）
+      // 路径映射：/ws-proxy/subscription/plan/ -> https://proxy.webshare.io/api/v2/subscription/plan/
+      if (path.startsWith("/ws-proxy/")) {
+        const wsPath = path.slice("/ws-proxy".length);
+        const auth = request.headers.get("Authorization") || "";
+        let upstream;
+        try {
+          upstream = await fetch("https://proxy.webshare.io/api/v2" + wsPath + url.search, {
+            method: "GET",
+            headers: { "Authorization": auth, "User-Agent": "vultr-proxy-switcher/1.0" },
+          });
+        } catch (e) {
+          console.error("ws-proxy upstream error:", e && e.message ? e.message : e);
+          return json({ error: "webshare 上游请求失败" }, 502);
+        }
+        const body = await upstream.arrayBuffer();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json", ...CORS },
+        });
+      }
+
       if (path === "/admin/users" && method === "GET") return await listUsers(env);
       if (path === "/admin/users" && method === "POST") return await createUser(request, env);
       if (path === "/admin/stats" && method === "GET") return await getStats(env);
@@ -1462,6 +1615,7 @@ export default {
         if (!rt || !rid) return json({ error: "resource_type 和 resource_id 必填" }, 400);
         return await listResourceAssignments(env, rt, rid);
       }
+      if (path === "/admin/recycle-log" && method === "GET") return await listRecycleLog(env);
 
       return json({ error: "Not Found" }, 404);
     } catch (e) {
@@ -1473,10 +1627,19 @@ export default {
   // Cloudflare Cron Trigger：每 10 分钟收尾卡住的切换记录（wrangler.toml triggers.crons）
   async scheduled(_event, env) {
     try {
-      console.log(`[scheduled] 触发收尾，VULTR_API_KEY=${env.VULTR_API_KEY ? "有" : "空"}`);
       await sweepPending(env);
     } catch (e) {
       console.error("scheduled sweepPending 异常:", e && e.message ? e.message : e);
+    }
+    try {
+      await syncRelayTraffic(env);   // relay 流量同步（先同步，再判用尽）
+    } catch (e) {
+      console.error("scheduled syncRelayTraffic 异常:", e && e.message ? e.message : e);
+    }
+    try {
+      await recycleExpiredRelays(env);  // relay 到期/用尽自动回收停服务
+    } catch (e) {
+      console.error("scheduled recycleExpiredRelays 异常:", e && e.message ? e.message : e);
     }
   },
 };

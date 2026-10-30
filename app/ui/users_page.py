@@ -94,6 +94,45 @@ def _parse_dt(text: str):
     return None
 
 
+# relay 分配「使用时长」：按天/按小时/按分钟三档，默认按天
+# 按天 1-30 天；按小时 1-23 小时；按分钟 5-59 分钟（5 分钟用于测试）
+_UNIT_SECONDS = (86400, 3600, 60)      # 天 / 小时 / 分钟
+_UNIT_RANGES = ((1, 30), (1, 23), (5, 59))
+_UNIT_SUFFIXES = (" 天", " 小时", " 分钟")
+
+
+def _duration_expiry(seconds: int) -> str:
+    """使用时长 → 精确到秒的到期时间（北京时间，与 Worker bjToday 的 UTC+8 一致）。"""
+    from datetime import timedelta, timezone
+
+    tz = timezone(timedelta(hours=8))
+    return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _max_settable_duration(sub_expiry: str) -> str:
+    """订阅到期 − 现在 = 最多可设置时长，格式化成人类可读（天/小时/分钟）。"""
+    from datetime import timedelta, timezone
+
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz)
+    se = sub_expiry if len(sub_expiry) > 10 else sub_expiry + " 23:59:59"
+    try:
+        max_sec = int((datetime.strptime(se, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz) - now).total_seconds())
+    except Exception:
+        return "未知"
+    if max_sec < 0:
+        return "0 分钟（订阅已到期）"
+    if max_sec >= 86400:
+        d, rem = divmod(max_sec, 86400)
+        h = rem // 3600
+        return f"{d} 天" + (f" {h} 小时" if h else "")
+    if max_sec >= 3600:
+        h, rem = divmod(max_sec, 3600)
+        m = rem // 60
+        return f"{h} 小时" + (f" {m} 分钟" if m else "")
+    return f"{max_sec // 60} 分钟"
+
+
 def _user_resource_expiry(user_id: int) -> str:
     """计算该用户名下分配的资源里最早的到期时间（编辑用户时的参考上限）。"""
     try:
@@ -469,6 +508,10 @@ class UsersPage(QWidget):
     def _unassign_assign(self, a: dict) -> None:
         node = a.get("node_data", {}) or {}
         name = node.get("name", "") or a.get("resource_id", "")
+        if a.get("resource_type") == "relay":
+            # relay 回收：解除分配 + 停服务 + 标记回收（进回收页冷却）
+            self._recycle_relay(a, node, name)
+            return
         # 查该资源有几个客户在用
         try:
             data = api_client.list_resource_assignments(a["resource_type"], a["resource_id"])
@@ -489,6 +532,68 @@ class UsersPage(QWidget):
         except ApiError as e:
             self._log(f"❌ 取消分配失败：{e.message}")
             QMessageBox.warning(self, "取消失败", e.message)
+
+    def _recycle_relay(self, a: dict, node: dict, name: str) -> None:
+        """手动回收 relay：删 D1 分配 + SSH 停服务 + 标记回收（进回收页冷却）。"""
+        relay_id = str(a.get("resource_id", ""))
+        username = a.get("username", "")
+        ret = QMessageBox.question(
+            self, "回收 IP",
+            f"确定回收「{username}」的「{name}」吗？\n\n回收后：停止该 IP 的服务、解除分配、进「回收页」冷却，不能立即分配给其他用户。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            api_client.unassign(a["user_id"], "relay", relay_id)
+        except ApiError as e:
+            QMessageBox.warning(self, "回收失败", e.message)
+            return
+        creds = node.get("_creds", {}) or {}
+        server_id = creds.get("server_id", "")
+        server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
+        if server_ip and server_id:
+            self._ssh_stop_relay(relay_id, server_id, server_ip)
+        self._mark_recycled(relay_id, username)
+        self._log(f"✅ 已回收「{username}」的「{name}」，IP 进回收页冷却")
+        self.refresh()
+
+    def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
+        """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等；失败不阻断回收）。"""
+        import subprocess
+
+        root_pw = config.get("root_password", "")
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    root_pw = m.get("password", "") or root_pw
+                    break
+        else:
+            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
+            root_pw = sc.get("root_password") or root_pw
+        if not root_pw or not server_ip:
+            return
+        cmd = f"systemctl disable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; echo DONE"
+        try:
+            subprocess.run(
+                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=10", f"root@{server_ip}", cmd],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            pass  # 停服务失败不阻断回收（兜底清理在手动回归）
+
+    def _mark_recycled(self, relay_id: str, username: str) -> None:
+        """标记 relay 为已回收（status=recycled + 回收时间 + 原用户）。"""
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if r.get("id") == relay_id:
+                r["status"] = "recycled"
+                r["recycled_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                r["recycled_from_user"] = username
+                break
+        config.set_value("relays", relays)
 
     # ---------------- 操作 ----------------
 
@@ -1015,7 +1120,7 @@ class _AssignDetailDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        rt_name = "Vultr 服务器节点"
+        rt_name = "中转节点（relay）" if resource_type == "relay" else "Vultr 服务器节点"
         head = QLabel(
             f'<span style="font-size:15px;font-weight:700;color:#f2f2f7;">{rt_name}</span> '
             f'<span style="color:#0a84ff;font-family:monospace;">{resource_id}</span>'
@@ -1164,7 +1269,7 @@ class _AssignDetailDialog(QDialog):
             row += n
 
     def _assign(self) -> None:
-        dlg = _UserPickerDialog(self, self._assigned_ids, self.resource_expiry, self.total_quota_gb, self.remaining_quota)
+        dlg = _UserPickerDialog(self, self._assigned_ids, self.resource_expiry, self.total_quota_gb, self.remaining_quota, self.resource_type)
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.user_id is None:
             return
         try:
@@ -1184,10 +1289,10 @@ class _AssignDetailDialog(QDialog):
 class _UserPickerDialog(QDialog):
     """选择要分配的用户（只列活跃用户）。"""
 
-    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0) -> None:
+    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("选择用户")
-        self.setMinimumSize(500, 320)
+        self.setMinimumSize(500, 360)
         self.user_id: int | None = None
         self.expires_at: str | None = None
         self.quota_gb: float = 0.0
@@ -1195,6 +1300,8 @@ class _UserPickerDialog(QDialog):
         self._resource_expiry = resource_expiry
         self._total_quota_gb = total_quota_gb
         self._remaining_quota = remaining_quota
+        self._resource_type = resource_type
+        self._sub_info = sub_info or {}
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -1204,24 +1311,75 @@ class _UserPickerDialog(QDialog):
         self.user_combo = QComboBox()
         layout.addWidget(self.user_combo)
 
-        if resource_expiry:
-            exp_info = QLabel(f'资源原始到期：<span style="color:#ff9f0a;">{str(resource_expiry)[:10]}</span>')
-            layout.addWidget(exp_info)
+        if resource_type == "relay":
+            # relay：使用时长（墙钟时长）+ 独立流量配额 + 订阅信息
+            info = self._sub_info
+            _expiry_full = info.get("expiry") or ""
+            expiry = _expiry_full[:10] if _expiry_full else "未加载"
+            plan_total = info.get("plan_total_gb", 0) or 0
+            used = info.get("used_gb", 0) or 0
+            assigned = info.get("assigned_gb", 0) or 0
+            remaining = info.get("remaining_gb", 0) or 0
+            info_text = f'订阅到期 <b style="color:#ff9f0a;">{expiry}</b>'
+            if plan_total > 0:
+                info_text += (
+                    f'　·　套餐流量 <b>{plan_total:g}GB</b>　·　'
+                    f'已使用 <b style="color:#ff9f0a;">{used:.1f}GB</b>　·　'
+                    f'已分配 <b>{assigned:.1f}GB</b>　·　'
+                    f'总剩余 <b style="color:#32d74b;">{remaining:.1f}GB</b>'
+                )
+            else:
+                info_text += '　·　<span style="color:#ff453a;">套餐未加载（请先在 Webshare-IP 页刷新）</span>'
+            if info.get("mixed"):
+                info_text += '　·　<span style="color:#ff9f0a;">⚠️ 混合类型按机房流量池计</span>'
+            info_lbl = QLabel(info_text)
+            info_lbl.setStyleSheet("color:#98989d;")
+            layout.addWidget(info_lbl)
 
-        if total_quota_gb > 0:
-            quota_lbl = QLabel(f"流量配额（GB，留空 = 分配全部剩余 {remaining_quota:.0f}G）")
+            dur_lbl = QLabel("使用时长（不能晚于订阅到期）")
+            dur_lbl.setStyleSheet("color:#98989d;")
+            layout.addWidget(dur_lbl)
+            dur_row = QHBoxLayout()
+            self.unit_combo = QComboBox()
+            self.unit_combo.addItems(["按天", "按小时", "按分钟"])
+            self.unit_combo.setCurrentIndex(0)  # 默认按天
+            self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+            dur_row.addWidget(self.unit_combo)
+            self.duration_spin = QSpinBox()
+            self.duration_spin.setRange(*_UNIT_RANGES[0])
+            self.duration_spin.setValue(1)
+            self.duration_spin.setSuffix(_UNIT_SUFFIXES[0])
+            dur_row.addWidget(self.duration_spin)
+            dur_row.addStretch(1)
+            layout.addLayout(dur_row)
+
+            quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
             quota_lbl.setStyleSheet("color:#98989d;")
             layout.addWidget(quota_lbl)
             self.quota_edit = QLineEdit()
-            self.quota_edit.setPlaceholderText(f"如 100，不能大于剩余 {remaining_quota:.0f}G")
+            self.quota_edit.setPlaceholderText(
+                f"如 100，不能大于剩余 {remaining:.1f}G" if plan_total > 0 else "如 100，留空 = 不限额"
+            )
             layout.addWidget(self.quota_edit)
+        else:
+            if resource_expiry:
+                exp_info = QLabel(f'资源原始到期：<span style="color:#ff9f0a;">{str(resource_expiry)[:10]}</span>')
+                layout.addWidget(exp_info)
 
-        exp_lbl = QLabel("用户到期时间" + (f"（留空 = 资源到期 {resource_expiry}）" if resource_expiry else "（留空 = 不过期）"))
-        exp_lbl.setStyleSheet("color:#98989d;")
-        layout.addWidget(exp_lbl)
-        self.expiry_edit = QLineEdit()
-        self.expiry_edit.setPlaceholderText("如 2026-12-31 23:59，不能晚于资源到期")
-        layout.addWidget(self.expiry_edit)
+            if total_quota_gb > 0:
+                quota_lbl = QLabel(f"流量配额（GB，留空 = 分配全部剩余 {remaining_quota:.0f}G）")
+                quota_lbl.setStyleSheet("color:#98989d;")
+                layout.addWidget(quota_lbl)
+                self.quota_edit = QLineEdit()
+                self.quota_edit.setPlaceholderText(f"如 100，不能大于剩余 {remaining_quota:.0f}G")
+                layout.addWidget(self.quota_edit)
+
+            exp_lbl = QLabel("用户到期时间" + (f"（留空 = 资源到期 {resource_expiry}）" if resource_expiry else "（留空 = 不过期）"))
+            exp_lbl.setStyleSheet("color:#98989d;")
+            layout.addWidget(exp_lbl)
+            self.expiry_edit = QLineEdit()
+            self.expiry_edit.setPlaceholderText("如 2026-12-31 23:59，不能晚于资源到期")
+            layout.addWidget(self.expiry_edit)
 
         self.hint = QLabel("")
         self.hint.setStyleSheet("color:#6c6c70;font-size:12px;")
@@ -1232,6 +1390,13 @@ class _UserPickerDialog(QDialog):
         layout.addWidget(btns)
 
         self._load_users()
+
+    def _on_unit_changed(self, idx: int) -> None:
+        """切换时长单位时更新取值范围与默认值（按天 1-30 / 按小时 1-23 / 按分钟 5-59）。"""
+        lo, hi = _UNIT_RANGES[idx]
+        self.duration_spin.setRange(lo, hi)
+        self.duration_spin.setSuffix(_UNIT_SUFFIXES[idx])
+        self.duration_spin.setValue(lo)
 
     def _load_users(self) -> None:
         try:
@@ -1270,13 +1435,32 @@ class _UserPickerDialog(QDialog):
                 if q <= 0:
                     QMessageBox.warning(self, "提示", "流量配额必须大于 0")
                     return
+                # relay：不能超过订阅剩余流量
+                if self._resource_type == "relay":
+                    plan_total = self._sub_info.get("plan_total_gb", 0) or 0
+                    remaining = self._sub_info.get("remaining_gb", 0) or 0
+                    if plan_total > 0 and q > remaining + 1e-6:
+                        QMessageBox.warning(self, "提示", f"流量配额不能大于剩余流量 {remaining:.1f}G")
+                        return
                 if self._total_quota_gb > 0 and q > self._remaining_quota + 1e-6:
                     QMessageBox.warning(self, "提示", f"流量配额不能大于剩余流量 {self._remaining_quota:.0f}G")
                     return
                 self.quota_gb = q
             else:
                 self.quota_gb = self._remaining_quota  # 留空 = 分配全部剩余
-        if hasattr(self, "expiry_edit"):
+        if self._resource_type == "relay":
+            unit_idx = self.unit_combo.currentIndex()
+            seconds = self.duration_spin.value() * _UNIT_SECONDS[unit_idx]
+            self.expires_at = _duration_expiry(seconds)
+            sub_expiry = self._sub_info.get("expiry") or ""
+            if sub_expiry:
+                # 客户到期（完整时间戳）不能晚于订阅到期；订阅到期可能是完整时间戳或纯日期
+                exp_cmp = self.expires_at if len(sub_expiry) > 10 else self.expires_at[:10]
+                if exp_cmp > sub_expiry:
+                    _max_txt = _max_settable_duration(sub_expiry)
+                    QMessageBox.warning(self, "提示", f"使用时长超出订阅到期时间（{sub_expiry[:10]}），最多可设置 {_max_txt}，请缩短时长")
+                    return
+        elif hasattr(self, "expiry_edit"):
             exp_text = self.expiry_edit.text().strip()
             if exp_text:
                 exp_dt = _parse_dt(exp_text)

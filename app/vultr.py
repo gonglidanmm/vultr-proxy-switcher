@@ -370,6 +370,10 @@ class VultrAPI:
     def delete_instance(self, iid: str) -> None:
         self._req("DELETE", f"/instances/{iid}")
 
+    def rename_instance(self, iid: str, label: str) -> dict:
+        """改实例 label（名称同步到 Vultr 控制台）。"""
+        return self._req("PATCH", f"/instances/{iid}", json={"label": label}).get("instance", {})
+
     def get_account(self) -> dict:
         return self._req("GET", "/account").get("account", {})
 

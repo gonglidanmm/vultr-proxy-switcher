@@ -77,6 +77,25 @@ class SettingsPage(QWidget):
         vc.addLayout(form)
         root.addWidget(vultr_card)
 
+        # Webshare 卡片
+        ws_card = QFrame()
+        ws_card.setProperty("card", True)
+        wc = QVBoxLayout(ws_card)
+        wc.setContentsMargins(20, 16, 20, 16)
+        wc.setSpacing(12)
+        wsec = QLabel("Webshare")
+        wsec.setProperty("sectionTitle", True)
+        wc.addWidget(wsec)
+        wform = QFormLayout()
+        wform.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.ws_api_key = QLineEdit(config.get("webshare_api_key", ""))
+        self.ws_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ws_api_key.setPlaceholderText("webshare API 密钥（dashboard → Account → API）")
+        self.ws_api_key.setMinimumWidth(360)
+        wform.addRow("API 密钥", self.ws_api_key)
+        wc.addLayout(wform)
+        root.addWidget(ws_card)
+
         # 代理卡片
         proxy_card = QFrame()
         proxy_card.setProperty("card", True)
@@ -157,6 +176,7 @@ class SettingsPage(QWidget):
             domain_name=self.domain_edit.text().strip(),
             cf_token=self.cf_token.text().strip(),
             zone_id=self.zone_edit.text().strip(),
+            webshare_api_key=self.ws_api_key.text().strip(),
         )
         self.save_btn.setText("已保存 ✓")
         self.save_btn.setEnabled(False)

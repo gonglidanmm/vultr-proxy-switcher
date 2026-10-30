@@ -152,6 +152,11 @@ def list_all_assignments() -> dict:
     return _request("GET", "/admin/all-assignments")
 
 
+def list_recycle_log() -> dict:
+    """查询 relay 自动回收日志（Worker cron 到期/流量用尽自动回收后记录）。"""
+    return _request("GET", "/admin/recycle-log")
+
+
 # ---------------- 切换 IP（走 Worker） ----------------
 
 
