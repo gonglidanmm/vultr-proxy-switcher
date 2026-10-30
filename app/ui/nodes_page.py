@@ -657,7 +657,7 @@ class NodesPage(QWidget):
         target = next((r for r in recycled if str(r.get("id", "")) == str(rid)), None)
         if target:
             returned = config.get("returned_ips", {}) or {}
-            returned[f"{target.get('host','')}:{target.get('port','')}"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            returned[f"{target.get('host','')}:{target.get('port','')}"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             config.set_value("returned_ips", returned)
         recycled = [r for r in recycled if str(r.get("id", "")) != str(rid)]
         config.set_value("recycled_relays", recycled)

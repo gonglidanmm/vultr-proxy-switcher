@@ -814,7 +814,7 @@ class WebsharePage(QWidget):
                 badge = QLabel("回归")
                 badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 badge.setStyleSheet("background:#f5c542; color:#1a1a1a; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
-                badge.setToolTip("刚回归的 IP（曾回收），注意可能存在问题")
+                badge.setToolTip(f"回归时间：{returned_ips.get(ip_key, '')}（曾回收，注意可能存在问题）")
                 table.setCellWidget(row, 8, badge)
             else:
                 self._item(table, row, 8, "")
