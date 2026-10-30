@@ -552,8 +552,6 @@ onMounted(() => {
             <th :style="colStyle('name')">名称<span class="col-resizer" @mousedown="startColResize('name', $event)"></span></th>
             <th :style="colStyle('type')">类型<span class="col-resizer" @mousedown="startColResize('type', $event)"></span></th>
             <th :style="colStyle('location')">国家城市<span class="col-resizer" @mousedown="startColResize('location', $event)"></span></th>
-            <th :style="colStyle('ip')">IP<span class="col-resizer" @mousedown="startColResize('ip', $event)"></span></th>
-            <th :style="colStyle('domain')">域名<span class="col-resizer" @mousedown="startColResize('domain', $event)"></span></th>
             <th :style="colStyle('created')">分配时间<span class="col-resizer" @mousedown="startColResize('created', $event)"></span></th>
             <th :style="colStyle('expiry')">到期时间<span class="col-resizer" @mousedown="startColResize('expiry', $event)"></span></th>
             <th :style="colStyle('status')">状态<span class="col-resizer" @mousedown="startColResize('status', $event)"></span></th>
@@ -565,10 +563,10 @@ onMounted(() => {
         </thead>
         <tbody>
           <tr v-if="nodes.loading && nodes.nodes.length === 0">
-            <td colspan="14" class="empty">加载中…</td>
+            <td colspan="12" class="empty">加载中…</td>
           </tr>
           <tr v-else-if="!nodes.nodes.length">
-            <td colspan="14" class="empty">暂无分配的节点，请联系管理员。</td>
+            <td colspan="12" class="empty">暂无分配的节点，请联系管理员。</td>
           </tr>
           <tr v-for="(n, i) in nodes.nodes" :key="n.resource_id" :data-rid="n.resource_id"
               draggable="true"
@@ -582,8 +580,6 @@ onMounted(() => {
             <td>{{ n.name || "Vultr 线路" }}</td>
             <td><span class="type-badge" :class="n.resource_type === 'relay' ? 'type-relay' : 'type-vultr'">{{ n.resource_type === 'relay' ? '中转' : 'Vultr' }}</span></td>
             <td>{{ n.location || "—" }}</td>
-            <td class="mono">{{ n.ip || "—" }}</td>
-            <td class="mono">{{ n.domain || n.host || "—" }}</td>
             <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
             <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td>
