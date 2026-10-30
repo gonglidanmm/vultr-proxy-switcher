@@ -234,7 +234,7 @@ export const useProxyStore = defineStore("proxy", {
         await this.setSystemProxy(false);
         return "off";
       }
-      const order = ["ss", "reality", "hysteria2"];
+      const order = ["socks5", "ss", "reality", "hysteria2"];
       const protos = order.filter((p) => n[p] || (n.links && n.links[p]));
       if (!protos.length) return "no-proto";
       this.upstreamNode = n;

@@ -544,6 +544,7 @@ onMounted(() => {
       <div class="proxy-row">
         <span class="proxy-label">协议</span>
         <div class="seg">
+          <button class="seg-btn" :class="{ active: proxy.proto === 'socks5' }" @click="proxy.setProto('socks5')">SOCKS5</button>
           <button class="seg-btn" :class="{ active: proxy.proto === 'ss' }" @click="proxy.setProto('ss')">SS</button>
           <button class="seg-btn" :class="{ active: proxy.proto === 'reality' }" @click="proxy.setProto('reality')">Reality</button>
           <button class="seg-btn" :class="{ active: proxy.proto === 'hysteria2' }" @click="proxy.setProto('hysteria2')">Hysteria2</button>
