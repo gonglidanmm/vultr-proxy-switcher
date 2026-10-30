@@ -742,14 +742,16 @@ class WebsharePage(QWidget):
         self._set_status(f"失败：{msg}", warn=True)
 
     def _fill(self, table: DragTableWidget, proxies: list, ip_type: str) -> None:
-        # 只显示未中转 + 符合国家/城市筛选的 IP
+        # 只显示未中转 + 符合国家/城市筛选的 IP；回归过的排最后
         country = self.filter_country.currentData()
         city = self.filter_city.currentData()
+        returned_ips = config.get("returned_ips", {}) or {}
         pairs = [(i, p) for i, p in enumerate(proxies)
                  if self._ip_key(p) not in self._relay_map
                  and self._ip_key(p) not in self._recycled_map
                  and (not country or p.get("country_code", "") == country)
                  and (not city or p.get("city_name", "") == city)]
+        pairs.sort(key=lambda x: self._ip_key(x[1]) in returned_ips)
         # 分页：每页 _PAGE_SIZE 个
         total = len(pairs)
         total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
@@ -759,7 +761,6 @@ class WebsharePage(QWidget):
         page_pairs = pairs[start:start + _PAGE_SIZE]
         notes = config.get("webshare_notes", {})
         scores = config.get("webshare_scores", {})
-        returned_ips = config.get("returned_ips", {}) or {}
         self._suppress = True
         table.setRowCount(0)
         table.setRowCount(len(page_pairs))
