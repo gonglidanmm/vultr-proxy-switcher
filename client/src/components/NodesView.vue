@@ -247,17 +247,16 @@ function formatExpiry(n) {
   const diffHour = Math.floor(diffMs / 3600000);
   const diffDay = Math.floor(diffMs / 86400000);
   if (diffDay >= 1) {
-    const expKey = expiry.slice(0, 10);
-    return { text: `${expKey}（${diffDay}天后到期）`, cls: diffDay <= 3 ? "cell-warn" : "" };
+    return { text: expiry.slice(0, 10), cls: diffDay <= 3 ? "cell-warn" : "" };
   }
   if (diffHour >= 1) {
     const h = diffHour;
     const m = Math.floor((diffMs % 3600000) / 60000);
     const s = Math.floor((diffMs % 60000) / 1000);
-    return { text: `${h}小时${m}分${s}秒后到期`, cls: "cell-warn" };
+    return { text: `${h}小时${m}分${s}秒`, cls: "cell-warn" };
   }
   const s = Math.floor((diffMs % 60000) / 1000);
-  return { text: `${diffMin}分${s}秒后到期`, cls: "cell-warn" };
+  return { text: `${diffMin}分${s}秒`, cls: "cell-warn" };
 }
 
 function switchInfo(n) {
