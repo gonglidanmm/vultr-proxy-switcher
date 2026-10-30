@@ -689,15 +689,21 @@ class WebsharePage(QWidget):
         self._update_plans(data.get("plans", []), data.get("subscription", {}))
 
     def _update_relay_overview(self) -> None:
-        """更新顶部统计（已中转 / 冷却 / 未中转 IP 数）。"""
+        """更新顶部统计（已中转 / 冷却 / 回归 / 未中转）。"""
         relays = config.get("relays", [])
         recycled = config.get("recycled_relays", []) or []
+        returned = config.get("returned_ips", {}) or {}
         total_ip = len(self._dc) + len(self._res)
         relayed = len({f"{r.get('host','')}:{r.get('port','')}" for r in relays})
         recycled_cnt = len({f"{r.get('host','')}:{r.get('port','')}" for r in recycled})
+        returned_cnt = len(returned)
+        unrelayed = total_ip - relayed - recycled_cnt
         if total_ip:
             self.stats_label.setText(
-                f"共 {total_ip} IP · 已中转 {relayed} · 冷却 {recycled_cnt} · 未中转 {total_ip - relayed - recycled_cnt}"
+                f'已中转 <span style="color:#9db8ff">{relayed}</span> · '
+                f'冷却 <span style="color:#ff9f0a">{recycled_cnt}</span> · '
+                f'回归 <span style="color:#f5c542">{returned_cnt}</span> · '
+                f'未中转 <span style="color:#32d74b">{unrelayed}</span>（含回归）'
             )
         else:
             self.stats_label.setText("")
