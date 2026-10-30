@@ -65,7 +65,13 @@ function logout() {
     <aside class="sidebar">
       <div class="sidebar-brand">代理客户端</div>
       <nav class="sidebar-nav">
-        <button :class="['nav-item', { active: activeView === 'vultr' }]" @click="activeView = 'vultr'">Vultr数据中心</button>
+        <button :class="['nav-item', { active: activeView === 'vultr' }]" @click="activeView = 'vultr'">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="6" fill="#00c853"/>
+            <path d="M13.2 3.6 6.5 13h4.1l-1.3 7.4L16.5 11h-4.3l1-7.4z" fill="#fff"/>
+          </svg>
+          <span>Webshare-IP</span>
+        </button>
       </nav>
       <div class="sidebar-footer">
         <button class="user-row" :class="{ active: activeView === 'account' }" @click="activeView = 'account'" title="用户管理">

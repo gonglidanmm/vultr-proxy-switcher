@@ -533,14 +533,14 @@ onMounted(() => {
           <tr>
             <th class="col-sel"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" title="全选" /></th>
             <th class="col-idx" :style="colStyle('idx')">#<span class="col-resizer" @mousedown="startColResize('idx', $event)"></span></th>
-            <th :style="colStyle('type')">类型<span class="col-resizer" @mousedown="startColResize('type', $event)"></span></th>
             <th :style="colStyle('name')">名称<span class="col-resizer" @mousedown="startColResize('name', $event)"></span></th>
-            <th :style="colStyle('location')">位置<span class="col-resizer" @mousedown="startColResize('location', $event)"></span></th>
+            <th :style="colStyle('type')">类型<span class="col-resizer" @mousedown="startColResize('type', $event)"></span></th>
+            <th :style="colStyle('location')">国家城市<span class="col-resizer" @mousedown="startColResize('location', $event)"></span></th>
             <th :style="colStyle('ip')">IP<span class="col-resizer" @mousedown="startColResize('ip', $event)"></span></th>
             <th :style="colStyle('domain')">域名<span class="col-resizer" @mousedown="startColResize('domain', $event)"></span></th>
-            <th :style="colStyle('status')">状态<span class="col-resizer" @mousedown="startColResize('status', $event)"></span></th>
             <th :style="colStyle('created')">分配时间<span class="col-resizer" @mousedown="startColResize('created', $event)"></span></th>
             <th :style="colStyle('expiry')">到期时间<span class="col-resizer" @mousedown="startColResize('expiry', $event)"></span></th>
+            <th :style="colStyle('status')">状态<span class="col-resizer" @mousedown="startColResize('status', $event)"></span></th>
             <th :style="colStyle('switch')">切换次数<span class="col-resizer" @mousedown="startColResize('switch', $event)"></span></th>
             <th :style="colStyle('flow')">流量<span class="col-resizer" @mousedown="startColResize('flow', $event)"></span></th>
             <th :style="colStyle('note')">备注<span class="col-resizer" @mousedown="startColResize('note', $event)"></span></th>
@@ -563,11 +563,13 @@ onMounted(() => {
               @dragend="onRowDragEnd">
             <td class="col-sel"><input type="checkbox" class="row-sel" :checked="selectedIds.has(n.resource_id)" @change="toggleSelect(n.resource_id)" /></td>
             <td class="col-idx">{{ i + 1 }}</td>
-            <td><span class="type-badge" :class="n.resource_type === 'relay' ? 'type-relay' : 'type-vultr'">{{ n.resource_type === 'relay' ? '中转' : 'Vultr' }}</span></td>
             <td>{{ n.name || "Vultr 线路" }}</td>
+            <td><span class="type-badge" :class="n.resource_type === 'relay' ? 'type-relay' : 'type-vultr'">{{ n.resource_type === 'relay' ? '中转' : 'Vultr' }}</span></td>
             <td>{{ n.location || "—" }}</td>
             <td class="mono">{{ n.ip || "—" }}</td>
             <td class="mono">{{ n.domain || n.host || "—" }}</td>
+            <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
+            <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td>
               <div class="node-check-status">
                 <span class="status" :class="connectivityTests[n.resource_id]?.active ? 'pending' : (nodeStatus[n.resource_id]?.cls || 'pending')" :role="connectivityTests[n.resource_id]?.active ? 'status' : undefined">
@@ -580,8 +582,6 @@ onMounted(() => {
                 </div>
               </div>
             </td>
-            <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
-            <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
