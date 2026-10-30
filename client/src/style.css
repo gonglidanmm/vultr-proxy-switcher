@@ -140,6 +140,7 @@ body {
   font-size: 12px;
 }
 .type-vultr { background: #3a4a6a; color: #9db8ff; }
+.type-relay { background: #2a4a3a; color: #7ed9a0; }
 .status {
   display: inline-block;
   padding: 2px 8px;

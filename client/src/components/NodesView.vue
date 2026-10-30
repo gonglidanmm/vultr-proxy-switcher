@@ -239,6 +239,7 @@ function formatExpiry(n) {
 }
 
 function switchInfo(n) {
+  if (n.resource_type !== "vultr") return { text: "—", cls: "cell-muted" };
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
   const used = Math.max(0, limit - remaining);
@@ -562,7 +563,7 @@ onMounted(() => {
               @dragend="onRowDragEnd">
             <td class="col-sel"><input type="checkbox" class="row-sel" :checked="selectedIds.has(n.resource_id)" @change="toggleSelect(n.resource_id)" /></td>
             <td class="col-idx">{{ i + 1 }}</td>
-            <td><span class="type-badge type-vultr">Vultr</span></td>
+            <td><span class="type-badge" :class="n.resource_type === 'relay' ? 'type-relay' : 'type-vultr'">{{ n.resource_type === 'relay' ? '中转' : 'Vultr' }}</span></td>
             <td>{{ n.name || "Vultr 线路" }}</td>
             <td>{{ n.location || "—" }}</td>
             <td class="mono">{{ n.ip || "—" }}</td>
@@ -589,7 +590,7 @@ onMounted(() => {
                 <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
                 </button>
-                <button class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
+                <button v-if="n.resource_type === 'vultr'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
                   {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
