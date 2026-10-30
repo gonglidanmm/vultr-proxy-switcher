@@ -199,15 +199,18 @@ async function checkVersion() {
     const data = await resp.json().catch(() => ({}));
     if (!data.version) return;
     const cmp = compareVersion(data.version, localVer);
-    proxy.log(`版本检查：本地 ${localVer}，服务器 ${data.version}，比较结果=${cmp}`, "info");
-    if (cmp > 0 && lastPromptedVersion !== data.version) {
-      lastPromptedVersion = data.version;
-      const ua = navigator.userAgent || "";
-      const isMac = /Mac|iPhone|iPad/i.test(ua);
-      const urls = isMac ? (data.download_urls_mac || []) : (data.download_urls_win || []);
-      const fallback = data.download_url || "";
-      updateDialog.value?.show(data.version, localVer, data.note || "", urls, fallback);
+    if (cmp > 0) {
+      proxy.log(`发现新版本：本地 ${localVer} → 服务器 ${data.version}`, "info");
+      if (lastPromptedVersion !== data.version) {
+        lastPromptedVersion = data.version;
+        const ua = navigator.userAgent || "";
+        const isMac = /Mac|iPhone|iPad/i.test(ua);
+        const urls = isMac ? (data.download_urls_mac || []) : (data.download_urls_win || []);
+        const fallback = data.download_url || "";
+        updateDialog.value?.show(data.version, localVer, data.note || "", urls, fallback);
+      }
     }
+    // 版本一致：静默，不打印回显
   } catch (e) {
     proxy.log("版本检查异常：" + (e && e.message ? e.message : e), "warn");
   }
