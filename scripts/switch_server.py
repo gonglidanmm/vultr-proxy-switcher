@@ -167,7 +167,7 @@ def _ensure_chain() -> None:
 def _ensure_rule(chain: str, proto: str, port_match: list[str], relay_id: str) -> None:
     """确保某条记账规则存在（幂等）。-I 插到链顶，记账链 RETURN 不改流。"""
     full = ["-p", proto] + port_match + ["-m", "comment", "--comment", f"relay-{relay_id}", "-j", TRAFFIC_CHAIN]
-    rc, _ = _run(["iptables", "-C"] + full)
+    rc, _ = _run(["iptables", "-C", chain] + full)
     if rc != 0:
         _run(["iptables", "-I", chain, "1"] + full)
 
