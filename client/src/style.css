@@ -179,6 +179,19 @@ body {
   width: 100%;
   box-sizing: border-box;
   min-width: 40px;
+  text-align: center;
+}
+.name-input {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 40px;
+  text-align: center;
 }
 
 /* ===== 代理控制卡 ===== */

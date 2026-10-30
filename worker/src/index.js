@@ -376,6 +376,28 @@ async function handleMeNote(request, env, user) {
   return json({ ok: true, note });
 }
 
+// 保存节点名称（写入 node_data.name，客户端链接/二维码 fragment 用它当节点标识）
+async function handleMeName(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  const resourceId = String(body.resource_id || "").trim();
+  const name = String(body.name || "").trim();
+  if (!resourceId) return json({ error: "resource_id 必填" }, 400);
+
+  const row = await env.DB.prepare(
+    "SELECT id, node_data FROM assignments WHERE user_id = ? AND resource_id = ?",
+  ).bind(user.id, resourceId).first();
+  if (!row) return json({ error: "资源不存在或未分配给你" }, 404);
+
+  let nd = {};
+  try { nd = JSON.parse(row.node_data || "{}"); } catch (_) {}
+  nd.name = name;
+  await env.DB.prepare(
+    "UPDATE assignments SET node_data = ? WHERE user_id = ? AND resource_id = ?",
+  ).bind(JSON.stringify(nd), user.id, resourceId).run();
+
+  return json({ ok: true, name });
+}
+
 // 保存节点显示顺序（客户端拖拽排序后持久化）
 async function handleMeReorder(request, env, user) {
   const body = await request.json().catch(() => ({}));
@@ -1538,6 +1560,11 @@ export default {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
         return await handleMeNote(request, env, user);
+      }
+      if (method === "POST" && path === "/me/name") {
+        const user = await requireUser(request, env);
+        if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        return await handleMeName(request, env, user);
       }
       if (method === "POST" && path === "/me/reorder") {
         const user = await requireUser(request, env);

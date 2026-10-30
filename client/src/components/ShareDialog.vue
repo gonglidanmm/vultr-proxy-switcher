@@ -5,6 +5,16 @@ import { copyText } from "../api/index.js";
 const props = defineProps({ node: Object });
 const emit = defineEmits(["close", "showQr"]);
 
+// 把协议链接的 fragment（#xxx）替换成节点名称，作为节点标识（扫码/导入时显示）
+function withName(link) {
+  if (!link) return "";
+  const name = (props.node?.name || "").trim();
+  if (!name) return link;
+  const hashIdx = link.indexOf("#");
+  const base = hashIdx >= 0 ? link.slice(0, hashIdx) : link;
+  return `${base}#${name}`;
+}
+
 const groups = computed(() => {
   const n = props.node || {};
   const host = n.host || n.domain || "";
@@ -13,7 +23,7 @@ const groups = computed(() => {
       key: "socks5",
       name: "SOCKS5",
       desc: "标准 SOCKS5 代理，带用户名密码认证",
-      link: n.links?.socks5,
+      link: withName(n.links?.socks5),
       fields: [
         ["地址", host], ["端口", n.socks5?.port],
         ["用户名", n.socks5?.username], ["密码", n.socks5?.password],
@@ -23,7 +33,7 @@ const groups = computed(() => {
       key: "ss",
       name: "Shadowsocks",
       desc: "SS 加密代理",
-      link: n.links?.ss,
+      link: withName(n.links?.ss),
       fields: [
         ["地址", host], ["端口", n.ss?.port],
         ["加密", n.ss?.method], ["密码", n.ss?.password],
@@ -33,7 +43,7 @@ const groups = computed(() => {
       key: "reality",
       name: "Reality",
       desc: "VLESS + Reality（伪装 TLS，无需域名证书）",
-      link: n.links?.reality,
+      link: withName(n.links?.reality),
       fields: [
         ["地址", host], ["端口", n.reality?.port], ["UUID", n.reality?.uuid],
         ["公钥", n.reality?.public_key], ["Short ID", n.reality?.short_id],
@@ -44,7 +54,7 @@ const groups = computed(() => {
       key: "hysteria2",
       name: "Hysteria2",
       desc: "Hysteria2 高性能 QUIC 代理",
-      link: n.links?.hysteria2,
+      link: withName(n.links?.hysteria2),
       fields: [
         ["地址", host], ["端口", n.hysteria2?.port],
         ["密码", n.hysteria2?.password], ["端口跳跃", n.hysteria2?.mport],
@@ -65,7 +75,7 @@ async function doCopy(text, key) {
 }
 
 function showQr(g) {
-  if (g.link) emit("showQr", { name: g.name, link: g.link });
+  if (g.link) emit("showQr", { name: props.node?.name || g.name, link: g.link });
 }
 </script>
 

@@ -80,7 +80,17 @@ async function saveNote(n) {
     n.note = note;
     proxy.log(`已保存备注：${note || "(已清空)"}`, "ok");
   } catch (e) {
-    proxy.log("保存备注失败：" + (e.message || e), "err");
+    proxy.log("保存备注失败：" + (e.message || ""), "err");
+  }
+}
+
+async function saveName(n) {
+  const name = String(n.name || "").trim();
+  try {
+    await api("/me/name", "POST", { resource_id: n.resource_id, name });
+    n.name = name;
+  } catch (e) {
+    proxy.log("保存名称失败：" + (e.message || ""), "err");
   }
 }
 
@@ -578,7 +588,7 @@ onMounted(() => {
               @dragend="onRowDragEnd">
             <td class="col-sel"><input type="checkbox" class="row-sel" :checked="selectedIds.has(n.resource_id)" @change="toggleSelect(n.resource_id)" /></td>
             <td class="col-idx">{{ i + 1 }}</td>
-            <td>{{ n.name || "Vultr 线路" }}</td>
+            <td><input type="text" class="name-input" placeholder="名称" v-model="n.name" @blur="saveName(n)" @keyup.enter="$event.target.blur()" /></td>
             <td><span class="type-badge" :class="n.resource_type === 'relay' ? 'type-relay' : 'type-vultr'">{{ n.resource_type === 'relay' ? '中转' : 'Vultr' }}</span></td>
             <td>{{ n.location || "—" }}</td>
             <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
