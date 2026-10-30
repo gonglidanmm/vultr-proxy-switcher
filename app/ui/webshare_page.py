@@ -38,8 +38,8 @@ from ..gencreds import generate_reality
 from .drag_table import DragTableWidget
 from .workers import CallWorker
 
-_COLS = ["选择", "#", "地址", "端口", "国家", "城市", "套餐", "状态", "评分", "备注", "操作"]
-_COL_DEFAULTS = {0: 45, 1: 40, 2: 140, 3: 60, 4: 50, 5: 100, 6: 80, 7: 50, 8: 130, 9: 110}
+_COLS = ["选择", "#", "地址", "端口", "国家", "城市", "套餐", "状态", "标记", "评分", "备注", "操作"]
+_COL_DEFAULTS = {0: 45, 1: 40, 2: 140, 3: 60, 4: 50, 5: 100, 6: 80, 7: 50, 8: 60, 9: 130, 10: 110}
 
 # 城市英文 → 中文（webshare 机房/住宅 IP 的城市，小写归一化匹配；未知城市回退原文）
 CITY_NAMES_CN = {
@@ -63,8 +63,8 @@ def _cn_country(code: str) -> str:
 def _cn_city(name: str) -> str:
     """城市英文 → 中文名（未知回退原文；空返回空）。"""
     return CITY_NAMES_CN.get(name.strip().lower(), name) if name else ""
-_NOTE_COL = 9
-_OP_COL = 10
+_NOTE_COL = 10
+_OP_COL = 11
 _OP_WIDTH = 175  # 操作列固定宽度（检测 + 取消中转按钮）
 _PAGE_SIZE = 20   # 每页显示的 IP 数
 
@@ -783,10 +783,6 @@ class WebsharePage(QWidget):
 
             self._item(table, row, 1, str(row + 1))  # 序号
             self._item(table, row, 2, addr)
-            if ip_key in returned_ips:
-                table.item(row, 2).setForeground(Qt.GlobalColor.yellow)
-                table.item(row, 2).setText(addr + " 🔙回归")
-                table.item(row, 2).setToolTip("刚回归的 IP（曾回收），注意可能存在问题")
             self._item(table, row, 3, port)
             self._item(table, row, 4, _cn_country(country))  # 国家中文
             self._item(table, row, 5, _cn_city(city))  # 城市中文
@@ -812,13 +808,22 @@ class WebsharePage(QWidget):
             else:
                 score_item = QTableWidgetItem("-")
                 score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            table.setItem(row, 8, score_item)
+            table.setItem(row, 9, score_item)
+            # 标记列：回收过的 IP 显示「回归」徽章（没回收过留空）
+            if ip_key in returned_ips:
+                badge = QLabel("回归")
+                badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                badge.setStyleSheet("background:#f5c542; color:#1a1a1a; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
+                badge.setToolTip("刚回归的 IP（曾回收），注意可能存在问题")
+                table.setCellWidget(row, 8, badge)
+            else:
+                self._item(table, row, 8, "")
             # 备注（可编辑，持久化）
             note_item = QTableWidgetItem(notes.get(ip_key, ""))
             note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
             note_item.setToolTip("双击编辑备注（用户名/密码见 tooltip）")
-            table.setItem(row, 9, note_item)
+            table.setItem(row, 10, note_item)
 
             # 操作列：生成中转 + 检测 IP + 替换 IP
             w = QWidget()
