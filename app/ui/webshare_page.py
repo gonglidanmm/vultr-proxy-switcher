@@ -759,6 +759,7 @@ class WebsharePage(QWidget):
         page_pairs = pairs[start:start + _PAGE_SIZE]
         notes = config.get("webshare_notes", {})
         scores = config.get("webshare_scores", {})
+        returned_ips = config.get("returned_ips", {}) or {}
         self._suppress = True
         table.setRowCount(0)
         table.setRowCount(len(page_pairs))
@@ -782,6 +783,10 @@ class WebsharePage(QWidget):
 
             self._item(table, row, 1, str(row + 1))  # 序号
             self._item(table, row, 2, addr)
+            if ip_key in returned_ips:
+                table.item(row, 2).setForeground(Qt.GlobalColor.yellow)
+                table.item(row, 2).setText(addr + " 🔙回归")
+                table.item(row, 2).setToolTip("刚回归的 IP（曾回收），注意可能存在问题")
             self._item(table, row, 3, port)
             self._item(table, row, 4, _cn_country(country))  # 国家中文
             self._item(table, row, 5, _cn_city(city))  # 城市中文
@@ -1275,6 +1280,7 @@ class WebsharePage(QWidget):
             high_water = max(used) if used else RELAY_PORT_START - 1
         seen = {(r.get("host"), int(r.get("port", 0)), r.get("user")) for r in relays}
         pw_pool = config.get("relay_password_pool", {})
+        returned_ips = config.get("returned_ips", {}) or {}
         added = 0
         for ip_type, idx in checked:
             pool = self._dc if ip_type == "dc" else self._res
@@ -1328,11 +1334,13 @@ class WebsharePage(QWidget):
             })
             used.add(rp)
             seen.add((host, port, user))
+            returned_ips.pop(key, None)  # 重新生成中转 → 清除「回归」标记
             added += 1
             if rp > high_water:
                 high_water = rp
         config.set_value("relays", relays)
         config.set_value("relay_port_high_water", high_water)
+        config.set_value("returned_ips", returned_ips)
         # 更新 relay 匹配表 + 重新渲染
         self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in relays}
         self._fill(self.dc_table, self._dc, "dc")

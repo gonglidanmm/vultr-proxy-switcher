@@ -568,12 +568,6 @@ class NodesPage(QWidget):
             recycle_btn.setToolTip("停服务并进回收页冷却（不删记录，可手动回归）")
             recycle_btn.clicked.connect(lambda _=False, rid=r["id"]: self._recycle(rid))
             lay.addWidget(recycle_btn)
-            del_btn = QPushButton("取消中转")
-            del_btn.setProperty("compact", True)
-            del_btn.setProperty("danger", True)
-            del_btn.setFixedHeight(30)
-            del_btn.clicked.connect(lambda _=False, rid=r["id"]: self._delete(rid))
-            lay.addWidget(del_btn)
             lay.addStretch(1)
             table.setCellWidget(row, _OP_COL, w)
 
@@ -591,7 +585,14 @@ class NodesPage(QWidget):
             self._item(table, row, 3, r.get("recycled_at", ""))
             self._item(table, row, 4, r.get("recycled_from_user", ""))
             self._item(table, row, 5, upstream)
-            self._item(table, row, 6, r.get("note", ""))
+            # 备注（可编辑，共用 webshare_notes，key = host:port，回归后 webshare-IP 页可见）
+            ip_key = f"{r.get('host','')}:{r.get('port','')}"
+            notes = config.get("webshare_notes", {})
+            note_item = QTableWidgetItem(notes.get(ip_key, ""))
+            note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
+            note_item.setToolTip("双击编辑备注（与 webshare-IP 页共用，回归后可见）")
+            table.setItem(row, 6, note_item)
             w = QWidget()
             lay = QHBoxLayout(w)
             lay.setContentsMargins(4, 2, 4, 2)
@@ -651,8 +652,14 @@ class NodesPage(QWidget):
         self.status.setText(f'<span style="color:{color};">已分配 {ok} 个 IP' + (f"，{fail} 个失败" if fail else "") + '</span>')
 
     def _return_recycled(self, rid: str) -> None:
-        """手动回归 = 解除冷却：从回收记录删掉，IP 回到 webshare 未中转列表，可重新生成中转。"""
-        recycled = [r for r in (config.get("recycled_relays", []) or []) if str(r.get("id", "")) != str(rid)]
+        """手动回归 = 解除冷却：从回收记录删掉，IP 回 webshare 未中转列表并标记「刚回归」。"""
+        recycled = config.get("recycled_relays", []) or []
+        target = next((r for r in recycled if str(r.get("id", "")) == str(rid)), None)
+        if target:
+            returned = config.get("returned_ips", {}) or {}
+            returned[f"{target.get('host','')}:{target.get('port','')}"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            config.set_value("returned_ips", returned)
+        recycled = [r for r in recycled if str(r.get("id", "")) != str(rid)]
         config.set_value("recycled_relays", recycled)
         self.refresh()
 
@@ -665,14 +672,21 @@ class NodesPage(QWidget):
 
     def _on_cell_dblclick(self, row: int, col: int) -> None:
         table = self.sender()
-        if col in (2, 8) and isinstance(table, DragTableWidget):  # 名称、备注
+        if not isinstance(table, DragTableWidget):
+            return
+        if getattr(table, "_width_key", "") == "nodes_recycle_col_widths":
+            if col == 6:  # 回收页备注
+                table.editItem(table.item(row, col))
+        elif col in (2, 8):  # 名称、备注
             table.editItem(table.item(row, col))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._suppress:
             return
         col = item.column()
-        if col == _SEL_COL:
+        table = item.tableWidget()
+        is_recycle = getattr(table, "_width_key", "") == "nodes_recycle_col_widths"
+        if not is_recycle and col == _SEL_COL:
             # 勾选/取消 → 更新 self._selected
             rid = item.data(Qt.ItemDataRole.UserRole)
             if not rid:
@@ -686,12 +700,24 @@ class NodesPage(QWidget):
                 self._selected.pop(rid, None)
             self._update_selected_label()
             return
-        if col not in (2, 8):  # 名称、备注
+        if is_recycle:
+            if col != 6:  # 回收页只有备注可编辑
+                return
+        elif col not in (2, 8):  # 名称、备注
             return
         key = item.data(Qt.ItemDataRole.UserRole)
         if not key:
             return
         text = item.text().strip()
+        if is_recycle:
+            # 回收页备注：写 webshare_notes（key = host:port，回归后 webshare-IP 页可见）
+            notes = config.get("webshare_notes", {})
+            if text:
+                notes[key] = text
+            else:
+                notes.pop(key, None)
+            config.set_value("webshare_notes", notes)
+            return
         if col == 2:
             # 名称：写 relay 的 name（key = relay id）
             relays = config.get("relays", [])
