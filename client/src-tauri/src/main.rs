@@ -331,6 +331,19 @@ fn start_proxy(config_json: String, state: State<ProxyState>) -> Result<(), Stri
         .map_err(|e| format!("启动 sing-box 失败: {e}"))?;
     eprintln!("[start_proxy] spawn ok, pid={}", child.id());
     *guard = Some(child);
+
+    // 等本地代理端口 7890 就绪（sing-box 启动约 1-2 秒），否则「设为上游」后立刻用代理会不通
+    let mut ready = false;
+    for _ in 0..30 {
+        if TcpStream::connect(("127.0.0.1", 7890)).is_ok() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !ready {
+        return Err("sing-box 启动超时（端口未就绪）".to_string());
+    }
     Ok(())
 }
 
