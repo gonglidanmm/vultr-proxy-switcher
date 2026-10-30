@@ -608,6 +608,7 @@ class WebsharePage(QWidget):
         config.set_value("webshare_subscription", data.get("subscription", {}))
         # relay 匹配表：ip_key -> relay（判断是否中转 / 取消中转）
         self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("relays", [])}
+        self._recycled_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("recycled_relays", []) or []}
         self._server_ip_map = {sid: (ip, name) for sid, ip, name in self._servers}
         # 官网返回顺序（取消中转的 IP 按此插回，不套用拖拽顺序）
         self._official_order = {
@@ -618,7 +619,8 @@ class WebsharePage(QWidget):
         self._sort_proxies("res")
         # 填充国家筛选列表（只列未中转 IP 出现的国家）
         countries = sorted({p.get("country_code", "") for p in self._dc + self._res
-                            if p.get("country_code") and self._ip_key(p) not in self._relay_map})
+                            if p.get("country_code") and self._ip_key(p) not in self._relay_map
+                            and self._ip_key(p) not in self._recycled_map})
         self.filter_country.blockSignals(True)
         self.filter_country.clear()
         self.filter_country.addItem("全部国家", "")
@@ -687,13 +689,15 @@ class WebsharePage(QWidget):
         self._update_plans(data.get("plans", []), data.get("subscription", {}))
 
     def _update_relay_overview(self) -> None:
-        """更新顶部统计（已中转 / 未中转 IP 数）。"""
+        """更新顶部统计（已中转 / 冷却 / 未中转 IP 数）。"""
         relays = config.get("relays", [])
+        recycled = config.get("recycled_relays", []) or []
         total_ip = len(self._dc) + len(self._res)
         relayed = len({f"{r.get('host','')}:{r.get('port','')}" for r in relays})
+        recycled_cnt = len({f"{r.get('host','')}:{r.get('port','')}" for r in recycled})
         if total_ip:
             self.stats_label.setText(
-                f"共 {total_ip} IP · 已中转 {relayed} · 未中转 {total_ip - relayed}"
+                f"共 {total_ip} IP · 已中转 {relayed} · 冷却 {recycled_cnt} · 未中转 {total_ip - relayed - recycled_cnt}"
             )
         else:
             self.stats_label.setText("")
@@ -743,6 +747,7 @@ class WebsharePage(QWidget):
         city = self.filter_city.currentData()
         pairs = [(i, p) for i, p in enumerate(proxies)
                  if self._ip_key(p) not in self._relay_map
+                 and self._ip_key(p) not in self._recycled_map
                  and (not country or p.get("country_code", "") == country)
                  and (not city or p.get("city_name", "") == city)]
         # 分页：每页 _PAGE_SIZE 个

@@ -230,10 +230,10 @@ class NodeShareDialog(QDialog):
 
 
 def _sync_recycle_log(relays: list[dict]) -> None:
-    """把 /admin/recycle-log 的自动回收记录合并进本地 relay（标记 status=recycled）。
+    """把 /admin/recycle-log 的自动回收记录合并进本地：从 config.relays 删掉 + 记 recycled_relays。
 
     Worker cron 到期/流量用尽会自动停服务 + 删分配 + 记 recycle_log，但不改本地 config；
-    这里刷新时拉回收日志，把对应 relay 标记为已回收，进回收页冷却。
+    这里刷新时拉回收日志，把对应 relay 从 config.relays 移除并记进回收冷却列表。
     """
     from datetime import datetime, timedelta, timezone
 
@@ -248,23 +248,36 @@ def _sync_recycle_log(relays: list[dict]) -> None:
     by_id: dict[str, dict] = {}
     for e in entries:
         by_id.setdefault(str(e.get("resource_id", "")), e)
-    changed = False
+    recycled = config.get("recycled_relays", []) or []
+    recycled_ids = {str(x.get("id", "")) for x in recycled}
+    to_remove: list[str] = []
     tz = timezone(timedelta(hours=8))
     for r in relays:
-        e = by_id.get(str(r.get("id", "")))
-        if not e or r.get("status") == "recycled":
+        rid = str(r.get("id", ""))
+        e = by_id.get(rid)
+        if not e or rid in recycled_ids:
             continue
-        r["status"] = "recycled"
-        r["recycled_from_user"] = e.get("username", "") or ""
         created = e.get("created_at", "")
         try:
             dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-            r["recycled_at"] = dt.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+            recycled_at = dt.astimezone(tz).strftime("%Y-%m-%d %H:%M")
         except Exception:
-            r["recycled_at"] = str(created)[:16]
-        changed = True
-    if changed:
-        config.set_value("relays", relays)
+            recycled_at = str(created)[:16]
+        recycled.append({
+            "id": rid,
+            "host": r.get("host", ""),
+            "port": r.get("port", ""),
+            "name": r.get("name", ""),
+            "ip_type": r.get("ip_type", "dc"),
+            "recycled_at": recycled_at,
+            "recycled_from_user": e.get("username", "") or "",
+        })
+        recycled_ids.add(rid)
+        to_remove.append(rid)
+    if to_remove:
+        config.set_value("recycled_relays", recycled)
+        config.set_value("relays", [r for r in relays if str(r.get("id", "")) not in to_remove])
+        relays[:] = [r for r in relays if str(r.get("id", "")) not in to_remove]
 
 
 class NodesPage(QWidget):
@@ -445,12 +458,11 @@ class NodesPage(QWidget):
     def _fill(self) -> None:
         server_map = getattr(self, "_server_map", {})
         assigned = getattr(self, "_assigned_ids", set())
-        # 可用池：未回收且未分配（1 IP = 1 用户，已分配的从本页移除）
-        available = [r for r in self._relays
-                     if r.get("status") != "recycled" and r.get("id") not in assigned]
+        # 可用池：未分配（回收 = 取消中转已删 config 记录，不再出现在这里）
+        available = [r for r in self._relays if r.get("id") not in assigned]
         self._dc_relays = [r for r in available if r.get("ip_type", "dc") != "res"]
         self._res_relays = [r for r in available if r.get("ip_type", "dc") == "res"]
-        self._recycled_relays = [r for r in self._relays if r.get("status") == "recycled"]
+        self._recycled_relays = config.get("recycled_relays", []) or []
         self._suppress = True
         self._fill_table(self.dc_table, self._dc_relays, server_map)
         self._fill_table(self.res_table, self._res_relays, server_map)
@@ -554,7 +566,7 @@ class NodesPage(QWidget):
             recycle_btn.setProperty("compact", True)
             recycle_btn.setFixedHeight(30)
             recycle_btn.setToolTip("停服务并进回收页冷却（不删记录，可手动回归）")
-            recycle_btn.clicked.connect(lambda _=False, rid=r["id"]: self._recycle_unassigned(rid))
+            recycle_btn.clicked.connect(lambda _=False, rid=r["id"]: self._recycle(rid))
             lay.addWidget(recycle_btn)
             del_btn = QPushButton("取消中转")
             del_btn.setProperty("compact", True)
@@ -639,8 +651,10 @@ class NodesPage(QWidget):
         self.status.setText(f'<span style="color:{color};">已分配 {ok} 个 IP' + (f"，{fail} 个失败" if fail else "") + '</span>')
 
     def _return_recycled(self, rid: str) -> None:
-        """手动回归 = 取消中转：删 config.relays 记录 + 清服务器（复用 _delete 的完整清理）。"""
-        self._delete(rid)
+        """手动回归 = 解除冷却：从回收记录删掉，IP 回到 webshare 未中转列表，可重新生成中转。"""
+        recycled = [r for r in (config.get("recycled_relays", []) or []) if str(r.get("id", "")) != str(rid)]
+        config.set_value("recycled_relays", recycled)
+        self.refresh()
 
     def _item(self, table: DragTableWidget, row: int, col: int, text: str) -> None:
         it = QTableWidgetItem(str(text))
@@ -817,8 +831,8 @@ class NodesPage(QWidget):
         w.finished.connect(w.deleteLater)
         w.start()
 
-    def _recycle_unassigned(self, rid: str) -> None:
-        """手动回收未分配的 relay：停服务 + 标记 recycled（进回收页冷却），不删记录可回归。"""
+    def _recycle(self, rid: str) -> None:
+        """手动回收 = 取消中转 + 记回收冷却：删 config + 清服务器 + 进回收页。"""
         relays = config.get("relays", [])
         relay = next((r for r in relays if r["id"] == rid), None)
         if not relay:
@@ -827,57 +841,26 @@ class NodesPage(QWidget):
         name = relay.get("name", "") or rid
         ret = QMessageBox.question(
             self, "回收 IP",
-            f"确定回收「{name}」吗？\n\n回收后：停止该 IP 的中转服务、进「回收页」冷却，可手动回归。",
+            f"确定回收「{name}」吗？\n\n回收后：取消中转（停服务、释放服务器资源），IP 进「回收页」冷却，可手动回归重新生成中转。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if ret != QMessageBox.StandardButton.Yes:
             return
-        server_id = relay.get("server_id", "")
-        server_map = getattr(self, "_server_map", {})
-        server_ip = next((ip for sid, (ip, _) in server_map.items() if sid == server_id), "")
-        root_pw = config.get("root_password", "")
-        if server_id.startswith("manual:"):
-            mid = server_id[len("manual:"):]
-            for m in config.get("manual_servers", []):
-                if m.get("id") == mid:
-                    root_pw = m.get("password", "") or root_pw
-                    break
-        else:
-            sc = config.get("server_configs", {}).get(server_id, {})
-            root_pw = sc.get("root_password") or root_pw
-
-        def _do():
-            if not root_pw or not server_ip:
-                return "ERROR: 缺少服务器凭据"
-            cmd = f"systemctl disable --now gost-relay-{rid} sing-box-relay-{rid} 2>/dev/null; echo DONE"
-            r = subprocess.run(
-                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
-                 "-o", "ConnectTimeout=15", f"root@{server_ip}", cmd],
-                capture_output=True, text=True, timeout=30,
-            )
-            return r.stdout + r.stderr
-
-        self.status.setText('<span style="color:#0a84ff;">正在回收…</span>')
-        w = CallWorker(_do)
-        w.done.connect(lambda text: self._on_recycled(rid, text))
-        w.failed.connect(lambda m: self._on_recycled(rid, f"失败：{m}"))
-        self._workers.append(w)
-        w.finished.connect(w.deleteLater)
-        w.start()
-
-    def _on_recycled(self, rid: str, text: str) -> None:
-        """回收完成：标记 recycled（停服务失败也标记，进回收页冷却，兜底清理在手动回归）。"""
-        ok = "DONE" in str(text)
-        relays = config.get("relays", [])
-        for r in relays:
-            if r.get("id") == rid:
-                r["status"] = "recycled"
-                r["recycled_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                r["recycled_from_user"] = "未分配"
-                break
-        config.set_value("relays", relays)
-        color = "#32d74b" if ok else "#ff9f0a"
-        self.status.setText(f'<span style="color:{color};">已回收（{"服务已停" if ok else "停服务待检查，进回收页冷却"}）</span>')
+        # 记回收冷却（先保存 relay 信息，_delete 会删 config.relays）
+        recycled = config.get("recycled_relays", []) or []
+        if not any(str(x.get("id", "")) == str(rid) for x in recycled):
+            recycled.append({
+                "id": rid,
+                "host": relay.get("host", ""),
+                "port": relay.get("port", ""),
+                "name": name,
+                "ip_type": relay.get("ip_type", "dc"),
+                "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "recycled_from_user": "未分配",
+            })
+            config.set_value("recycled_relays", recycled)
+        # 取消中转（删 config + 清服务器，复用 _delete）
+        self._delete(rid)
         self.refresh()
 
     def _on_cancelled(self, text: str) -> None:

@@ -585,15 +585,22 @@ class UsersPage(QWidget):
             pass  # 停服务失败不阻断回收（兜底清理在手动回归）
 
     def _mark_recycled(self, relay_id: str, username: str) -> None:
-        """标记 relay 为已回收（status=recycled + 回收时间 + 原用户）。"""
+        """回收 = 取消中转：删 config.relays + 记 recycled_relays（进回收页冷却）。"""
         relays = config.get("relays", []) or []
-        for r in relays:
-            if r.get("id") == relay_id:
-                r["status"] = "recycled"
-                r["recycled_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                r["recycled_from_user"] = username
-                break
-        config.set_value("relays", relays)
+        relay = next((r for r in relays if str(r.get("id", "")) == str(relay_id)), None)
+        recycled = config.get("recycled_relays", []) or []
+        if relay and not any(str(x.get("id", "")) == str(relay_id) for x in recycled):
+            recycled.append({
+                "id": str(relay_id),
+                "host": relay.get("host", ""),
+                "port": relay.get("port", ""),
+                "name": relay.get("name", ""),
+                "ip_type": relay.get("ip_type", "dc"),
+                "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "recycled_from_user": username,
+            })
+            config.set_value("recycled_relays", recycled)
+        config.set_value("relays", [r for r in relays if str(r.get("id", "")) != str(relay_id)])
 
     # ---------------- 操作 ----------------
 
