@@ -489,6 +489,14 @@ async function doCheckNode(n) {
     updateNodeStatus(rid, results);
     const reachable = configured.filter((p) => results[p] > 0).length;
     connectivityTests[rid].active = false;
+    // 持久化检测结果 + 时间（后端 D1，重登/换设备也能看到）
+    const status = reachable > 0 ? "ok" : "bad";
+    try {
+      const now = new Date().toISOString();
+      await api("/me/check", "POST", { resource_id: rid, status });
+      n.last_check_at = now;
+      n.last_check_status = status;
+    } catch (_) {}
     proxy.log(`检测完成：${reachable > 0 ? reachable + " 协议可达" : "全部不可达"}`, reachable > 0 ? "ok" : "err");
   } catch (e) {
     connectivityTests[rid].active = false;
@@ -512,6 +520,28 @@ function checkSummary(n) {
   return Object.entries(test.protocols)
     .map(([p, item]) => `${protoName(p)}:${item.state === "ok" ? item.ms + "ms" : (item.state === "checking" ? "检测中" : "不可达")}`)
     .join("\n");
+}
+
+function formatAgo(iso) {
+  const _ = nowTick.value; // 依赖 nowTick，相对时间每秒刷新
+  if (!iso) return "";
+  let diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 0) diffMs = 0;
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return `${sec}秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}小时前`;
+  const day = Math.floor(hour / 24);
+  return `${day}天前`;
+}
+
+function checkText(n) {
+  const status = nodeStatus[n.resource_id]?.text
+    || (n.last_check_status === "ok" ? "可用" : n.last_check_status === "bad" ? "不可用" : "未检测");
+  const ago = formatAgo(n.last_check_at);
+  return ago ? `${status} · ${ago}` : status;
 }
 
 onMounted(() => {
@@ -606,7 +636,7 @@ onMounted(() => {
             <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td>
               <span class="status" :class="connectivityTests[n.resource_id]?.active ? 'pending' : (nodeStatus[n.resource_id]?.cls || 'pending')" :title="checkSummary(n)">
-                {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : (nodeStatus[n.resource_id]?.text || '未检测') }}
+                {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : checkText(n) }}
               </span>
             </td>
             <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
