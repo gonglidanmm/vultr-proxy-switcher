@@ -68,19 +68,19 @@ body {
 .nodes-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 920px;
 }
 .nodes-table th,
 .nodes-table td {
-  padding: 8px 10px;
+  padding: 5px 8px;
   text-align: center;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+  font-size: 12px;
 }
 .nodes-table th {
   color: var(--muted);
   font-weight: 500;
-  font-size: 12px;
+  font-size: 11px;
   position: sticky;
   top: 0;
   background: var(--bg);
@@ -90,9 +90,9 @@ body {
   padding: 40px 0;
   color: var(--muted);
 }
-.col-sel { width: 32px; }
-.col-idx { width: 40px; color: var(--muted); }
-.col-ops { min-width: 300px; }
+.col-sel { width: 30px; }
+.col-idx { width: 36px; color: var(--muted); }
+.col-ops { min-width: 210px; }
 
 /* 列宽拖拽手柄（th 是 sticky 定位上下文，resizer 绝对定位在右边缘）*/
 .col-resizer {
@@ -130,49 +130,49 @@ body {
 .cell-danger { color: var(--danger); }
 .cell-warn { color: var(--warn); }
 .cell-muted { color: var(--muted); }
-.mono { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+.mono { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 
 /* ===== 徽章 ===== */
 .type-badge {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
 }
 .type-vultr { background: #3a4a6a; color: #9db8ff; }
 .type-relay { background: #2a4a3a; color: #7ed9a0; }
 .status {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
 }
 .status.pending { background: #3a3a4c; color: var(--muted); }
 
 /* ===== 按钮 ===== */
 .btn {
-  padding: 6px 12px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--fg);
-  font-size: 13px;
+  font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
 }
 .btn:hover { background: #33334a; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.row-ops { display: flex; gap: 6px; justify-content: center; }
+.row-ops { display: flex; gap: 4px; justify-content: center; }
 
 /* ===== 备注输入 ===== */
 .note-input {
-  padding: 6px 8px;
+  padding: 4px 6px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg);
-  font-size: 13px;
-  width: 100px;
+  font-size: 12px;
+  width: 78px;
 }
 
 /* ===== 代理控制卡 ===== */
@@ -209,7 +209,7 @@ body {
 .status.bad { background: #3a1e1e; color: var(--danger); }
 .node-check-status { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 130px; }
 .check-protocols { display: flex; flex-direction: column; gap: 3px; white-space: normal; }
-.check-chip { font-size: 11px; line-height: 1.35; color: var(--muted); }
+.check-chip { font-size: 10px; line-height: 1.35; color: var(--muted); }
 .check-chip.checking { color: var(--accent); }
 .check-chip.ok { color: #6bdb8a; }
 .check-chip.bad { color: var(--danger); }
