@@ -220,15 +220,11 @@ async function speedTestAll() {
   if (speedTesting.value) return;
   speedTesting.value = true;
   const list = nodes.nodes;
-  proxy.log(`开始测速 ${list.length} 台节点（并发）…`, "info");
+  proxy.log(`开始测速 ${list.length} 台节点…`, "info");
   try {
-    await Promise.all(list.map(async (n) => {
-      const name = n.name || n.ip || n.resource_id;
-      const results = await proxy.testNodeProtocols(n);
-      updateNodeStatus(n.resource_id, results);
-      const reachable = PROTOCOLS.filter((p) => results[p] > 0);
-      proxy.log(`  ${name}：${reachable.length > 0 ? reachable.length + " 协议可达" : "全部不可达"}`, reachable.length > 0 ? "ok" : "err");
-    }));
+    for (const n of list) {
+      await doCheckNode(n); // 串行，复用单独检测（每个节点用 ---- 分隔 + 协议详情 + 持久化）
+    }
     proxy.log("测速完成", "ok");
   } catch (e) {
     proxy.log("测速失败：" + (e.message || e), "err");
