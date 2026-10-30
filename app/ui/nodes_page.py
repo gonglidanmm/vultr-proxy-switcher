@@ -7,6 +7,7 @@ import base64
 import re
 import subprocess
 import time
+from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidgetItem,
     QTabWidget,
@@ -548,6 +550,12 @@ class NodesPage(QWidget):
                 lambda _=False, b=check_btn, h=host, k=ip_key: self._check_ip(h, k, b)
             )
             lay.addWidget(check_btn)
+            recycle_btn = QPushButton("回收")
+            recycle_btn.setProperty("compact", True)
+            recycle_btn.setFixedHeight(30)
+            recycle_btn.setToolTip("停服务并进回收页冷却（不删记录，可手动回归）")
+            recycle_btn.clicked.connect(lambda _=False, rid=r["id"]: self._recycle_unassigned(rid))
+            lay.addWidget(recycle_btn)
             del_btn = QPushButton("取消中转")
             del_btn.setProperty("compact", True)
             del_btn.setProperty("danger", True)
@@ -808,6 +816,69 @@ class NodesPage(QWidget):
         self._workers.append(w)
         w.finished.connect(w.deleteLater)
         w.start()
+
+    def _recycle_unassigned(self, rid: str) -> None:
+        """手动回收未分配的 relay：停服务 + 标记 recycled（进回收页冷却），不删记录可回归。"""
+        relays = config.get("relays", [])
+        relay = next((r for r in relays if r["id"] == rid), None)
+        if not relay:
+            self.refresh()
+            return
+        name = relay.get("name", "") or rid
+        ret = QMessageBox.question(
+            self, "回收 IP",
+            f"确定回收「{name}」吗？\n\n回收后：停止该 IP 的中转服务、进「回收页」冷却，可手动回归。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        server_id = relay.get("server_id", "")
+        server_map = getattr(self, "_server_map", {})
+        server_ip = next((ip for sid, (ip, _) in server_map.items() if sid == server_id), "")
+        root_pw = config.get("root_password", "")
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in config.get("manual_servers", []):
+                if m.get("id") == mid:
+                    root_pw = m.get("password", "") or root_pw
+                    break
+        else:
+            sc = config.get("server_configs", {}).get(server_id, {})
+            root_pw = sc.get("root_password") or root_pw
+
+        def _do():
+            if not root_pw or not server_ip:
+                return "ERROR: 缺少服务器凭据"
+            cmd = f"systemctl disable --now gost-relay-{rid} sing-box-relay-{rid} 2>/dev/null; echo DONE"
+            r = subprocess.run(
+                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=15", f"root@{server_ip}", cmd],
+                capture_output=True, text=True, timeout=30,
+            )
+            return r.stdout + r.stderr
+
+        self.status.setText('<span style="color:#0a84ff;">正在回收…</span>')
+        w = CallWorker(_do)
+        w.done.connect(lambda text: self._on_recycled(rid, text))
+        w.failed.connect(lambda m: self._on_recycled(rid, f"失败：{m}"))
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _on_recycled(self, rid: str, text: str) -> None:
+        """回收完成：标记 recycled（停服务失败也标记，进回收页冷却，兜底清理在手动回归）。"""
+        ok = "DONE" in str(text)
+        relays = config.get("relays", [])
+        for r in relays:
+            if r.get("id") == rid:
+                r["status"] = "recycled"
+                r["recycled_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                r["recycled_from_user"] = "未分配"
+                break
+        config.set_value("relays", relays)
+        color = "#32d74b" if ok else "#ff9f0a"
+        self.status.setText(f'<span style="color:{color};">已回收（{"服务已停" if ok else "停服务待检查，进回收页冷却"}）</span>')
+        self.refresh()
 
     def _on_cancelled(self, text: str) -> None:
         ok = "DONE" in str(text)
