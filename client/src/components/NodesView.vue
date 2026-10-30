@@ -227,15 +227,30 @@ async function speedTestAll() {
   }
 }
 
+const nowTick = ref(Date.now());
+
 function formatExpiry(n) {
+  const _ = nowTick.value; // 依赖 nowTick，每秒触发重渲染（驱动倒计时实时刷新）
   const expiry = String(n.client_expiry || n.expiry || "");
   if (!expiry) return { text: "未设置", cls: "cell-muted" };
-  const expKey = expiry.slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const daysLeft = Math.ceil((new Date(expKey + "T00:00:00") - new Date(todayStr + "T00:00:00")) / 86400000);
-  if (daysLeft <= 0) return { text: daysLeft === 0 ? "今天到期" : "已过期", cls: "cell-danger" };
-  if (daysLeft <= 3) return { text: `${expKey}（${daysLeft}天后到期）`, cls: "cell-warn" };
-  return { text: expKey, cls: "" };
+  // client_expiry 是北京时间字符串（如 2026-11-01 04:59:29），显式按 +08:00 解析，避免客户端时区差异
+  const expTime = new Date(expiry.replace(" ", "T") + "+08:00").getTime();
+  const diffMs = expTime - Date.now();
+  if (diffMs <= 0) return { text: "已到期", cls: "cell-danger" };
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHour = Math.floor(diffMs / 3600000);
+  const diffDay = Math.floor(diffMs / 86400000);
+  if (diffDay >= 1) {
+    const expKey = expiry.slice(0, 10);
+    return { text: `${expKey}（${diffDay}天后到期）`, cls: diffDay <= 3 ? "cell-warn" : "" };
+  }
+  if (diffHour >= 1) {
+    const h = diffHour;
+    const m = Math.floor((diffMs % 3600000) / 60000);
+    return { text: `${h}小时${m}分后到期`, cls: "cell-warn" };
+  }
+  const s = Math.floor((diffMs % 60000) / 1000);
+  return { text: `${diffMin}分${s}秒后到期`, cls: "cell-warn" };
 }
 
 function switchInfo(n) {
@@ -254,9 +269,9 @@ function flowInfo(n) {
 }
 
 function isSwitchDisabled(n) {
-  const expKey = (String(n.client_expiry || n.expiry || "")).slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const expired = expKey && (new Date(expKey + "T00:00:00") - new Date(todayStr + "T00:00:00")) / 86400000 <= 0;
+  const expiry = String(n.client_expiry || n.expiry || "");
+  const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
+  const expired = expTime > 0 && expTime <= Date.now();
   if (expired) return "已到期";
   if (n.flow_exhausted) return "流量用尽";
   if (n.resource_type === "vultr" && n.switch_remaining <= 0) return "次数用完";
@@ -485,6 +500,7 @@ onMounted(() => {
   checkVersion();
   setInterval(checkVersion, 60000); // 每 60 秒检查大版本更新（提示下载）
   setInterval(() => nodes.silentLoad(), 60000); // 每 60 秒静默刷新节点数据（链接/配置/到期等）
+  setInterval(() => { nowTick.value = Date.now(); }, 1000); // 每秒更新，驱动到期倒计时实时刷新
   connectWs();
   onSwitchMessage(handleWsMessage);
 });
@@ -587,7 +603,7 @@ onMounted(() => {
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
               <div class="row-ops">
-                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" @click="proxy.toggleUpstream(n)">
+                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isSwitchDisabled(n)" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
                 </button>
                 <button v-if="n.resource_type === 'vultr'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
