@@ -247,7 +247,8 @@ function formatExpiry(n) {
   if (diffHour >= 1) {
     const h = diffHour;
     const m = Math.floor((diffMs % 3600000) / 60000);
-    return { text: `${h}小时${m}分后到期`, cls: "cell-warn" };
+    const s = Math.floor((diffMs % 60000) / 1000);
+    return { text: `${h}小时${m}分${s}秒后到期`, cls: "cell-warn" };
   }
   const s = Math.floor((diffMs % 60000) / 1000);
   return { text: `${diffMin}分${s}秒后到期`, cls: "cell-warn" };
