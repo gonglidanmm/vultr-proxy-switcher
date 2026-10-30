@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 
@@ -237,6 +238,36 @@ WantedBy=multi-user.target
 """
 
 
+_CITY_EN2CN = {
+    "dallas": "达拉斯",
+    "ashburn": "阿什本",
+    "asburn": "阿什本",
+    "buffalo": "布法罗",
+    "charlotte": "夏洛特",
+    "los angeles": "洛杉矶",
+    "la": "洛杉矶",
+    "new york": "纽约",
+    "ny": "纽约",
+    "san francisco": "旧金山",
+    "boca raton": "博卡拉顿",
+}
+_CN_CITIES = ["纽约", "达拉斯", "阿什本", "博卡拉顿", "旧金山", "夏洛特", "布法罗", "洛杉矶"]
+
+
+def _relay_location(name: str) -> str:
+    """从 relay name 提取「国家·城市」（如 数据中心-US-Dallas-01 → 美国·达拉斯）。"""
+    if not name:
+        return ""
+    for cn in _CN_CITIES:
+        if cn in name:
+            return f"美国·{cn}"
+    m = re.search(r"US[- ]([A-Za-z]+(?:\s+[A-Za-z]+)?)", name)
+    if m:
+        key = m.group(1).lower()
+        return f"美国·{_CITY_EN2CN.get(key, m.group(1).title())}"
+    return ""
+
+
 def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> dict:
     """构建 relay 的 node_data 快照（与 vultr 同构，客户端零改动渲染）。
 
@@ -276,7 +307,7 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
             "hysteria2": hysteria2_link(entry, hp, hyst_pw, "", "Hysteria2"),
         },
         "name": name,
-        "location": relay.get("location", ""),
+        "location": relay.get("location", "") or _relay_location(name),
         "ip": relay.get("host", ""),  # 上游出口 IP（客户端「当前 IP」列）
         "domain": entry,
         "ip_type": relay.get("ip_type", "dc"),
