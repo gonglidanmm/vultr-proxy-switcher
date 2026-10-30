@@ -506,6 +506,14 @@ function checkProgress(n) {
   return `${done}/${values.length}`;
 }
 
+function checkSummary(n) {
+  const test = connectivityTests[n.resource_id];
+  if (!test || !test.protocols) return "";
+  return Object.entries(test.protocols)
+    .map(([p, item]) => `${protoName(p)}:${item.state === "ok" ? item.ms + "ms" : (item.state === "checking" ? "检测中" : "不可达")}`)
+    .join("\n");
+}
+
 onMounted(() => {
   if (nodes.nodes.length === 0) nodes.load().catch(() => {});
   checkVersion();
@@ -597,16 +605,9 @@ onMounted(() => {
             <td class="cell-muted">{{ (n.created_at || "").slice(0, 10) || "—" }}</td>
             <td :class="formatExpiry(n).cls">{{ formatExpiry(n).text }}</td>
             <td>
-              <div class="node-check-status">
-                <span class="status" :class="connectivityTests[n.resource_id]?.active ? 'pending' : (nodeStatus[n.resource_id]?.cls || 'pending')" :role="connectivityTests[n.resource_id]?.active ? 'status' : undefined">
-                  {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : (nodeStatus[n.resource_id]?.text || '未检测') }}
-                </span>
-                <div v-if="connectivityTests[n.resource_id]" class="check-protocols" aria-live="polite">
-                  <span v-for="(item, p) in connectivityTests[n.resource_id].protocols" :key="p" class="check-chip" :class="item.state">
-                    {{ protoName(p) }}：{{ item.state === 'checking' ? '检测中…' : (item.state === 'ok' ? `${item.ms}ms` : '不可达') }}
-                  </span>
-                </div>
-              </div>
+              <span class="status" :class="connectivityTests[n.resource_id]?.active ? 'pending' : (nodeStatus[n.resource_id]?.cls || 'pending')" :title="checkSummary(n)">
+                {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : (nodeStatus[n.resource_id]?.text || '未检测') }}
+              </span>
             </td>
             <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
