@@ -881,6 +881,8 @@ class WebsharePage(QWidget):
         for p in self._dc + self._res:
             if self._ip_key(p) in self._relay_map:
                 continue
+            if self._ip_key(p) in self._recycled_map:
+                continue
             cc = p.get("country_code", "")
             city = p.get("city_name", "")
             if cc:
@@ -903,6 +905,8 @@ class WebsharePage(QWidget):
         for ip_type, pool in (("dc", self._dc), ("res", self._res)):
             for i, p in enumerate(pool):
                 if self._ip_key(p) in self._relay_map:
+                    continue
+                if self._ip_key(p) in self._recycled_map:
                     continue
                 if country and p.get("country_code", "") != country:
                     continue
@@ -938,6 +942,8 @@ class WebsharePage(QWidget):
         for p in self._dc + self._res:
             if self._ip_key(p) in self._relay_map:
                 continue
+            if self._ip_key(p) in self._recycled_map:
+                continue
             if country and p.get("country_code", "") != country:
                 continue
             if p.get("city_name"):
@@ -969,6 +975,8 @@ class WebsharePage(QWidget):
         candidates = []
         for i, p in enumerate(pool):
             if self._ip_key(p) in self._relay_map:
+                continue
+            if self._ip_key(p) in self._recycled_map:
                 continue
             if country and p.get("country_code", "") != country:
                 continue
