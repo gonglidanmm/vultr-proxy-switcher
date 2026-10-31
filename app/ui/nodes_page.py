@@ -921,6 +921,13 @@ class NodesPage(QWidget):
         # 从 config 删除
         relays = [r for r in relays if r["id"] != rid]
         config.set_value("relays", relays)
+        # 联动清理 D1 里对应 relay 的分配记录（回收/取消中转后客户端不再显示失效节点，防「代理不通」）
+        try:
+            assigns = api_client.list_resource_assignments("relay", rid).get("assignments", [])
+            for a in assigns:
+                api_client.unassign(a["user_id"], "relay", rid)
+        except Exception:
+            pass  # Worker 不可达时降级，不阻塞回收
         # 从拖拽顺序里剔除该 IP（取消中转后回到 webshare-IP 页按官网顺序插回）
         _order_key = f"webshare_{relay.get('ip_type', 'dc')}_order"
         _order = config.get(_order_key, []) or []
