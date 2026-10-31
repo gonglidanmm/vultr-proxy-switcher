@@ -7,7 +7,10 @@ import base64
 import re
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# 北京时间（UTC+8）：所有展示/持久化的时间统一用北京时间，不依赖系统时区
+BJ_TZ = timezone(timedelta(hours=8))
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -776,7 +779,7 @@ class NodesPage(QWidget):
         target = next((r for r in recycled if str(r.get("id", "")) == str(rid)), None)
         if target:
             returned = config.get("returned_ips", {}) or {}
-            returned[f"{target.get('host','')}:{target.get('port','')}"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            returned[f"{target.get('host','')}:{target.get('port','')}"] = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
             config.set_value("returned_ips", returned)
         recycled = [r for r in recycled if str(r.get("id", "")) != str(rid)]
         config.set_value("recycled_relays", recycled)
@@ -1000,7 +1003,7 @@ class NodesPage(QWidget):
                 "port": relay.get("port", ""),
                 "name": name,
                 "ip_type": relay.get("ip_type", "dc"),
-                "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "recycled_at": datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M"),
                 "recycled_from_user": "未分配",
             })
             config.set_value("recycled_relays", recycled)
@@ -1057,7 +1060,7 @@ class NodesPage(QWidget):
         scores = config.get("webshare_scores", {})
         scores[ip_key] = {"score": score, "proxy": proxy, "vpn": vpn, "tor": tor,
                           "abuse": abuse, "ts": time.time(),
-                          "time_str": time.strftime("%Y-%m-%d %H:%M:%S")}
+                          "time_str": datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")}
         config.set_value("webshare_scores", scores)
         ipqs.bump_ipqs_usage()
         self._fill()

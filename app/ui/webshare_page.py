@@ -1136,7 +1136,7 @@ class WebsharePage(QWidget):
         scores = config.get("webshare_scores", {})
         scores[ip_key] = {"score": score, "proxy": proxy, "vpn": vpn, "tor": tor,
                           "abuse": abuse, "ts": time.time(),
-                          "time_str": time.strftime("%Y-%m-%d %H:%M:%S")}
+                          "time_str": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")}
         config.set_value("webshare_scores", scores)
         # 已用次数 +1（本地计数）
         self._bump_ipqs_usage()
