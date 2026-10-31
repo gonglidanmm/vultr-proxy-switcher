@@ -43,16 +43,11 @@ QListWidget#nav::item:selected {
 
 QTableWidget { background-color: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 8px; gridline-color: #2c2c2e; font-size: 12px; }
 QTableWidget::item { padding: 6px 10px; border: none; }
-/* 勾选框：暗色下加明确边框/背景，否则深色方框在深色底上几乎不可见 */
+/* 勾选框：只设边框（不设 background，保留系统绘制的 √ 勾选标记），暗色下深色方框几乎不可见 */
 QTableView::indicator, QTableWidget::indicator {
     width: 16px; height: 16px;
-    border: 2px solid #6e6e73;
+    border: 2px solid #8e8e93;
     border-radius: 3px;
-    background: #2c2c2e;
-}
-QTableView::indicator:checked, QTableWidget::indicator:checked {
-    background: #0a84ff;
-    border-color: #0a84ff;
 }
 QHeaderView::section {
     background-color: #232326; color: #98989d; border: none;
