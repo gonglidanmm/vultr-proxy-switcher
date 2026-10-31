@@ -291,6 +291,15 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
     sp = socks_port(rp)
     rp_real = reality_port(rp)
     hp = hysteria_port(rp)
+    # 候选上游 IP 列表（合并线路：1 条线路轮换 N 个上游 IP；单 IP 线路 = 只有当前 1 个候选）
+    upstream = {
+        "host": relay.get("host", ""),
+        "port": relay.get("port", ""),
+        "user": relay.get("user", ""),
+        "password": relay.get("password", ""),
+    }
+    candidates = relay.get("candidate_upstreams") or [upstream]
+    active_idx = int(relay.get("active_upstream_idx", 0) or 0)
 
     return {
         "host": entry,
@@ -315,11 +324,8 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
             "relay_id": relay.get("id", ""),
             "server_id": relay.get("server_id", ""),
             "switch": {"server_ip": entry, "port": 8080, "api_key": switch_api_key},
-            "upstream": {
-                "host": relay.get("host", ""),
-                "port": relay.get("port", ""),
-                "user": relay.get("user", ""),
-                "password": relay.get("password", ""),
-            },
+            "upstream": upstream,
+            "candidates": candidates,
+            "active_idx": active_idx,
         },
     }

@@ -450,7 +450,8 @@ async function switchResource(request, env, user) {
     "SELECT * FROM assignments WHERE user_id = ? AND resource_id = ?",
   ).bind(user.id, resourceId).first();
   if (!row) return json({ error: "资源不存在或未分配给你" }, 404);
-  if (row.resource_type !== "vultr") {
+  const isRelay = row.resource_type === "relay";
+  if (row.resource_type !== "vultr" && !isRelay) {
     return json({ error: "未知资源类型" }, 400);
   }
 
@@ -477,6 +478,61 @@ async function switchResource(request, env, user) {
 
   if (count >= limit) {
     return json({ error: `今天切换次数已达上限（${limit} 个 IP/天）`, remaining: 0 }, 429);
+  }
+
+  // relay 切换：轮换候选上游 + 重启单进程（秒级，同步返回 done）
+  if (isRelay) {
+    let nd = {};
+    try { nd = JSON.parse(row.node_data || "{}"); } catch (_) {}
+    const creds = nd._creds && typeof nd._creds === "object" ? nd._creds : {};
+    const cands = Array.isArray(creds.candidates) ? creds.candidates : [];
+    const candidates = cands.length ? cands : (creds.upstream ? [creds.upstream] : []);
+    if (candidates.length < 2) {
+      return json({ error: "该线路只有 1 个 IP，无候选可切换", no_candidate: true }, 400);
+    }
+    const active = Number(creds.active_idx) || 0;
+    const next = (active + 1) % candidates.length;
+    const target = candidates[next];
+    const sw = creds.switch || {};
+    const sip = sw.server_ip || "";
+    const apiKey = sw.api_key || "";
+    const relayId = creds.relay_id || resourceId;
+    if (!sip || !target || !target.host) {
+      return json({ error: "该线路缺少切换凭据，无法切换", no_candidate: true }, 400);
+    }
+    let switchOk = false;
+    let switchErr = "";
+    try {
+      const resp = await fetch(`http://${sip}:8080/switch`, {
+        method: "POST",
+        headers: { "X-Api-Key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          relay_id: relayId,
+          host: target.host,
+          port: Number(target.port) || 0,
+          user: target.user || "",
+          password: target.password || "",
+        }),
+      });
+      const rj = await resp.json().catch(() => ({}));
+      switchOk = !!(rj && rj.ok);
+      switchErr = (rj && rj.error) || "";
+    } catch (e) {
+      switchErr = e && e.message ? e.message : "切换服务器不可达";
+    }
+    if (!switchOk) {
+      return json({ error: switchErr || "切换失败，请稍后重试" }, 502);
+    }
+    // 更新 node_data：active_idx 前移 + 当前 upstream + 出口 IP
+    creds.active_idx = next;
+    creds.upstream = { host: target.host, port: target.port, user: target.user, password: target.password };
+    nd._creds = creds;
+    nd.ip = target.host;
+    const newCount = (row.switch_date || "") === today ? (row.switch_count || 0) + 1 : 1;
+    await env.DB.prepare(
+      "UPDATE assignments SET node_data = ?, switch_count = ?, switch_date = ? WHERE id = ?",
+    ).bind(JSON.stringify(nd), newCount, today, row.id).run();
+    return json({ status: "done", new_ip: target.host });
   }
 
   const VULTR_KEY = env.VULTR_API_KEY || "";

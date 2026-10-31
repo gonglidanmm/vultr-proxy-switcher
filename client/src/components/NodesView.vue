@@ -263,7 +263,7 @@ function formatExpiry(n) {
 }
 
 function switchInfo(n) {
-  if (n.resource_type !== "vultr") return { text: "—", cls: "cell-muted" };
+  if (n.resource_type !== "vultr" && n.resource_type !== "relay") return { text: "—", cls: "cell-muted" };
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
   const used = Math.max(0, limit - remaining);
@@ -283,7 +283,7 @@ function isSwitchDisabled(n) {
   const expired = expTime > 0 && expTime <= Date.now();
   if (expired) return "已到期";
   if (n.flow_exhausted) return "流量用尽";
-  if (n.resource_type === "vultr" && n.switch_remaining <= 0) return "次数用完";
+  if ((n.resource_type === "vultr" || n.resource_type === "relay") && n.switch_remaining <= 0) return "次数用完";
   return "";
 }
 
@@ -300,7 +300,9 @@ async function afterSwitch(newIp) {
   const nodeName = newNode ? (newNode.name || newNode.ip || newIp) : newIp;
   proxy.log(`切换完成，${nodeName} 新 IP：${newIp}`, "ok");
   if (!newNode) return;
-  proxy.log(`新机服务启动中（约1-3分钟，首次需下载安装服务），自动检测各协议…`, "info");
+  proxy.log(newNode.resource_type === "relay"
+    ? `切换完成，正在检测各协议…`
+    : `新机服务启动中（约1-3分钟，首次需下载安装服务），自动检测各协议…`, "info");
   let results = null;
   for (let i = 0; i < 8; i++) {
     await sleep(15000);
@@ -343,7 +345,7 @@ async function switchIp(n, opts = {}) {
     let region = "";
     if (explicitRegion !== undefined) {
       region = explicitRegion; // 批量切换：显式指定区域（或空=随机）
-    } else if (!auto) {
+    } else if (!auto && n.resource_type !== "relay") {
       const loc = n.location || "";
       const country = loc.split("·")[0].trim();
       const knownCountries = ["美国", "日本", "韩国", "新加坡", "英国", "德国", "荷兰", "法国", "加拿大", "澳大利亚", "印度"];
@@ -645,7 +647,7 @@ onMounted(() => {
                 <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isSwitchDisabled(n)" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
                 </button>
-                <button v-if="n.resource_type === 'vultr'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
+                <button v-if="n.resource_type === 'vultr' || n.resource_type === 'relay'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
                   {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">

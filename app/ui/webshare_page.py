@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -1263,7 +1264,22 @@ class WebsharePage(QWidget):
         if not entry_domain:
             self._set_status("未填写二级域名", warn=True)
             return
-        self._generate_relays(server_id, entry_domain, checked)
+        # 勾选多个 IP 时询问：合并成 1 条线路（N 候选轮换）还是 N 条独立线路
+        merge = False
+        if len(checked) > 1:
+            box = QMessageBox(self)
+            box.setWindowTitle("合并生成")
+            box.setText(f"勾选了 {len(checked)} 个 IP，如何生成中转节点？")
+            box.setInformativeText(
+                "「合并成 1 条线路」：只生成 1 个节点（1 个域名/端口/密码），"
+                "客户切换 IP 时在这 N 个 IP 之间轮换，客户无感。\n"
+                "「独立线路」：每个 IP 生成 1 个节点（N 条独立线路）。"
+            )
+            merge_btn = box.addButton("合并成 1 条线路", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("独立线路（N 条）", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            merge = box.clickedButton() is merge_btn
+        self._generate_relays(server_id, entry_domain, checked, merge=merge)
 
     def _generate_one(self, ip_type: str, idx: int) -> None:
         """单个 IP 生成中转（操作列「生成中转」按钮）。"""
@@ -1280,11 +1296,15 @@ class WebsharePage(QWidget):
             return
         self._generate_relays(server_id, entry_domain, [(ip_type, idx)])
 
-    def _generate_relays(self, server_id: str, entry_domain: str, checked: list) -> None:
-        """核心：为 checked 的 IP 生成 relay 并部署。"""
+    def _generate_relays(self, server_id: str, entry_domain: str, checked: list, merge: bool = False) -> None:
+        """核心：为 checked 的 IP 生成 relay 并部署。
+
+        merge=True 且勾选多个 IP 时：合并成 1 条线路（1 个 relay + N 个候选上游），
+        客户 1 个域名/端口连接，切换 IP 时在这 N 个上游之间轮换。
+        """
         # 生成中转前刷新订阅信息（轻量，只拉 plans+流量统计，供后续分配用户弹窗用）
         self._refresh_subscription()
-        relays = config.get("relays", [])
+        relays = config.get("relays", []) or []
         used = {int(x.get("relay_port", 0)) for x in relays}
         # 端口单调递增：新 relay 端口必须高于历史最高端口，删除后不复用，防旧链接端口串到新 relay
         high_water = config.get("relay_port_high_water", 0) or 0
@@ -1293,6 +1313,20 @@ class WebsharePage(QWidget):
         seen = {(r.get("host"), int(r.get("port", 0)), r.get("user")) for r in relays}
         pw_pool = config.get("relay_password_pool", {})
         returned_ips = config.get("returned_ips", {}) or {}
+        # 合并线路：勾选 N 个 IP 合并成 1 条线路（1 域名/端口，切换 IP 轮换这 N 个上游）
+        merge_candidates = None
+        if merge and len(checked) > 1:
+            merge_candidates = []
+            for ip_type, idx in checked:
+                pool = self._dc if ip_type == "dc" else self._res
+                p = pool[idx]
+                merge_candidates.append({
+                    "host": p.get("proxy_address") or "p.webshare.io",
+                    "port": int(p.get("port", 0)),
+                    "user": p.get("username", ""),
+                    "password": p.get("password", ""),
+                })
+            checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0
         for ip_type, idx in checked:
             pool = self._dc if ip_type == "dc" else self._res
@@ -1330,7 +1364,7 @@ class WebsharePage(QWidget):
                     "reality_short_id": cached["reality_short_id"],
                 }
             hyst_pw = cached.get("hysteria_password") or gen_relay_password()
-            relays.append({
+            relay_dict = {
                 "id": gen_relay_id(), "server_id": server_id, "name": name,
                 "host": host, "port": port, "user": user,
                 "password": p.get("password", ""),
@@ -1343,7 +1377,11 @@ class WebsharePage(QWidget):
                 "reality_short_id": reality["reality_short_id"],
                 "reality_sni": "www.cloudflare.com",
                 "hysteria_password": hyst_pw,
-            })
+            }
+            if merge_candidates:
+                relay_dict["candidate_upstreams"] = merge_candidates
+                relay_dict["active_upstream_idx"] = 0
+            relays.append(relay_dict)
             used.add(rp)
             seen.add((host, port, user))
             returned_ips.pop(key, None)  # 重新生成中转 → 清除「回归」标记
