@@ -157,6 +157,12 @@ def main() -> None:
                 f"systemctl restart gost-relay-{rid}"
             )
             r2 = _ssh(host, root_pw, cmd)
+            # 偶发 SSH 失败重试（最多 3 次），与 sing-box 一致，避免漏部署 gost（踩过坑：1 个 relay 只有 sing-box 没 gost）
+            for _attempt in range(3):
+                if r2.returncode == 0:
+                    break
+                time.sleep(2 * (_attempt + 1))
+                r2 = _ssh(host, root_pw, cmd)
             results.append(("gost", "deploy" if r2.returncode == 0 else "fail"))
 
         # sing-box（Reality + Hysteria2 入站，每 relay 一个独立进程）
