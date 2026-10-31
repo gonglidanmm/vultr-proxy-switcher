@@ -611,7 +611,11 @@ class NodesPage(QWidget):
         self.assign_btn.setText(f"分配给用户（已选 {len(self._selected)}）")
 
     def _assign_selected(self) -> None:
-        """批量分配：把勾选的所有 IP 分配给一个用户（选用户 + 使用时长 + 订阅约束）。"""
+        """批量分配：把勾选的所有 IP 分配给一个用户（选用户 + 使用时长 + 订阅约束）。
+
+        勾选多个 relay 时可选择「合并成 1 条线路」：保留 1 个主 relay（1 域名/端口/密码），
+        其余 relay 的上游 IP 收进候选列表，客户切换 IP 时轮换这 N 个 IP。
+        """
         from ..api_client import ApiError
         from ..webshare import subscription_quota_info
         from .users_page import _UserPickerDialog
@@ -627,29 +631,144 @@ class NodesPage(QWidget):
         dlg = _UserPickerDialog(self, resource_type="relay", sub_info=sub_info)
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.user_id is None:
             return
+
         switch_api_key = str(config.get("switch_api_key", "") or "")
         server_map = getattr(self, "_server_map", {})
+        selected_list = list(self._selected.values())
+
+        # 勾选多个 relay 时询问：合并成 1 条线路（轮换候选 IP）还是 N 条独立线路
+        merge = False
+        if len(selected_list) > 1:
+            box = QMessageBox(self)
+            box.setWindowTitle("合并分配")
+            box.setText(f"勾选了 {len(selected_list)} 个中转 IP，如何分配给该用户？")
+            box.setInformativeText(
+                "「合并成 1 条线路」：只分 1 个节点（1 个域名/端口/密码），"
+                "客户切换 IP 时在这 N 个 IP 之间轮换，客户无感。\n"
+                "「独立线路」：每个 IP 分 1 个节点（N 条独立线路）。"
+            )
+            merge_btn = box.addButton("合并成 1 条线路", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("独立线路（N 条）", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            merge = box.clickedButton() is merge_btn
+
         ok = fail = 0
-        for relay in self._selected.values():
-            sid = relay.get("server_id", "")
+        if merge:
+            main = selected_list[0]
+            others = selected_list[1:]
+            candidates = [
+                {"host": r.get("host", ""), "port": int(r.get("port", 0)),
+                 "user": r.get("user", ""), "password": r.get("password", "")}
+                for r in selected_list
+            ]
+            # 更新 config.relays：主 relay 持久化候选列表，删除其余 relay
+            all_relays = config.get("relays", []) or []
+            other_ids = {str(r.get("id", "")) for r in others}
+            updated = []
+            main_updated = None
+            for r in all_relays:
+                if str(r.get("id", "")) == str(main.get("id", "")):
+                    r2 = dict(r)
+                    r2["candidate_upstreams"] = candidates
+                    r2["active_upstream_idx"] = 0
+                    updated.append(r2)
+                    main_updated = r2
+                elif str(r.get("id", "")) in other_ids:
+                    continue  # 被合并进候选，删除
+                else:
+                    updated.append(r)
+            config.set_value("relays", updated)
+            # 分配主 relay（1 条线路）
+            target = main_updated or main
+            sid = target.get("server_id", "")
             srv_ip = server_map.get(sid, ("未知", ""))[0]
             if not srv_ip or srv_ip == "未知":
                 fail += 1
-                continue
-            nd = relay_node_data(relay, srv_ip, switch_api_key)
-            if dlg.expires_at:
-                nd["client_expiry"] = dlg.expires_at
-            nd["quota_gb"] = dlg.quota_gb
-            try:
-                api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=dlg.quota_gb)
-                ok += 1
-            except ApiError:
-                fail += 1
+            else:
+                nd = relay_node_data(target, srv_ip, switch_api_key)
+                if dlg.expires_at:
+                    nd["client_expiry"] = dlg.expires_at
+                nd["quota_gb"] = dlg.quota_gb
+                try:
+                    api_client.assign(dlg.user_id, "relay", target["id"], nd, quota_gb=dlg.quota_gb)
+                    ok += 1
+                except ApiError:
+                    fail += 1
+            # 异步停掉其余 relay 服务（释放端口/进程，不阻断分配）
+            for r in others:
+                self._stop_relay_server_async(r)
+        else:
+            for relay in selected_list:
+                sid = relay.get("server_id", "")
+                srv_ip = server_map.get(sid, ("未知", ""))[0]
+                if not srv_ip or srv_ip == "未知":
+                    fail += 1
+                    continue
+                nd = relay_node_data(relay, srv_ip, switch_api_key)
+                if dlg.expires_at:
+                    nd["client_expiry"] = dlg.expires_at
+                nd["quota_gb"] = dlg.quota_gb
+                try:
+                    api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=dlg.quota_gb)
+                    ok += 1
+                except ApiError:
+                    fail += 1
         self._selected.clear()
         self._update_selected_label()
         self.refresh()
         color = "#32d74b" if fail == 0 else "#ff9f0a"
-        self.status.setText(f'<span style="color:{color};">已分配 {ok} 个 IP' + (f"，{fail} 个失败" if fail else "") + '</span>')
+        self.status.setText(f'<span style="color:{color};">已分配 {ok} 个线路' + (f"，{fail} 个失败" if fail else "") + '</span>')
+
+    def _stop_relay_server_async(self, relay: dict) -> None:
+        """异步停掉一个 relay 的服务（合并时释放被合并进候选的 relay 的端口/进程）。"""
+        rid = str(relay.get("id", ""))
+        relay_port = int(relay.get("relay_port", 0))
+        socks_p = relay_port + 10000
+        server_id = relay.get("server_id", "")
+        server_map = getattr(self, "_server_map", {})
+        server_ip = next((ip for sid, (ip, _) in server_map.items() if sid == server_id), "")
+        if not rid or not server_ip:
+            return
+        root_pw = config.get("root_password", "")
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    root_pw = m.get("password", "") or root_pw
+                    break
+        else:
+            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
+            root_pw = sc.get("root_password") or root_pw
+
+        def _do():
+            if not root_pw:
+                return "ERROR: 缺少 root 密码"
+            cmd = (
+                f"systemctl disable --now gost-relay-{rid} 2>/dev/null; "
+                f"rm -f /etc/systemd/system/gost-relay-{rid}.service; "
+                f"systemctl disable --now sing-box-relay-{rid} 2>/dev/null; "
+                f"rm -f /etc/systemd/system/sing-box-relay-{rid}.service /etc/sing-box/relay-{rid}.json; "
+                f"systemctl daemon-reload; "
+                f"ufw delete allow {relay_port}/tcp 2>/dev/null; "
+                f"ufw delete allow {relay_port}/udp 2>/dev/null; "
+                f"ufw delete allow {socks_p}/tcp 2>/dev/null; "
+                f"ufw delete allow {socks_p}/udp 2>/dev/null; "
+                f"ufw delete allow {reality_port(relay_port)}/tcp 2>/dev/null; "
+                f"ufw delete allow {reality_port(relay_port)}/udp 2>/dev/null; "
+                f"ufw delete allow {hysteria_port(relay_port)}/udp 2>/dev/null; "
+                f"echo DONE"
+            )
+            r = subprocess.run(
+                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=15", f"root@{server_ip}", cmd],
+                capture_output=True, text=True, timeout=120,
+            )
+            return r.stdout + r.stderr
+
+        w = CallWorker(_do)
+        w.finished.connect(w.deleteLater)
+        self._workers.append(w)
+        w.start()
 
     def _return_recycled(self, rid: str) -> None:
         """手动回归 = 解除冷却：从回收记录删掉，IP 回 webshare 未中转列表并标记「刚回归」。"""
@@ -817,12 +936,12 @@ class NodesPage(QWidget):
         root_pw = config.get("root_password", "")
         if server_id.startswith("manual:"):
             mid = server_id[len("manual:"):]
-            for m in config.get("manual_servers", []):
+            for m in (config.get("manual_servers", []) or []):
                 if m.get("id") == mid:
                     root_pw = m.get("password", "") or root_pw
                     break
         else:
-            sc = config.get("server_configs", {}).get(server_id, {})
+            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
             root_pw = sc.get("root_password") or root_pw
 
         def _do():
