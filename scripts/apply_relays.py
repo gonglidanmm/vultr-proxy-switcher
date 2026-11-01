@@ -69,6 +69,45 @@ fi
     print(("✅" if r2.returncode == 0 else "❌") + " 正式证书 *.yduas.cc（acme.sh + 缓存复用）")
 
 
+def _ensure_switch_server(host: str, root_pw: str) -> None:
+    """确保服务器部署 switch_server.py（切换/停服/计量接口，监听 8080）。
+
+    踩过坑：新服务器只部署了 gost + sing-box，漏了 switch_server.py，导致客户端「切换 IP」失败。
+    """
+    import os
+    script_path = os.path.join(os.path.dirname(__file__), "switch_server.py")
+    try:
+        with open(script_path, "r", encoding="utf-8") as f:
+            script = f.read()
+    except Exception:
+        print("⚠️ 无法读取 switch_server.py，跳过部署")
+        return
+    api_key = str(config.get("switch_api_key", "") or "")
+    script_b64 = base64.b64encode(script.encode("utf-8")).decode()
+    unit = (
+        "[Unit]\n"
+        "Description=relay switch server (改 relay 上游切换接口)\n"
+        "After=network.target\n"
+        "[Service]\n"
+        "ExecStart=/usr/bin/python3 /usr/local/bin/switch_server.py\n"
+        "Restart=always\n"
+        "RestartSec=3\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    unit_b64 = base64.b64encode(unit.encode("utf-8")).decode()
+    cmd = (
+        f"echo '{script_b64}' | base64 -d > /usr/local/bin/switch_server.py; "
+        f"chmod +x /usr/local/bin/switch_server.py; "
+        f"echo '{api_key}' > /etc/switch_api_key; "
+        f"echo '{unit_b64}' | base64 -d > /etc/systemd/system/switch-server.service; "
+        f"systemctl daemon-reload; systemctl enable --now switch-server; "
+        f"systemctl restart switch-server"
+    )
+    r = _ssh(host, root_pw, cmd)
+    print(("✅" if r.returncode == 0 else "❌") + " switch_server.py（8080 切换接口）")
+
+
 def main() -> None:
     import sys
 
@@ -127,6 +166,9 @@ def main() -> None:
     # 1.6 确保正式通配符证书 *.yduas.cc（Hysteria2 的 TLS，缓存复用避免限流）
     if relays:
         _ensure_cert(host, root_pw)
+
+    # 1.7 确保 switch_server.py（切换 IP 接口 8080）——新服务器容易漏，切换 IP 依赖它
+    _ensure_switch_server(host, root_pw)
 
     # 2. 应用每个中转（gost + sing-box 双独立进程，并行 SSH）
     from concurrent.futures import ThreadPoolExecutor
