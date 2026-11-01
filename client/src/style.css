@@ -271,6 +271,25 @@ body {
   border-top: 1px solid var(--border);
 }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cand-list { display: flex; flex-direction: column; gap: 8px; }
+.cand-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 14px;
+}
+.cand-item:hover { background: rgba(255,255,255,0.04); }
+.cand-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.cand-active { border-color: var(--accent); }
+.cand-idx { color: var(--muted); font-size: 13px; min-width: 20px; }
+.cand-ip { flex: 1; text-align: left; }
+.cand-cur { color: var(--accent); font-size: 12px; font-weight: 600; }
 .batch-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .batch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .batch-node { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

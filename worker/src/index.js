@@ -286,7 +286,13 @@ async function handleMeNodes(env, user) {
     } catch (_) {
       data = {};
     }
-    delete data._creds;  // 不暴露完整凭据给客户端
+    const creds = data._creds || {};
+    const cands = creds.candidates || [];
+    const activeIdx = Number(creds.active_idx) || 0;
+    delete data._creds;  // 不暴露完整凭据给客户端（仅暴露候选 IP，见下）
+    // 候选上游 IP（合并线路 >1，单线路 =1），供客户端显示进度/悬停/指定切换（不含密码）
+    const candidateIps = cands.map((c) => (c && c.host) || "");
+    const activeIp = candidateIps[activeIdx] || "";
     // 每个「用户↔资源」独立计数，按天重置
     let count = r.switch_count || 0;
     const nodeLimit = r.switch_limit == null ? 0 : Number(r.switch_limit);
@@ -316,6 +322,9 @@ async function handleMeNodes(env, user) {
       flow_quota_gb: quota,
       flow_exhausted: quota > 0 && used >= quota,
       expired,
+      candidate_ips: candidateIps,   // 候选上游 IP 列表（合并线路 >1，单线路 =1）
+      active_ip_idx: activeIdx,      // 当前激活的候选索引
+      active_ip: activeIp,           // 当前激活的上游 IP
     };
   });
   return json({ nodes });
@@ -491,7 +500,9 @@ async function switchResource(request, env, user) {
       return json({ error: "该线路只有 1 个 IP，无候选可切换", no_candidate: true }, 400);
     }
     const active = Number(creds.active_idx) || 0;
-    const next = (active + 1) % candidates.length;
+    // 支持指定候选索引（弹窗指定切换）；默认顺序轮换
+    const want = (body.target_index !== undefined && body.target_index !== null) ? Number(body.target_index) : -1;
+    const next = (want >= 0 && want < candidates.length) ? want : (active + 1) % candidates.length;
     const target = candidates[next];
     const sw = creds.switch || {};
     const sip = sw.server_ip || "";

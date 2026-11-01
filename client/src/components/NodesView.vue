@@ -26,6 +26,7 @@ const regionNode = ref(null);
 const qr = ref(null); // { name, link }
 
 const switching = reactive({}); // resource_id -> { text, disabled, checking }
+const candidateModal = reactive({ show: false, node: null }); // 合并线路候选 IP 弹窗
 let autoReSwitchCount = 0;
 
 // ===== 行拖拽排序（拖到目标行位置，调 /me/reorder 持久化）=====
@@ -264,10 +265,34 @@ function formatExpiry(n) {
 
 function switchInfo(n) {
   if (n.resource_type !== "vultr" && n.resource_type !== "relay") return { text: "—", cls: "cell-muted" };
+  const cands = n.candidate_ips || [];
+  if (cands.length > 1) {
+    // 合并线路：显示候选 IP 进度（当前/总数）
+    const idx = (Number(n.active_ip_idx) || 0) + 1;
+    return { text: `${idx}/${cands.length}`, cls: "" };
+  }
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
   const used = Math.max(0, limit - remaining);
   return { text: `${used}/${limit}`, cls: remaining <= 0 ? "cell-danger" : "" };
+}
+
+function candidateTip(n) {
+  const cands = n.candidate_ips || [];
+  if (cands.length <= 1) return "";
+  const active = Number(n.active_ip_idx) || 0;
+  return "候选 IP（点击指定切换）：\n" + cands.map((ip, i) => `${i + 1}. ${ip}${i === active ? " ← 当前" : ""}`).join("\n");
+}
+
+function openCandidateModal(n) {
+  if ((n.candidate_ips || []).length <= 1) return;
+  candidateModal.node = n;
+  candidateModal.show = true;
+}
+
+async function switchToCandidate(n, idx) {
+  candidateModal.show = false;
+  await switchIp(n, { targetIndex: idx });
 }
 
 function flowInfo(n) {
@@ -283,6 +308,10 @@ function isSwitchDisabled(n) {
   const expired = expTime > 0 && expTime <= Date.now();
   if (expired) return "已到期";
   if (n.flow_exhausted) return "流量用尽";
+  if (n.resource_type === "relay") {
+    const cands = n.candidate_ips || [];
+    if (cands.length <= 1) return "单线路";
+  }
   if ((n.resource_type === "vultr" || n.resource_type === "relay") && n.switch_remaining <= 0) return "次数用完";
   return "";
 }
@@ -337,6 +366,7 @@ async function afterSwitch(newIp) {
 async function switchIp(n, opts = {}) {
   const auto = !!opts.auto;
   const explicitRegion = opts.region; // undefined=弹窗，""=随机，指定值=用该区域
+  const targetIndex = opts.targetIndex; // 指定候选索引（合并线路弹窗指定切换）
   if (switching[n.resource_id]?.disabled) return;
   switching[n.resource_id] = { text: "切换中…", disabled: true };
   try {
@@ -358,14 +388,16 @@ async function switchIp(n, opts = {}) {
         }
       }
     }
-    const first = await api("/me/switch", "POST", { resource_id: n.resource_id, region });
+    const body = { resource_id: n.resource_id, region };
+    if (targetIndex !== undefined && targetIndex !== null) body.target_index = targetIndex;
+    const first = await api("/me/switch", "POST", body);
     if (first && first.error) {
       switching[n.resource_id] = { text: "切换失败", disabled: false };
       proxy.log("❌ " + first.error, "err");
       return;
     }
     if (first && first.status === "done") {
-      switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
+      switching[n.resource_id] = { text: "已切换", disabled: false };
       await afterSwitch(first.new_ip || "");
       return;
     }
@@ -405,7 +437,7 @@ async function switchIp(n, opts = {}) {
     });
 
     if (result.status === "done") {
-      switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
+      switching[n.resource_id] = { text: "已切换", disabled: false };
       await afterSwitch(result.new_ip || "");
       return;
     }
@@ -421,7 +453,7 @@ async function switchIp(n, opts = {}) {
     proxy.log("❌ " + (e && e.message ? e.message : "网络错误"), "err");
   } finally {
     setTimeout(() => {
-      if (switching[n.resource_id] && switching[n.resource_id].text !== "切换成功 ✓") {
+      if (switching[n.resource_id] && switching[n.resource_id].text !== "已切换") {
         switching[n.resource_id] = { text: "切换IP", disabled: false };
       }
     }, 3000);
@@ -639,7 +671,7 @@ onMounted(() => {
                 {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : checkText(n) }}
               </span>
             </td>
-            <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
+            <td :class="switchInfo(n).cls" :title="candidateTip(n)" :style="(n.candidate_ips || []).length > 1 ? 'cursor:pointer' : ''" @click="openCandidateModal(n)">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
@@ -666,6 +698,33 @@ onMounted(() => {
     <ShareDialog v-if="shareNode" :node="shareNode" @close="shareNode = null" @show-qr="qr = $event" />
     <QrDialog v-if="qr" :name="qr.name" :link="qr.link" @close="qr = null" />
     <RegionModal v-if="regionNode" :node="regionNode" @pick="onRegionPick" @close="onRegionClose" />
+    <div v-if="candidateModal.show" class="modal-backdrop" @click.self="candidateModal.show = false">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-head">
+          <span class="modal-title">候选 IP — {{ candidateModal.node?.name || '' }}</span>
+          <button class="modal-close" @click="candidateModal.show = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="cand-list">
+            <button
+              v-for="(ip, i) in candidateModal.node?.candidate_ips || []"
+              :key="i"
+              class="cand-item"
+              :class="{ 'cand-active': i === (Number(candidateModal.node?.active_ip_idx) || 0) }"
+              :disabled="switching[candidateModal.node?.resource_id]?.disabled"
+              @click="switchToCandidate(candidateModal.node, i)"
+            >
+              <span class="cand-idx">{{ i + 1 }}</span>
+              <span class="cand-ip">{{ ip }}</span>
+              <span v-if="i === (Number(candidateModal.node?.active_ip_idx) || 0)" class="cand-cur">当前</span>
+            </button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="candidateModal.show = false">关闭</button>
+        </div>
+      </div>
+    </div>
     <BatchDialog v-if="batchModal" :nodes="batchPending" @close="batchModal = false" @confirm="doBatchSwitch" />
     <UpdateDialog ref="updateDialog" />
   </div>
