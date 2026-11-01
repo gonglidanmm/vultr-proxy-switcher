@@ -722,6 +722,7 @@ class UsersPage(QWidget):
     def _detail(self, u: dict) -> None:
         dlg = _UserLinesDialog(self, u)
         dlg.exec()
+        config.set_value("user_lines_dialog_size", [dlg.width(), dlg.height()])  # 持久化弹窗大小
         self.refresh()
 
     def activate(self) -> None:
@@ -850,7 +851,12 @@ class _UserLinesDialog(QDialog):
         lines = self._u.get("lines", [])
         status = self._u.get("status", "active")
         self.setWindowTitle(f"「{self._u.get('username', '')}」的线路明细")
-        self.setMinimumSize(780, 480)
+        self.setMinimumSize(760, 520)
+        _saved = config.get("user_lines_dialog_size")
+        if _saved and len(_saved) == 2:
+            self.resize(int(_saved[0]), int(_saved[1]))  # 恢复上次调整的大小
+        else:
+            self.resize(860, 620)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -865,12 +871,31 @@ class _UserLinesDialog(QDialog):
 
         table = QTableWidget(len(lines), 6)
         table.setHorizontalHeaderLabels(["线路名称", "出口IP", "流量", "分配时间", "到期", "操作"])
+        _hdr = table.horizontalHeader()
+        _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        _hdr.setStretchLastSection(False)
+        # 恢复上次调整的列宽（否则用默认）
+        _saved_w = config.get("user_lines_col_widths")
+        if _saved_w and len(_saved_w) == 6:
+            for c, w in enumerate(_saved_w):
+                table.setColumnWidth(c, int(w))
+        else:
+            table.setColumnWidth(0, 150)  # 线路名称
+            table.setColumnWidth(1, 130)  # 出口IP
+            table.setColumnWidth(2, 120)  # 流量
+            table.setColumnWidth(3, 110)  # 分配时间
+            table.setColumnWidth(4, 120)  # 到期
+            table.setColumnWidth(5, 150)  # 操作（复制节点 + 回收）
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.horizontalHeader().setStretchLastSection(True)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._table = table
+        _hdr.sectionResized.connect(self._save_col_widths)  # 拖列宽实时持久化
         layout.addWidget(table, 1)
 
         for row, a in enumerate(lines):
+            table.setRowHeight(row, 44)  # 显式行高，按钮垂直完整
             node = a.get("node_data", {}) or {}
             if isinstance(node, str):
                 import json as _json
@@ -912,12 +937,12 @@ class _UserLinesDialog(QDialog):
             op_lay.setSpacing(6)
             share = QPushButton("复制节点")
             share.setProperty("compact", True)
-            share.setFixedHeight(26)
+            share.setFixedSize(84, 32)
             share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
             op_lay.addWidget(share)
             recycle = QPushButton("回收")
             recycle.setProperty("compact", True)
-            recycle.setFixedHeight(26)
+            recycle.setFixedSize(56, 32)
             recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
             op_lay.addWidget(recycle)
             table.setCellWidget(row, 5, op_w)
@@ -943,6 +968,9 @@ class _UserLinesDialog(QDialog):
     def _recycle(self, a: dict, node: dict, name: str) -> None:
         self._page._recycle_relay(a, node, name)
         self.accept()
+
+    def _save_col_widths(self, *args) -> None:
+        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(6)])
 
 
 class _UserDetailDialog(QDialog):
