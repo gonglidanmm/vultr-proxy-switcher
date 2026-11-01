@@ -48,7 +48,7 @@ def global_echo(msg: str) -> None:
         _g_echo(msg)
 
 
-COLS = ["用户名", "线路名称", "出口IP", "连接地址", "流量/状态", "客户到期", "操作"]
+COLS = ["用户名", "线路名称", "出口IP", "流量/状态", "客户到期", "操作"]
 
 
 def _fmt_expires(expires_at: str | None) -> str:
@@ -204,9 +204,8 @@ class UsersPage(QWidget):
         self.table.setColumnWidth(0, 120)   # 用户名
         self.table.setColumnWidth(1, 180)   # 线路名称
         self.table.setColumnWidth(2, 130)   # 出口IP
-        self.table.setColumnWidth(3, 200)   # 连接地址（域名:端口）
-        self.table.setColumnWidth(4, 110)   # 流量/状态
-        self.table.setColumnWidth(5, 110)   # 客户到期
+        self.table.setColumnWidth(3, 110)   # 流量/状态
+        self.table.setColumnWidth(4, 110)   # 客户到期
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -263,15 +262,6 @@ class UsersPage(QWidget):
             node = a.get("node_data", {}) or {}
             name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
             exit_ip = node.get("ip", "") or node.get("host", "")
-            domain = node.get("domain", "") or node.get("host", "")
-            port = (node.get("ss", {}) or {}).get("port", "")
-            # 连接地址 = 域名:端口（客户连接用）
-            if domain and port:
-                connect = f"{domain}:{port}"
-            elif domain:
-                connect = domain
-            else:
-                connect = "-"
             # 流量/状态：配额优先，否则 bandwidth
             q = node.get("quota_gb") or 0
             if q:
@@ -286,11 +276,10 @@ class UsersPage(QWidget):
                 a.get("username", ""),   # 0 用户名
                 name,                     # 1 线路名称
                 exit_ip,                  # 2 出口IP
-                connect,                  # 3 连接地址
-                traffic,                  # 4 流量/状态
-                user_expiry,              # 5 客户到期
+                traffic,                  # 3 流量/状态
+                user_expiry,              # 4 客户到期
             ]
-            tips = {5: _fmt_full(full_user_exp)}
+            tips = {4: _fmt_full(full_user_exp)}
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(Qt.GlobalColor.white)
@@ -301,7 +290,7 @@ class UsersPage(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
                 self.table.setItem(row, col, item)
 
-            self.table.setCellWidget(row, 6, self._ops(a, row))
+            self.table.setCellWidget(row, 5, self._ops(a, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
         """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
@@ -384,6 +373,13 @@ class UsersPage(QWidget):
         detail.clicked.connect(lambda _=False, a=a: self._detail(a))
         lay.addWidget(detail)
 
+        share = QPushButton("复制节点")
+        share.setProperty("compact", True)
+        share.setFixedHeight(26)
+        share.setToolTip("复制连接链接（多协议 + 二维码）")
+        share.clicked.connect(lambda _=False, a=a: self._share_relay(a))
+        lay.addWidget(share)
+
         unassign = QPushButton("取消分配")
         unassign.setProperty("compact", True)
         unassign.setFixedHeight(26)
@@ -402,6 +398,28 @@ class UsersPage(QWidget):
         delete.clicked.connect(lambda _=False, a=a: self._delete_user(self._assign_to_user(a)))
         lay.addWidget(delete)
         return w
+
+    def _share_relay(self, a: dict) -> None:
+        """复制节点：从 config.relays 找 relay，复用中转节点的 NodeShareDialog（多协议 + 二维码 + 复制图片）。"""
+        rid = str(a.get("resource_id", ""))
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == rid), None)
+        if not relay:
+            QMessageBox.warning(self, "提示", "该节点已不在中转列表（可能已回收），无法复制。")
+            return
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        entry = node.get("domain", "") or relay.get("entry_domain", "") or ""
+        if not entry:
+            QMessageBox.warning(self, "提示", "该节点没有连接域名，无法复制。")
+            return
+        from .nodes_page import NodeShareDialog
+        NodeShareDialog(relay, entry, self).exec()
 
     def _unassign_assign(self, a: dict) -> None:
         node = a.get("node_data", {}) or {}
@@ -432,8 +450,7 @@ class UsersPage(QWidget):
             QMessageBox.warning(self, "取消失败", e.message)
 
     def _recycle_relay(self, a: dict, node: dict, name: str) -> None:
-        """手动回收 relay：删 D1 分配 + SSH 停服务 + 标记回收（进回收页冷却）。"""
-        relay_id = str(a.get("resource_id", ""))
+        """手动回收 relay（带确认）：删 D1 分配 + SSH 停服务 + 标记回收（进回收页冷却）。"""
         username = a.get("username", "")
         ret = QMessageBox.question(
             self, "回收 IP",
@@ -442,6 +459,19 @@ class UsersPage(QWidget):
         )
         if ret != QMessageBox.StandardButton.Yes:
             return
+        self._do_recycle_relay(a, node, name)
+        self.refresh()
+
+    def _do_recycle_relay(self, a: dict, node: dict, name: str) -> None:
+        """回收 relay 核心（无确认，供「取消分配」「删除用户」复用）：删 D1 分配 + 停服务 + 进回收页。"""
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        relay_id = str(a.get("resource_id", ""))
+        username = a.get("username", "")
         try:
             api_client.unassign(a["user_id"], "relay", relay_id)
         except ApiError as e:
@@ -454,7 +484,6 @@ class UsersPage(QWidget):
             self._ssh_stop_relay(relay_id, server_id, server_ip)
         self._mark_recycled(relay_id, username)
         self._log(f"✅ 已回收「{username}」的「{name}」，IP 进回收页冷却")
-        self.refresh()
 
     def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
         """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等；失败不阻断回收）。"""
@@ -548,12 +577,29 @@ class UsersPage(QWidget):
             QMessageBox.warning(self, "操作失败", e.message)
 
     def _delete_user(self, user: dict) -> None:
-        ret = QMessageBox.question(
-            self, "删除用户",
-            f"确定删除用户「{user.get('username', '')}」吗？\n其名下所有分配会一并删除，不可恢复。",
-        )
+        # 名下 relay 分配（删除前回收：停服务 + 进回收页）
+        relay_assigns = [
+            a for a in self._assigns
+            if str(a.get("user_id", "")) == str(user["id"]) and a.get("resource_type") == "relay"
+        ]
+        msg = f"确定删除用户「{user.get('username', '')}」吗？"
+        if relay_assigns:
+            msg += f"\n\n其名下 {len(relay_assigns)} 条中转线路会一并回收（停服务 + 进回收页冷却）。"
+        msg += "\n\n此操作不可恢复。"
+        ret = QMessageBox.question(self, "删除用户", msg)
         if ret != QMessageBox.StandardButton.Yes:
             return
+        # 先回收名下 relay（停服务 + 进回收页），再删用户
+        for a in relay_assigns:
+            node = a.get("node_data", {}) or {}
+            if isinstance(node, str):
+                import json as _json
+                try:
+                    node = _json.loads(node)
+                except Exception:
+                    node = {}
+            name = node.get("name", "") or a.get("resource_id", "")
+            self._do_recycle_relay(a, node, name)
         try:
             api_client.delete_user(user["id"])
             self._log(f"✅ 已删除用户「{user.get('username', '')}」及其名下分配")
