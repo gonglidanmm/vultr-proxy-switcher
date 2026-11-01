@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -545,6 +546,18 @@ class NodesPage(QWidget):
             lay = QHBoxLayout(w)
             lay.setContentsMargins(4, 2, 4, 2)
             lay.addStretch(1)
+            # 线路类型按钮：独立线路禁用；合并线路可点击查看候选 IP / 单独解除绑定
+            cands = r.get("candidate_upstreams") or []
+            merge_btn = QPushButton(f"合并线路{len(cands)}条" if len(cands) > 1 else "独立线路")
+            merge_btn.setProperty("compact", True)
+            merge_btn.setFixedHeight(30)
+            if len(cands) > 1:
+                merge_btn.setToolTip("点击查看合并的上游 IP，可单独解除绑定")
+                merge_btn.clicked.connect(lambda _=False, rel=r: self._show_merge(rel))
+            else:
+                merge_btn.setEnabled(False)
+                merge_btn.setToolTip("独立线路（单 IP）")
+            lay.addWidget(merge_btn)
             copy_btn = QPushButton("复制节点")
             copy_btn.setProperty("compact", True)
             copy_btn.setFixedHeight(30)
@@ -986,6 +999,127 @@ class NodesPage(QWidget):
         w.finished.connect(w.deleteLater)
         w.start()
 
+    def _show_merge(self, relay: dict) -> None:
+        """合并线路弹窗：列出候选上游 IP，可单独解除绑定（回收某个已绑定 IP）。"""
+        cands = relay.get("candidate_upstreams") or []
+        notes = config.get("webshare_notes", {}) or {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"合并线路详情 - {relay.get('name', '')}")
+        _saved = config.get("merge_dialog_size")
+        if _saved and len(_saved) == 2:
+            dlg.resize(int(_saved[0]), int(_saved[1]))  # 恢复上次调整的大小
+        else:
+            dlg.resize(720, 400)
+        v = QVBoxLayout(dlg)
+
+        tip = QLabel(f"共合并 {len(cands)} 个上游 IP，主线路为首个，客户「切换 IP」时在这几个之间轮换。\n"
+                     f"点击「解除绑定」把该 IP 回收到回收页，可再手动回归正常列表。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        table = QTableWidget(len(cands), 5)
+        table.setHorizontalHeaderLabels(["角色", "IP:端口", "用户名", "备注", "操作"])
+        _hdr = table.horizontalHeader()
+        _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        _hdr.setStretchLastSection(False)
+        table.setColumnWidth(0, 70)   # 角色
+        table.setColumnWidth(1, 150)  # IP:端口
+        table.setColumnWidth(2, 90)   # 用户名
+        table.setColumnWidth(3, 140)  # 备注
+        table.setColumnWidth(4, 90)   # 操作（固定，按钮 84px 完整放下）
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(36)  # 行高 36px，按钮垂直完整放下
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+        for i, c in enumerate(cands):
+            table.setRowHeight(i, 44)  # 显式行高，按钮垂直完整
+            key = f"{c.get('host', '')}:{c.get('port', '')}"
+            role_item = QTableWidgetItem("主线路" if i == 0 else f"候选 {i + 1}")
+            role_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 0, role_item)
+            ip_item = QTableWidgetItem(key)
+            ip_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 1, ip_item)
+            user_item = QTableWidgetItem(c.get("user", ""))
+            user_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 2, user_item)
+            note_item = QTableWidgetItem(notes.get(key, ""))
+            note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 3, note_item)
+            if i == 0:
+                main_item = QTableWidgetItem("主线路")
+                main_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                main_item.setForeground(Qt.GlobalColor.gray)
+                main_item.setToolTip("主线路不可解除")
+                table.setItem(i, 4, main_item)
+            else:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(3, 0, 3, 0)
+                h.addStretch(1)
+                unbind_btn = QPushButton("解除绑定")
+                unbind_btn.setProperty("compact", True)
+                unbind_btn.setFixedSize(80, 32)
+                unbind_btn.clicked.connect(
+                    lambda _=False, idx=i: self._unbind_candidate(relay, idx, dlg)
+                )
+                h.addWidget(unbind_btn)
+                h.addStretch(1)
+                table.setCellWidget(i, 4, w)
+
+        v.addWidget(table)
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedHeight(32)
+        close_btn.clicked.connect(dlg.accept)
+        v.addWidget(close_btn)
+        dlg.exec()
+        config.set_value("merge_dialog_size", [dlg.width(), dlg.height()])
+
+    def _unbind_candidate(self, relay: dict, idx: int, dlg: QDialog) -> None:
+        """解除绑定某个候选 IP：从 candidate_upstreams 移除，该 IP 回收到回收页。"""
+        cands = relay.get("candidate_upstreams") or []
+        if idx >= len(cands):
+            return
+        target = cands[idx]
+        key = f"{target.get('host', '')}:{target.get('port', '')}"
+        ret = QMessageBox.question(
+            self, "解除绑定",
+            f"确定解除绑定 {key} 吗？\n该 IP 会回收到回收页，可再手动回归正常列表。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        new_cands = [c for j, c in enumerate(cands) if j != idx]
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if r["id"] == relay["id"]:
+                if len(new_cands) <= 1:
+                    r.pop("candidate_upstreams", None)  # 只剩主线路，变回独立线路
+                else:
+                    r["candidate_upstreams"] = new_cands
+                break
+        config.set_value("relays", relays)
+
+        recycled = config.get("recycled_relays", []) or []
+        _ts = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
+        rec = {
+            "id": f"{relay['id']}-cand{idx + 1}",
+            "host": target.get("host", ""),
+            "port": target.get("port", ""),
+            "name": f"{relay.get('name', '')}-候选{idx + 1}",
+            "ip_type": relay.get("ip_type", "dc"),
+            "recycled_at": _ts,
+            "recycled_from_user": "未分配",
+        }
+        if not any(str(x.get("id", "")) == rec["id"] for x in recycled):
+            recycled.append(rec)
+        config.set_value("recycled_relays", recycled)
+
+        dlg.accept()
+        self._fill()
+
     def _recycle(self, rid: str) -> None:
         """手动回收 = 取消中转 + 记回收冷却：删 config + 清服务器 + 进回收页。"""
         relays = config.get("relays", [])
@@ -1001,19 +1135,33 @@ class NodesPage(QWidget):
         )
         if ret != QMessageBox.StandardButton.Yes:
             return
-        # 记回收冷却（先保存 relay 信息，_delete 会删 config.relays）
+        # 记回收冷却（先保存 relay 信息，_delete 会删 config.relays；合并线路主+候选各记一条，可单独回归）
         recycled = config.get("recycled_relays", []) or []
-        if not any(str(x.get("id", "")) == str(rid) for x in recycled):
-            recycled.append({
-                "id": rid,
-                "host": relay.get("host", ""),
-                "port": relay.get("port", ""),
-                "name": name,
+        _ts = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
+        _entries = [{
+            "id": rid,
+            "host": relay.get("host", ""),
+            "port": relay.get("port", ""),
+            "name": name,
+            "ip_type": relay.get("ip_type", "dc"),
+            "recycled_at": _ts,
+            "recycled_from_user": "未分配",
+        }]
+        cands = relay.get("candidate_upstreams") or []
+        for i, c in enumerate(cands[1:], start=2):  # 跳过主线路（cands[0] 即主线路）
+            _entries.append({
+                "id": f"{rid}-cand{i}",
+                "host": c.get("host", ""),
+                "port": c.get("port", ""),
+                "name": f"{name}-候选{i}",
                 "ip_type": relay.get("ip_type", "dc"),
-                "recycled_at": datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M"),
+                "recycled_at": _ts,
                 "recycled_from_user": "未分配",
             })
-            config.set_value("recycled_relays", recycled)
+        for e in _entries:
+            if not any(str(x.get("id", "")) == str(e["id"]) for x in recycled):
+                recycled.append(e)
+        config.set_value("recycled_relays", recycled)
         # 取消中转（删 config + 清服务器，复用 _delete）
         self._delete(rid)
         self.refresh()

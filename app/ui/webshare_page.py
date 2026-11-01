@@ -543,6 +543,11 @@ class WebsharePage(QWidget):
             idx = self.server_combo.findData(cur)
             if idx >= 0:
                 self.server_combo.setCurrentIndex(idx)
+        elif config.get("default_server_id", ""):
+            # 优先用配置的默认服务器
+            idx = self.server_combo.findData(config.get("default_server_id"))
+            if idx >= 0:
+                self.server_combo.setCurrentIndex(idx)
         elif relay_count:
             # 首次加载：默认选中转发最多的服务器
             best_sid = max(relay_count, key=relay_count.get)
@@ -607,8 +612,14 @@ class WebsharePage(QWidget):
         # 持久化套餐 + 订阅信息（中转节点页「分配给用户」弹窗读，显示订阅到期/流量池）
         config.set_value("webshare_plans", data.get("plans", []))
         config.set_value("webshare_subscription", data.get("subscription", {}))
-        # relay 匹配表：ip_key -> relay（判断是否中转 / 取消中转）
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("relays", [])}
+        # relay 匹配表：ip_key -> relay（判断是否中转 / 取消中转；合并线路的候选上游也标记为已中转）
+        self._relay_map = {}
+        for r in config.get("relays", []):
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            cands = r.get("candidate_upstreams")
+            if cands:
+                for c in cands:
+                    self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._recycled_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("recycled_relays", []) or []}
         self._server_ip_map = {sid: (ip, name) for sid, ip, name in self._servers}
         # 官网返回顺序（取消中转的 IP 按此插回，不套用拖拽顺序）

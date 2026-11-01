@@ -48,7 +48,7 @@ def global_echo(msg: str) -> None:
         _g_echo(msg)
 
 
-COLS = ["用户名", "名称", "区域", "IP", "域名", "流量/状态", "已使用", "分配时间", "原始创建", "原始到期", "客户到期", "操作"]
+COLS = ["用户名", "线路名称", "出口IP", "连接地址", "流量/状态", "客户到期", "操作"]
 
 
 def _fmt_expires(expires_at: str | None) -> str:
@@ -201,17 +201,12 @@ class UsersPage(QWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         for c in range(len(COLS) - 1):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 120)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(2, 95)
-        self.table.setColumnWidth(3, 120)
-        self.table.setColumnWidth(4, 150)
-        self.table.setColumnWidth(5, 85)
-        self.table.setColumnWidth(6, 85)
-        self.table.setColumnWidth(7, 95)
-        self.table.setColumnWidth(8, 95)
-        self.table.setColumnWidth(9, 95)
-        self.table.setColumnWidth(10, 95)
+        self.table.setColumnWidth(0, 120)   # 用户名
+        self.table.setColumnWidth(1, 180)   # 线路名称
+        self.table.setColumnWidth(2, 130)   # 出口IP
+        self.table.setColumnWidth(3, 200)   # 连接地址（域名:端口）
+        self.table.setColumnWidth(4, 110)   # 流量/状态
+        self.table.setColumnWidth(5, 110)   # 客户到期
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -248,8 +243,6 @@ class UsersPage(QWidget):
             assigns = api_client.list_all_assignments().get("assignments", [])
             st = api_client.stats()
             self._assigns = assigns
-            self._vultr_expiry, self._vultr_detail = self._compute_vultr_dynamic()
-            self._backfill_user_expiry(assigns)
             self.stats_label.setText(
                 f"共 {st.get('total_users', 0)} 个用户 · 活跃 {st.get('active_users', 0)} · "
                 f"已分配 {st.get('assigned_users', 0)} 人 · 分配项 {st.get('total_assignments', 0)}"
@@ -258,88 +251,6 @@ class UsersPage(QWidget):
         except ApiError as e:
             self.stats_label.setText(f'<span style="color:#ff453a;">加载失败：{e.message}</span>')
             self.table.setRowCount(0)
-
-    def _compute_vultr_dynamic(self) -> tuple:
-        """动态拉取 Vultr 到期日期 + 每实例详情。返回 (expiry_date, {iid: {name,region,ip,domain,bandwidth}})。"""
-        from ..vultr import VultrAPI, compute_billing, compute_bandwidth, region_label
-        from .. import domain as domain_mod
-        key = config.get("vultr_api_key", "")
-        if not key:
-            return "", {}
-        try:
-            api = VultrAPI(key)
-            instances = api.list_instances()
-            account = api.get_account()
-            plans = api.get_plans()
-            billing = compute_billing(instances, plans, account)
-            days = billing.get("days_left")
-            expiry = ""
-            if days:
-                from datetime import timedelta
-                expiry = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            bandwidth = compute_bandwidth(instances, plans, api)
-            server_names = config.get("server_names", {})
-            detail_map = {}
-            for inst in instances:
-                iid = inst.get("id", "")
-                name = server_names.get(iid, "")
-                dom = domain_mod.server_domain(iid)
-                if not name:
-                    name = ("Vultr-" + dom.split(".")[0]) if dom else inst.get("label", iid)
-                bw = bandwidth.get(iid, {})
-                used = bw.get("used_gb", 0)
-                quota = bw.get("quota_gb", 0)
-                used_text = f"{used * 1000:.0f}M" if used < 1 else f"{used:.1f}G"
-                bw_text = f"{used_text} / {quota:.0f}G" if quota > 0 else used_text
-                detail_map[iid] = {
-                    "name": name,
-                    "region": region_label(inst.get("region", "")),
-                    "ip": inst.get("main_ip", ""),
-                    "domain": dom or "",
-                    "bandwidth": bw_text,
-                    "used_gb": used,
-                    "quota_gb": quota,
-                }
-            return expiry, detail_map
-        except Exception:
-            return "", {}
-
-    def _backfill_user_expiry(self, assigns: list[dict]) -> None:
-        """刷新时同步节点 node_data.expiry 为该服务器的到期时间（服务器页设置），fallback 账户动态。"""
-        for a in assigns:
-            uid = a.get("user_id")
-            rid = a.get("resource_id")
-            rtype = a.get("resource_type")
-            if not uid:
-                continue
-            if rtype != "vultr":
-                continue
-            # 资源到期 = 该服务器在「服务器页」设置的到期时间；没设则 fallback 账户动态
-            res_expiry = config.get("server_expiry", {}).get(str(rid), "") or self._vultr_expiry or ""
-            if not res_expiry:
-                continue
-
-            # 同步节点 node_data.expiry 为该服务器的到期时间（UPSERT 重新 assign）
-            nd = a.get("node_data") or {}
-            if isinstance(nd, str):
-                import json as _json
-                try:
-                    nd = _json.loads(nd)
-                except Exception:
-                    nd = {}
-            if str(nd.get("expiry", ""))[:10] != res_expiry:
-                nd["expiry"] = res_expiry
-                try:
-                    api_client.assign(uid, rtype, rid, nd)
-                except Exception:
-                    pass  # 静默失败
-
-    def _vultr_used_text(self, detail: dict) -> str:
-        """返回 vultr 实例的已使用流量（出站，真实值）。"""
-        used = float(detail.get("used_gb", 0) or 0)
-        if used <= 0:
-            return "-"
-        return f"{used * 1000:.0f}M" if used < 1 else f"{used:.1f}G"
 
     def _populate(self) -> None:
         # 按保存的拖拽顺序排序分配项（未出现在 order 里的放末尾）
@@ -350,49 +261,36 @@ class UsersPage(QWidget):
         self.table.setRowCount(len(self._assigns))
         for row, a in enumerate(self._assigns):
             node = a.get("node_data", {}) or {}
-            detail = self._vultr_detail.get(a["resource_id"], {})
-            name = detail.get("name", "") or node.get("name", "") or node.get("host", "")
-            location = detail.get("region", "") or node.get("location", "")
-            ip = detail.get("ip", "") or node.get("ip", "")
-            domain = detail.get("domain", "") or node.get("domain", "")
+            name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
+            exit_ip = node.get("ip", "") or node.get("host", "")
+            domain = node.get("domain", "") or node.get("host", "")
+            port = (node.get("ss", {}) or {}).get("port", "")
+            # 连接地址 = 域名:端口（客户连接用）
+            if domain and port:
+                connect = f"{domain}:{port}"
+            elif domain:
+                connect = domain
+            else:
+                connect = "-"
+            # 流量/状态：配额优先，否则 bandwidth
             q = node.get("quota_gb") or 0
             if q:
                 traffic = f"配额 {float(q):.0f}G"
             else:
-                traffic = detail.get("bandwidth", "") or node.get("bandwidth", "")
-            # 完整时间（tooltip 用），列表显示 [:10] 短日期
-            full_assign = a.get("created_at", "") or ""
-            full_created = node.get("created_at", "") or ""
-            # 原始到期 = 该服务器在「服务器页」设置的到期时间；没设则 fallback 账户动态到期
-            _rid = str(a.get("resource_id", ""))
-            full_expiry = config.get("server_expiry", {}).get(_rid, "") or self._vultr_expiry or ""
-            # 客户到期 = 每台服务器独立的 client_expiry（默认 = 服务器到期）
-            full_user_exp = node.get("client_expiry", "") or full_expiry or ""
-
+                traffic = node.get("bandwidth", "") or "-"
+            # 客户到期（tooltip 用完整时间）
+            full_user_exp = node.get("client_expiry", "") or ""
             user_expiry = full_user_exp[:10] or "-"
-            res_expiry = full_expiry[:10] or "-"
-            assign_time = full_assign[:10] or "-"
-            res_created = full_created[:10] or "-"
 
             cells = [
-                a.get("username", ""),
-                name,
-                location,
-                ip,
-                domain,
-                traffic,
-                self._vultr_used_text(detail),
-                assign_time,
-                res_created,
-                res_expiry,
-                user_expiry,
+                a.get("username", ""),   # 0 用户名
+                name,                     # 1 线路名称
+                exit_ip,                  # 2 出口IP
+                connect,                  # 3 连接地址
+                traffic,                  # 4 流量/状态
+                user_expiry,              # 5 客户到期
             ]
-            tips = {
-                7: _fmt_full(full_assign),
-                8: _fmt_full(full_created),
-                9: _fmt_full(full_expiry),
-                10: _fmt_full(full_user_exp),
-            }
+            tips = {5: _fmt_full(full_user_exp)}
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(Qt.GlobalColor.white)
@@ -403,7 +301,7 @@ class UsersPage(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
                 self.table.setItem(row, col, item)
 
-            self.table.setCellWidget(row, 11, self._ops(a, row))
+            self.table.setCellWidget(row, 6, self._ops(a, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
         """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
@@ -620,7 +518,7 @@ class UsersPage(QWidget):
 
     def _edit_user(self, user: dict) -> None:
         # 上限优先用该用户在「服务器页」设置的到期时间（不能超过服务器到期），fallback 账户动态
-        resource_expiry = _user_resource_expiry(user["id"]) or self._vultr_expiry
+        resource_expiry = _user_resource_expiry(user["id"]) or ""
         dlg = _UserDialog(self, user, resource_expiry)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -674,7 +572,7 @@ class UsersPage(QWidget):
             except Exception:
                 node_data = {}
         # 客户到期（用户级）上限 = 该用户名下最早到期的服务器（最早到期那台到期了，客户至少断一台）
-        resource_expiry = _user_resource_expiry(user["id"]) or self._vultr_expiry
+        resource_expiry = _user_resource_expiry(user["id"]) or ""
         dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry)
         dlg.exec()
         self.refresh()
