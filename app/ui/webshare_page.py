@@ -1336,6 +1336,8 @@ class WebsharePage(QWidget):
                 })
             checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0
+        # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
+        _base_seq = sum(1 for r in relays if r.get("entry_domain") == entry_domain)
         for ip_type, idx in checked:
             pool = self._dc if ip_type == "dc" else self._res
             p = pool[idx]
@@ -1346,14 +1348,15 @@ class WebsharePage(QWidget):
                 continue
             country = p.get("country_code", "")
             city = p.get("city_name", "")
-            kind = "住宅" if ip_type == "res" else "数据中心"
             country_cn = _cn_country(country)
             city_cn = _cn_city(city)
-            date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+            date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+            dom_prefix = (entry_domain or "").split(".")[0]
+            seq_str = f"{_base_seq + added + 1:02d}"
             if city_cn:
-                name = f"{date_str}-{kind}-{country_cn}-{city_cn}"
+                name = f"({date_str}){country_cn}-{city_cn}-{dom_prefix}-{seq_str}"
             else:
-                name = f"{date_str}-{kind}-{country_cn}"
+                name = f"({date_str}){country_cn}-{dom_prefix}-{seq_str}"
             rp = next_relay_port(used, start=high_water + 1)
             key = f"{host}:{port}"
             # 同样 IP 复用之前取消时保留的完整凭据（SS + Reality + Hysteria2，客户端不用改）
