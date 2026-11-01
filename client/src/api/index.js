@@ -16,6 +16,12 @@ export async function api(path, method = "GET", body = null, auth = true) {
   if (!resp.ok) {
     const err = new Error(data.error || "请求失败 HTTP " + resp.status);
     err.status = resp.status;
+    // 账号被禁用：清本地登录态并通知 App 登出（正在使用的客户端明确提示"账号已禁用"）
+    if (resp.status === 403 && (data.error || "").includes("禁用")) {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      window.dispatchEvent(new CustomEvent("proxy:auth-disabled", { detail: data.error }));
+    }
     throw err;
   }
   return data;

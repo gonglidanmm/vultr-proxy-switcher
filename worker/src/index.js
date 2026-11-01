@@ -217,7 +217,7 @@ async function requireUser(request, env) {
     .bind(token, new Date().toISOString())
     .first();
   if (!row) return null;
-  if (row.status !== "active") return null;
+  if (row.status !== "active") return { disabled: true };
   // 注：不再按用户级 expires_at 拒绝鉴权——每台服务器独立到期（node_data.client_expiry），
   // 单台到期只禁该台切换，不应锁死整个账号登录（曾导致「1台到期→全部无法登录」）。
   // 注：switch_count/switch_date 是「每节点独立」的（assignments 表），用户级无此计数，故不在此返回
@@ -1610,6 +1610,7 @@ export default {
           user = await requireUser(request, env); // 非浏览器客户端（可带 Authorization 头）
         }
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         const id = env.SWITCH_ROOM.idFromName("u" + user.id);
         return await env.SWITCH_ROOM.get(id).fetch(request);
       }
@@ -1619,41 +1620,49 @@ export default {
       if (method === "POST" && path === "/me/switch") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await switchResource(request, env, user);
       }
       if (method === "GET" && path === "/me/switch/status") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await switchStatus(request, env, user);
       }
       if (method === "GET" && path === "/me/nodes") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeNodes(env, user);
       }
       if (method === "POST" && path === "/me/account") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeAccount(request, env, user);
       }
       if (method === "POST" && path === "/me/note") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeNote(request, env, user);
       }
       if (method === "POST" && path === "/me/name") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeName(request, env, user);
       }
       if (method === "POST" && path === "/me/check") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeCheck(request, env, user);
       }
       if (method === "POST" && path === "/me/reorder") {
         const user = await requireUser(request, env);
         if (!user) return json({ error: "未登录或登录已过期" }, 401);
+        if (user.disabled) return json({ error: "账号已禁用" }, 403);
         return await handleMeReorder(request, env, user);
       }
       // 节点签好证书后回传（用 X-Cert-Token 认证，非管理员 token）
