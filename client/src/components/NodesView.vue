@@ -318,8 +318,9 @@ function onSwitchClick(n) {
 function flowInfo(n) {
   const quota = Number(n.flow_quota_gb) || 0;
   const used = Number(n.flow_used_gb) || 0;
-  if (quota > 0) return { text: `${used.toFixed(1)}G / ${Math.round(quota)}G`, cls: n.flow_exhausted ? "cell-danger" : "" };
-  return { text: "不限", cls: "cell-muted" };
+  const usedText = used < 1 ? `${Math.round(used * 1024)}M` : `${used.toFixed(2)}G`;
+  if (quota > 0) return { text: `${usedText} / ${Math.round(quota)}G`, cls: n.flow_exhausted ? "cell-danger" : "" };
+  return { text: `已用 ${usedText}`, cls: "cell-muted" };
 }
 
 function isSwitchDisabled(n) {
