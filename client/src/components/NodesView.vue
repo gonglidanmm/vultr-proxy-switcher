@@ -336,6 +336,15 @@ function isSwitchDisabled(n) {
   return "";
 }
 
+function isUpstreamDisabled(n) {
+  // 「设为上游」= 本地代理测试，只被到期/流量用尽禁用；不因「单线路」「次数用完」禁用
+  const expiry = String(n.client_expiry || n.expiry || "");
+  const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
+  if (expTime > 0 && expTime <= Date.now()) return "已到期";
+  if (n.flow_exhausted) return "流量用尽";
+  return "";
+}
+
 function updateNodeStatus(resourceId, results) {
   const tcpReachable = ["socks5", "ss", "reality"].some((p) => results[p] > 0);
   nodeStatus[resourceId] = tcpReachable
@@ -696,7 +705,7 @@ onMounted(() => {
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
               <div class="row-ops">
-                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isSwitchDisabled(n)" @click="proxy.toggleUpstream(n)">
+                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isUpstreamDisabled(n)" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
