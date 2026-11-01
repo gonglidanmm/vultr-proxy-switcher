@@ -51,6 +51,17 @@ def global_echo(msg: str) -> None:
 COLS = ["用户名", "状态", "线路数", "总流量", "到期时间", "操作"]
 
 
+def _fmt_flow(v: float) -> str:
+    """流量格式化：<1GB 显示 MB（精确到个位），否则保留 2 位小数。"""
+    if v < 0:
+        v = 0
+    if v < 1:
+        return f"{v * 1024:.0f}M"
+    if v < 100:
+        return f"{v:.2f}G"
+    return f"{v:.1f}G"
+
+
 def _fmt_expires(expires_at: str | None) -> str:
     if not expires_at:
         return "不过期"
@@ -311,12 +322,9 @@ class UsersPage(QWidget):
             total_used = sum(float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0) for a in lines)
             total_quota = sum(float(a.get("quota_gb") or 0) for a in lines)
             if total_quota > 0:
-                remain = total_quota - total_used
-                if remain < 0:
-                    remain = 0
-                traffic = f"剩 {remain:.1f}G / {total_quota:.0f}G"
+                traffic = f"已用 {_fmt_flow(total_used)} / {_fmt_flow(total_quota)}"
             else:
-                traffic = f"已用 {total_used:.1f}G"
+                traffic = f"已用 {_fmt_flow(total_used)}"
             # 到期时间：该用户名下最早到期的线路（最早到期那台先断）
             expiries = []
             for a in lines:
@@ -908,12 +916,9 @@ class _UserLinesDialog(QDialog):
             quota = float(a.get("quota_gb") or 0)
             used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
             if quota > 0:
-                remain = quota - used
-                if remain < 0:
-                    remain = 0
-                traffic = f"剩 {remain:.1f}G / {quota:.0f}G"
+                traffic = f"已用 {_fmt_flow(used)} / {_fmt_flow(quota)}"
             else:
-                traffic = f"已用 {used:.1f}G"
+                traffic = f"已用 {_fmt_flow(used)}"
             full_assign = a.get("created_at", "") or ""
             try:
                 adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
