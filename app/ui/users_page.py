@@ -308,7 +308,7 @@ class UsersPage(QWidget):
             is_active = u.get("status", "active") == "active"
             status_text = "正常" if is_active else "已禁用"
             # 总流量：所有线路合计（配额 0 = 不限，只显示已用）
-            total_used = sum(float(a.get("used_gb") or 0) for a in lines)
+            total_used = sum(float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0) for a in lines)
             total_quota = sum(float(a.get("quota_gb") or 0) for a in lines)
             if total_quota > 0:
                 remain = total_quota - total_used
@@ -906,7 +906,7 @@ class _UserLinesDialog(QDialog):
             name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
             exit_ip = node.get("ip", "") or node.get("host", "")
             quota = float(a.get("quota_gb") or 0)
-            used = float(a.get("used_gb") or 0)
+            used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
             if quota > 0:
                 remain = quota - used
                 if remain < 0:
