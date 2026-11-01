@@ -48,7 +48,7 @@ def global_echo(msg: str) -> None:
         _g_echo(msg)
 
 
-COLS = ["用户名", "线路名称", "出口IP", "剩余流量", "分配时间", "到期倒计时", "操作"]
+COLS = ["用户名", "状态", "线路数", "总流量", "到期时间", "操作"]
 
 
 def _fmt_expires(expires_at: str | None) -> str:
@@ -270,6 +270,7 @@ class UsersPage(QWidget):
             assigns = api_client.list_all_assignments().get("assignments", [])
             st = api_client.stats()
             self._assigns = assigns
+            self._build_users(assigns)
             self.stats_label.setText(
                 f"共 {st.get('total_users', 0)} 个用户 · 活跃 {st.get('active_users', 0)} · "
                 f"已分配 {st.get('assigned_users', 0)} 人 · 分配项 {st.get('total_assignments', 0)}"
@@ -279,87 +280,105 @@ class UsersPage(QWidget):
             self.stats_label.setText(f'<span style="color:#ff453a;">加载失败：{e.message}</span>')
             self.table.setRowCount(0)
 
+    def _build_users(self, assigns: list[dict]) -> None:
+        """按 user_id 分组：一个用户一行，名下分配收进 lines。"""
+        users: dict[str, dict] = {}
+        for a in assigns:
+            uid = str(a.get("user_id", ""))
+            if not uid:
+                continue
+            if uid not in users:
+                users[uid] = {
+                    "user_id": a.get("user_id"),
+                    "username": a.get("username", ""),
+                    "status": a.get("user_status", "active"),
+                    "expires_at": a.get("user_expires_at"),
+                    "note": a.get("user_note", ""),
+                    "switch_limit": int(a.get("user_switch_limit", 5) or 5),
+                    "lines": [],
+                }
+            users[uid]["lines"].append(a)
+        self._users = list(users.values())
+
     def _populate(self) -> None:
-        # 按保存的拖拽顺序排序分配项（未出现在 order 里的放末尾）
-        order = config.get("user_order", []) or []
-        if order:
-            order_map = {aid: i for i, aid in enumerate(order)}
-            self._assigns.sort(key=lambda a: order_map.get(a.get("id"), len(order) + 9999))
-        self.table.setRowCount(len(self._assigns))
-        for row, a in enumerate(self._assigns):
-            node = a.get("node_data", {}) or {}
-            name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
-            exit_ip = node.get("ip", "") or node.get("host", "")
-            # 剩余流量：配额 - 已用（配额 0 = 不限）
-            quota = float(a.get("quota_gb") or node.get("quota_gb") or 0)
-            used = float(a.get("used_gb") or 0)
-            if quota > 0:
-                remain = quota - used
+        self.table.setRowCount(len(self._users))
+        for row, u in enumerate(self._users):
+            lines = u["lines"]
+            n_lines = len(lines)
+            is_active = u.get("status", "active") == "active"
+            status_text = "正常" if is_active else "已禁用"
+            # 总流量：所有线路合计（配额 0 = 不限，只显示已用）
+            total_used = sum(float(a.get("used_gb") or 0) for a in lines)
+            total_quota = sum(float(a.get("quota_gb") or 0) for a in lines)
+            if total_quota > 0:
+                remain = total_quota - total_used
                 if remain < 0:
                     remain = 0
-                traffic = f"剩 {remain:.1f}G / {quota:.0f}G"
+                traffic = f"剩 {remain:.1f}G / {total_quota:.0f}G"
             else:
-                traffic = f"已用 {used:.1f}G"
-            # 分配时间（MM-DD HH:MM，北京时间）
-            full_assign = a.get("created_at", "") or ""
-            try:
-                adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
-                if adt.tzinfo is not None:
-                    adt = adt.astimezone()
-                assign_time = adt.strftime("%m-%d %H:%M")
-            except Exception:
-                assign_time = (str(full_assign)[5:16].replace("T", " ") if full_assign else "-")
-            # 到期倒计时
-            full_user_exp = node.get("client_expiry", "") or ""
-            countdown = _fmt_countdown(full_user_exp)
+                traffic = f"已用 {total_used:.1f}G"
+            # 到期时间：该用户名下最早到期的线路（最早到期那台先断）
+            expiries = []
+            for a in lines:
+                node = a.get("node_data", {}) or {}
+                if isinstance(node, str):
+                    import json as _json
+                    try:
+                        node = _json.loads(node)
+                    except Exception:
+                        node = {}
+                ce = node.get("client_expiry", "") or ""
+                if ce:
+                    expiries.append(ce)
+            min_exp = min(expiries) if expiries else ""
+            countdown = _fmt_countdown(min_exp)
 
             cells = [
-                a.get("username", ""),   # 0 用户名
-                name,                     # 1 线路名称
-                exit_ip,                  # 2 出口IP
-                traffic,                  # 3 剩余流量
-                assign_time,              # 4 分配时间
-                countdown,                # 5 到期倒计时
+                u.get("username", ""),   # 0 用户名
+                status_text,             # 1 状态
+                f"{n_lines} 条",          # 2 线路数
+                traffic,                 # 3 总流量
+                countdown,               # 4 到期时间
             ]
-            tips = {4: _fmt_full(full_assign), 5: _fmt_full(full_user_exp)}
+            tips = {4: _fmt_full(min_exp)}
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                item.setForeground(Qt.GlobalColor.white)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, u.get("user_id"))
+                if col == 1:
+                    item.setForeground(Qt.GlobalColor.lightGray if is_active else Qt.GlobalColor.red)
+                else:
+                    item.setForeground(Qt.GlobalColor.white)
                 if col in tips:
                     item.setToolTip(tips[col])
-                if col == 5 and countdown == "已过期":
+                if col == 4 and countdown == "已过期":
                     item.setForeground(Qt.GlobalColor.red)
-                if col == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
                 self.table.setItem(row, col, item)
 
-            self.table.setCellWidget(row, 6, self._ops(a, row))
+            self.table.setCellWidget(row, 5, self._ops(u, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
-        """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
-
-        直接操作数据列表（pop + insert），再重新 populate——绝不复制、绝不错位。
-        """
-        if src_row < 0 or dst_row < 0 or src_row >= len(self._assigns) or src_row == dst_row:
+        """拖拽排序：把 self._users 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。"""
+        if src_row < 0 or dst_row < 0 or src_row >= len(self._users) or src_row == dst_row:
             return
-        a = self._assigns.pop(src_row)
-        insert_at = dst_row if dst_row <= len(self._assigns) else len(self._assigns)
-        self._assigns.insert(insert_at, a)
-        config.set_value("user_order", [x.get("id") for x in self._assigns])
+        u = self._users.pop(src_row)
+        insert_at = dst_row if dst_row <= len(self._users) else len(self._users)
+        self._users.insert(insert_at, u)
+        config.set_value("user_order", [x.get("user_id") for x in self._users])
         self._populate()
 
     def _on_cell_dbl(self, row: int, col: int) -> None:
         """双击用户名 → 编辑该用户。"""
-        if col != 0 or row < 0 or row >= len(self._assigns):
+        if col != 0 or row < 0 or row >= len(self._users):
             return
-        a = self._assigns[row]
+        u = self._users[row]
         user = {
-            "id": a.get("user_id"),
-            "username": a.get("username", ""),
-            "status": a.get("user_status", "active"),
-            "expires_at": a.get("user_expires_at"),
-            "note": a.get("user_note", ""),
+            "id": u.get("user_id"),
+            "username": u.get("username", ""),
+            "status": u.get("status", "active"),
+            "expires_at": u.get("expires_at"),
+            "note": u.get("note", ""),
         }
         self._edit_user(user)
 
@@ -405,41 +424,28 @@ class UsersPage(QWidget):
             "node_switch_limit": node_limit,
         }
 
-    def _ops(self, a: dict, row: int) -> QWidget:
+    def _ops(self, u: dict, row: int) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        detail = QPushButton("详情/设置")
+        detail = QPushButton("查看详情")
         detail.setProperty("compact", True)
         detail.setFixedHeight(26)
-        detail.clicked.connect(lambda _=False, a=a: self._detail(a))
+        detail.clicked.connect(lambda _=False, u=u: self._detail(u))
         lay.addWidget(detail)
 
-        share = QPushButton("复制节点")
-        share.setProperty("compact", True)
-        share.setFixedHeight(26)
-        share.setToolTip("复制连接链接（多协议 + 二维码）")
-        share.clicked.connect(lambda _=False, a=a: self._share_relay(a))
-        lay.addWidget(share)
-
-        unassign = QPushButton("取消分配")
-        unassign.setProperty("compact", True)
-        unassign.setFixedHeight(26)
-        unassign.clicked.connect(lambda _=False, a=a: self._unassign_assign(a))
-        lay.addWidget(unassign)
-
-        toggle = QPushButton("禁用" if a.get("user_status") == "active" else "启用")
+        toggle = QPushButton("禁用" if u.get("status", "active") == "active" else "启用")
         toggle.setProperty("compact", True)
         toggle.setFixedHeight(26)
-        toggle.clicked.connect(lambda _=False, a=a: self._toggle_status(self._assign_to_user(a)))
+        toggle.clicked.connect(lambda _=False, u=u: self._toggle_status(u))
         lay.addWidget(toggle)
 
         delete = QPushButton("删除")
         delete.setProperty("compact", True)
         delete.setFixedHeight(26)
-        delete.clicked.connect(lambda _=False, a=a: self._delete_user(self._assign_to_user(a)))
+        delete.clicked.connect(lambda _=False, u=u: self._delete_user(u))
         lay.addWidget(delete)
         return w
 
@@ -555,6 +561,59 @@ class UsersPage(QWidget):
         except Exception:
             pass  # 停服务失败不阻断回收（兜底清理在手动回归）
 
+    def _ssh_start_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
+        """SSH 重启 relay 的 gost + sing-box 服务（启用用户用，幂等；失败不阻断）。"""
+        import subprocess
+
+        root_pw = config.get("root_password", "")
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    root_pw = m.get("password", "") or root_pw
+                    break
+        else:
+            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
+            root_pw = sc.get("root_password") or root_pw
+        if not root_pw or not server_ip:
+            return
+        cmd = f"systemctl enable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; echo DONE"
+        try:
+            subprocess.run(
+                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=10", f"root@{server_ip}", cmd],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            pass
+
+    def _relay_conn(self, a: dict) -> tuple[str, str, str] | None:
+        """从 assignment 提取 (relay_id, server_id, server_ip)。"""
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        creds = node.get("_creds", {}) or {}
+        relay_id = str(a.get("resource_id", ""))
+        server_id = creds.get("server_id", "")
+        server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
+        if not relay_id or not server_ip:
+            return None
+        return relay_id, server_id, server_ip
+
+    def _ssh_stop_relay_line(self, a: dict) -> None:
+        conn = self._relay_conn(a)
+        if conn:
+            self._ssh_stop_relay(*conn)
+
+    def _ssh_start_relay_line(self, a: dict) -> None:
+        conn = self._relay_conn(a)
+        if conn:
+            self._ssh_start_relay(*conn)
+
     def _mark_recycled(self, relay_id: str, username: str) -> None:
         """回收 = 取消中转：删 config.relays + 记 recycled_relays（进回收页冷却）。"""
         relays = config.get("relays", []) or []
@@ -609,24 +668,32 @@ class UsersPage(QWidget):
             self._log(f"❌ 编辑失败：{e.message}")
             QMessageBox.warning(self, "编辑失败", e.message)
 
-    def _toggle_status(self, user: dict) -> None:
-        new_status = "disabled" if user.get("status", "active") == "active" else "active"
+    def _toggle_status(self, u: dict) -> None:
+        new_status = "disabled" if u.get("status", "active") == "active" else "active"
+        relay_lines = [a for a in u.get("lines", []) if a.get("resource_type") == "relay"]
         try:
-            api_client.update_user(user["id"], status=new_status)
-            label = "禁用" if new_status == "disabled" else "启用"
-            self._log(f"✅ 已{label}用户「{user.get('username', '')}」（客户端 30 秒内自动同步）")
-            self.refresh()
+            api_client.update_user(u["user_id"], status=new_status)
         except ApiError as e:
             self._log(f"❌ 操作失败：{e.message}")
             QMessageBox.warning(self, "操作失败", e.message)
+            return
+        # 停/启名下所有 relay 服务——禁用才能真正断开软路由，启用才能恢复
+        if relay_lines:
+            if new_status == "disabled":
+                for a in relay_lines:
+                    self._ssh_stop_relay_line(a)
+            else:
+                for a in relay_lines:
+                    self._ssh_start_relay_line(a)
+        label = "禁用" if new_status == "disabled" else "启用"
+        action = "停用其节点" if new_status == "disabled" else "恢复其节点"
+        self._log(f"✅ 已{label}用户「{u.get('username', '')}」并{action}（软路由同步失效/恢复）")
+        self.refresh()
 
-    def _delete_user(self, user: dict) -> None:
+    def _delete_user(self, u: dict) -> None:
         # 名下 relay 分配（删除前回收：停服务 + 进回收页）
-        relay_assigns = [
-            a for a in self._assigns
-            if str(a.get("user_id", "")) == str(user["id"]) and a.get("resource_type") == "relay"
-        ]
-        msg = f"确定删除用户「{user.get('username', '')}」吗？"
+        relay_assigns = [a for a in u.get("lines", []) if a.get("resource_type") == "relay"]
+        msg = f"确定删除用户「{u.get('username', '')}」吗？"
         if relay_assigns:
             msg += f"\n\n其名下 {len(relay_assigns)} 条中转线路会一并回收（停服务 + 进回收页冷却）。"
         msg += "\n\n此操作不可恢复。"
@@ -645,25 +712,15 @@ class UsersPage(QWidget):
             name = node.get("name", "") or a.get("resource_id", "")
             self._do_recycle_relay(a, node, name)
         try:
-            api_client.delete_user(user["id"])
-            self._log(f"✅ 已删除用户「{user.get('username', '')}」及其名下分配")
+            api_client.delete_user(u["user_id"])
+            self._log(f"✅ 已删除用户「{u.get('username', '')}」及其名下分配")
             self.refresh()
         except ApiError as e:
             self._log(f"❌ 删除失败：{e.message}")
             QMessageBox.warning(self, "删除失败", e.message)
 
-    def _detail(self, a: dict) -> None:
-        user = self._assign_to_user(a)
-        node_data = a.get("node_data", {}) or {}
-        if isinstance(node_data, str):
-            import json as _json
-            try:
-                node_data = _json.loads(node_data)
-            except Exception:
-                node_data = {}
-        # 客户到期（用户级）上限 = 该用户名下最早到期的服务器（最早到期那台到期了，客户至少断一台）
-        resource_expiry = _user_resource_expiry(user["id"]) or ""
-        dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry, a.get("resource_type", ""))
+    def _detail(self, u: dict) -> None:
+        dlg = _UserLinesDialog(self, u)
         dlg.exec()
         self.refresh()
 
@@ -780,6 +837,111 @@ class _UserDialog(QDialog):
         self.password = password
         self.status = self.status_combo.currentData()
         self.note = self.note_edit.toPlainText().strip()
+        self.accept()
+
+
+class _UserLinesDialog(QDialog):
+    """用户线路明细弹窗：列出该用户名下所有线路，每条线路可复制节点/回收。"""
+
+    def __init__(self, page, u: dict) -> None:
+        super().__init__(page)
+        self._page = page
+        self._u = u or {}
+        lines = self._u.get("lines", [])
+        status = self._u.get("status", "active")
+        self.setWindowTitle(f"「{self._u.get('username', '')}」的线路明细")
+        self.setMinimumSize(780, 480)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        head = QLabel(
+            f"用户名：<b>{self._u.get('username', '')}</b>　"
+            f"状态：<b style='color:{'#30d158' if status == 'active' else '#ff453a'}'>{'正常' if status == 'active' else '已禁用'}</b>　"
+            f"线路数：<b>{len(lines)}</b> 条"
+        )
+        head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(head)
+
+        table = QTableWidget(len(lines), 6)
+        table.setHorizontalHeaderLabels(["线路名称", "出口IP", "流量", "分配时间", "到期", "操作"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table, 1)
+
+        for row, a in enumerate(lines):
+            node = a.get("node_data", {}) or {}
+            if isinstance(node, str):
+                import json as _json
+                try:
+                    node = _json.loads(node)
+                except Exception:
+                    node = {}
+            name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
+            exit_ip = node.get("ip", "") or node.get("host", "")
+            quota = float(a.get("quota_gb") or 0)
+            used = float(a.get("used_gb") or 0)
+            if quota > 0:
+                remain = quota - used
+                if remain < 0:
+                    remain = 0
+                traffic = f"剩 {remain:.1f}G / {quota:.0f}G"
+            else:
+                traffic = f"已用 {used:.1f}G"
+            full_assign = a.get("created_at", "") or ""
+            try:
+                adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
+                if adt.tzinfo is not None:
+                    adt = adt.astimezone()
+                assign_time = adt.strftime("%m-%d %H:%M")
+            except Exception:
+                assign_time = "-"
+            ce = node.get("client_expiry", "") or ""
+            countdown = _fmt_countdown(ce)
+
+            for col, text in enumerate([name, exit_ip, traffic, assign_time, countdown]):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setForeground(Qt.GlobalColor.white)
+                table.setItem(row, col, item)
+
+            op_w = QWidget()
+            op_lay = QHBoxLayout(op_w)
+            op_lay.setContentsMargins(0, 0, 0, 0)
+            op_lay.setSpacing(6)
+            share = QPushButton("复制节点")
+            share.setProperty("compact", True)
+            share.setFixedHeight(26)
+            share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
+            op_lay.addWidget(share)
+            recycle = QPushButton("回收")
+            recycle.setProperty("compact", True)
+            recycle.setFixedHeight(26)
+            recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
+            op_lay.addWidget(recycle)
+            table.setCellWidget(row, 5, op_w)
+
+        btns = QDialogButtonBox()
+        edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
+        edit.clicked.connect(self._edit_user)
+        close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(btns)
+
+    def _edit_user(self) -> None:
+        user = {
+            "id": self._u.get("user_id"),
+            "username": self._u.get("username", ""),
+            "status": self._u.get("status", "active"),
+            "expires_at": self._u.get("expires_at"),
+            "note": self._u.get("note", ""),
+        }
+        self._page._edit_user(user)
+        self.accept()
+
+    def _recycle(self, a: dict, node: dict, name: str) -> None:
+        self._page._recycle_relay(a, node, name)
         self.accept()
 
 
