@@ -271,6 +271,11 @@ function switchInfo(n) {
     const idx = (Number(n.active_ip_idx) || 0) + 1;
     return { text: `${idx}/${cands.length}`, cls: "" };
   }
+  if (n.resource_type === "relay") {
+    // 独立线路（单 IP）：显示 1
+    return { text: "1", cls: "cell-muted" };
+  }
+  // vultr：显示切换次数（已用/上限）
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
   const used = Math.max(0, limit - remaining);
@@ -293,6 +298,21 @@ function openCandidateModal(n) {
 async function switchToCandidate(n, idx) {
   candidateModal.show = false;
   await switchIp(n, { targetIndex: idx });
+}
+
+function canSwitch(n) {
+  if (n.resource_type === "relay") return (n.candidate_ips || []).length > 1;
+  if (n.resource_type === "vultr") return true;
+  return false;
+}
+
+function onSwitchClick(n) {
+  if (!canSwitch(n) || switching[n.resource_id]?.disabled) return;
+  if (n.resource_type === "relay") {
+    openCandidateModal(n);
+  } else if (n.resource_type === "vultr") {
+    switchIp(n);
+  }
 }
 
 function flowInfo(n) {
@@ -671,16 +691,13 @@ onMounted(() => {
                 {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : checkText(n) }}
               </span>
             </td>
-            <td :class="switchInfo(n).cls" :title="candidateTip(n)" :style="(n.candidate_ips || []).length > 1 ? 'cursor:pointer' : ''" @click="openCandidateModal(n)">{{ switchInfo(n).text }}</td>
+            <td :class="switchInfo(n).cls" :title="candidateTip(n)" :style="canSwitch(n) ? 'cursor:pointer' : ''" @click="onSwitchClick(n)">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
               <div class="row-ops">
                 <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isSwitchDisabled(n)" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
-                </button>
-                <button v-if="n.resource_type === 'vultr' || n.resource_type === 'relay'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
-                  {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
                   {{ switching[n.resource_id]?.queued ? '排队中…' : switching[n.resource_id]?.checking ? `检测中 ${checkProgress(n)}` : '查联通性' }}
