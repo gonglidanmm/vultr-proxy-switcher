@@ -48,7 +48,7 @@ def global_echo(msg: str) -> None:
         _g_echo(msg)
 
 
-COLS = ["用户名", "线路名称", "出口IP", "流量/状态", "客户到期", "操作"]
+COLS = ["用户名", "线路名称", "出口IP", "剩余流量", "分配时间", "到期倒计时", "操作"]
 
 
 def _fmt_expires(expires_at: str | None) -> str:
@@ -92,6 +92,33 @@ def _parse_dt(text: str):
         except ValueError:
             continue
     return None
+
+
+def _fmt_countdown(expires_at: str | None) -> str:
+    """到期倒计时：还剩 X天X小时 / X小时X分钟 / X分钟 / 已过期（北京时间）。"""
+    if not expires_at:
+        return "-"
+    from datetime import timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    try:
+        dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        else:
+            dt = dt.astimezone(tz)
+        secs = int((dt - datetime.now(tz)).total_seconds())
+    except Exception:
+        return "-"
+    if secs <= 0:
+        return "已过期"
+    d, rem = divmod(secs, 86400)
+    h, rem2 = divmod(rem, 3600)
+    m = rem2 // 60
+    if d > 0:
+        return f"还剩 {d}天{h}小时" if h else f"还剩 {d}天"
+    if h > 0:
+        return f"还剩 {h}小时{m}分钟" if m else f"还剩 {h}小时"
+    return f"还剩 {m}分钟"
 
 
 # relay 分配「使用时长」：按天/按小时/按分钟三档，默认按天
@@ -201,11 +228,12 @@ class UsersPage(QWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         for c in range(len(COLS) - 1):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 120)   # 用户名
-        self.table.setColumnWidth(1, 180)   # 线路名称
+        self.table.setColumnWidth(0, 110)   # 用户名
+        self.table.setColumnWidth(1, 170)   # 线路名称
         self.table.setColumnWidth(2, 130)   # 出口IP
-        self.table.setColumnWidth(3, 110)   # 流量/状态
-        self.table.setColumnWidth(4, 110)   # 客户到期
+        self.table.setColumnWidth(3, 120)   # 剩余流量
+        self.table.setColumnWidth(4, 110)   # 分配时间
+        self.table.setColumnWidth(5, 130)   # 到期倒计时
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -262,35 +290,51 @@ class UsersPage(QWidget):
             node = a.get("node_data", {}) or {}
             name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
             exit_ip = node.get("ip", "") or node.get("host", "")
-            # 流量/状态：配额优先，否则 bandwidth
-            q = node.get("quota_gb") or 0
-            if q:
-                traffic = f"配额 {float(q):.0f}G"
+            # 剩余流量：配额 - 已用（配额 0 = 不限）
+            quota = float(a.get("quota_gb") or node.get("quota_gb") or 0)
+            used = float(a.get("used_gb") or 0)
+            if quota > 0:
+                remain = quota - used
+                if remain < 0:
+                    remain = 0
+                traffic = f"剩 {remain:.1f}G / {quota:.0f}G"
             else:
-                traffic = node.get("bandwidth", "") or "-"
-            # 客户到期（tooltip 用完整时间）
+                traffic = f"已用 {used:.1f}G"
+            # 分配时间（MM-DD HH:MM，北京时间）
+            full_assign = a.get("created_at", "") or ""
+            try:
+                adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
+                if adt.tzinfo is not None:
+                    adt = adt.astimezone()
+                assign_time = adt.strftime("%m-%d %H:%M")
+            except Exception:
+                assign_time = (str(full_assign)[5:16].replace("T", " ") if full_assign else "-")
+            # 到期倒计时
             full_user_exp = node.get("client_expiry", "") or ""
-            user_expiry = full_user_exp[:10] or "-"
+            countdown = _fmt_countdown(full_user_exp)
 
             cells = [
                 a.get("username", ""),   # 0 用户名
                 name,                     # 1 线路名称
                 exit_ip,                  # 2 出口IP
-                traffic,                  # 3 流量/状态
-                user_expiry,              # 4 客户到期
+                traffic,                  # 3 剩余流量
+                assign_time,              # 4 分配时间
+                countdown,                # 5 到期倒计时
             ]
-            tips = {4: _fmt_full(full_user_exp)}
+            tips = {4: _fmt_full(full_assign), 5: _fmt_full(full_user_exp)}
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(Qt.GlobalColor.white)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col in tips:
                     item.setToolTip(tips[col])
+                if col == 5 and countdown == "已过期":
+                    item.setForeground(Qt.GlobalColor.red)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
                 self.table.setItem(row, col, item)
 
-            self.table.setCellWidget(row, 5, self._ops(a, row))
+            self.table.setCellWidget(row, 6, self._ops(a, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
         """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。

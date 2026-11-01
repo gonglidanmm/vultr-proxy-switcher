@@ -1383,7 +1383,7 @@ async function listResourceAssignments(env, resourceType, resourceId) {
 
 async function listAllAssignments(env) {
   const rows = await env.DB.prepare(
-    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, a.switch_limit AS node_switch_limit, a.switch_count AS node_switch_count, a.switch_date AS node_switch_date, u.username, u.status, u.note, u.expires_at AS user_expires_at, u.switch_limit AS user_switch_limit FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
+    "SELECT a.id, a.user_id, a.resource_type, a.resource_id, a.node_data, a.created_at, a.quota_gb, a.used_gb, a.switch_limit AS node_switch_limit, a.switch_count AS node_switch_count, a.switch_date AS node_switch_date, u.username, u.status, u.note, u.expires_at AS user_expires_at, u.switch_limit AS user_switch_limit FROM assignments a JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC",
   ).all();
   const assignments = rows.results.map((a) => {
     let data = {};
@@ -1403,6 +1403,8 @@ async function listAllAssignments(env) {
       resource_id: a.resource_id,
       node_data: data,
       created_at: a.created_at,
+      quota_gb: a.quota_gb,
+      used_gb: a.used_gb,
     };
   });
   return json({ assignments, total: assignments.length });
