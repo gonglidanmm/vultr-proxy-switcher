@@ -573,7 +573,7 @@ class UsersPage(QWidget):
                 node_data = {}
         # 客户到期（用户级）上限 = 该用户名下最早到期的服务器（最早到期那台到期了，客户至少断一台）
         resource_expiry = _user_resource_expiry(user["id"]) or ""
-        dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry)
+        dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry, a.get("resource_type", ""))
         dlg.exec()
         self.refresh()
 
@@ -696,12 +696,13 @@ class _UserDialog(QDialog):
 class _UserDetailDialog(QDialog):
     """用户详情/设置：编辑表单 + 名下分配（文字展示）。"""
 
-    def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "") -> None:
+    def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "", resource_type: str = "") -> None:
         super().__init__(parent)
         self._user = user or {}
         self.resource_id = resource_id
         self.node_data = node_data or {}
         self._resource_expiry = resource_expiry
+        self.resource_type = resource_type or "vultr"
         self.setWindowTitle("用户详情 / 设置")
         self.setMinimumSize(720, 720)
 
@@ -975,7 +976,7 @@ class _UserDetailDialog(QDialog):
         # 写回 node_data：客户到期 + 流量配额（每台服务器独立）
         node = dict(self.node_data)
         node_changed = False
-        if client_exp and node.get("client_expiry") != client_exp:
+        if client_exp and str(node.get("client_expiry", ""))[:10] != client_exp[:10]:
             node["client_expiry"] = client_exp
             node_changed = True
         elif not client_exp and node.get("client_expiry"):
@@ -987,7 +988,7 @@ class _UserDetailDialog(QDialog):
         if node_changed:
             try:
                 # 显式传 quota_gb，让 Worker 更新 assignments.quota_gb 列（限流依据）
-                api_client.assign(self._user["id"], "vultr", self.resource_id, node, quota_gb=new_quota)
+                api_client.assign(self._user["id"], self.resource_type, self.resource_id, node, quota_gb=new_quota)
             except ApiError as e:
                 QMessageBox.warning(self, "保存失败", e.message)
                 return
