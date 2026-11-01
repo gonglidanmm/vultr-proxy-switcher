@@ -186,8 +186,10 @@ def main() -> None:
         )
         ub = base64.b64encode(unit.encode()).decode()
         sp = socks_port(rp)
+        # skip 条件：服务文件存在 + 内容相同 + 服务 active（inactive 也重启，踩坑：自动回收 stop 了服务但文件还在）
         r0 = _ssh(host, root_pw,
-                  f"cat /etc/systemd/system/gost-relay-{rid}.service 2>/dev/null || echo __MISSING__")
+                  f"if [ -f /etc/systemd/system/gost-relay-{rid}.service ] && systemctl is-active --quiet gost-relay-{rid}; then "
+                  f"cat /etc/systemd/system/gost-relay-{rid}.service; else echo __NEED_DEPLOY__; fi")
         if r0.returncode == 0 and r0.stdout.strip() == unit.strip():
             results.append(("gost", "skip"))
         else:
@@ -213,7 +215,8 @@ def main() -> None:
         sb_unit = singbox_relay_unit(rid)
         sb_unit_b64 = base64.b64encode(sb_unit.encode()).decode()
         r1 = _ssh(host, root_pw,
-                  f"cat /etc/sing-box/relay-{rid}.json 2>/dev/null || echo __MISSING__")
+                  f"if [ -f /etc/sing-box/relay-{rid}.json ] && systemctl is-active --quiet sing-box-relay-{rid}; then "
+                  f"cat /etc/sing-box/relay-{rid}.json; else echo __NEED_DEPLOY__; fi")
         if r1.returncode == 0 and r1.stdout.strip() == sb_cfg.strip():
             results.append(("singbox", "skip"))
         else:
