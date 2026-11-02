@@ -1070,15 +1070,19 @@ class WebsharePage(QWidget):
                 self._start_quota_timer()
             check_btn.clicked.connect(lambda _=False, b=check_btn, a=addr, k=ip_key: self._check_ip(a, k, b))
             lay.addWidget(check_btn)
-            # 替换按钮（只对未中转 IP；已中转替换会导致 relay 失效）
+            # 替换按钮（只对未中转 IP；res 计划不支持替换，已中转替换会导致 relay 失效）
             plan_id = p.get("_plan_id")
             repl_avail = self._plan_repl.get(plan_id, 0)
             repl_btn = QPushButton(f"替换(剩{repl_avail})")
             repl_btn.setProperty("compact", True)
             repl_btn.setFixedHeight(30)
-            repl_btn.setToolTip("替换成新的同类型 IP（消耗月度替换配额）")
-            repl_btn.setEnabled(repl_avail > 0)
-            repl_btn.clicked.connect(lambda _=False, b=repl_btn, a=addr, pid=plan_id, cc=p.get("country_code", ""): self._replace_ip(a, pid, cc, b))
+            if ip_type == "res":
+                repl_btn.setEnabled(False)
+                repl_btn.setToolTip("住宅 IP 计划不支持替换（webshare 限制）")
+            else:
+                repl_btn.setToolTip("替换成新的同类型 IP（消耗月度替换配额）")
+                repl_btn.setEnabled(repl_avail > 0)
+                repl_btn.clicked.connect(lambda _=False, b=repl_btn, a=addr, pid=plan_id, cc=p.get("country_code", ""): self._replace_ip(a, pid, cc, b))
             lay.addWidget(repl_btn)
             lay.addStretch(1)
             table.setCellWidget(row, _OP_COL, w)
@@ -1373,22 +1377,30 @@ class WebsharePage(QWidget):
             result = webshare.replace_proxy(api_key, plan_id, addr, country_code)
             repl_id = result.get("id")
             if not repl_id:
-                err = result.get("error") or result.get("detail") or "替换请求失败"
-                _p(f"❌ {err}")
-                return ("fail", err)
+                err = result.get("error") or result.get("detail") or ""
+                code = result.get("error_code") or ""
+                msg = err or "替换请求失败"
+                if code:
+                    msg += f"（错误码 {code}）"
+                _p(f"❌ {msg}")
+                return ("fail", msg)
             _p(f"✅ 已提交，任务 ID={repl_id}，开始轮询状态…")
-            for i in range(15):
+            for i in range(30):
                 time.sleep(2)
                 status = webshare.get_replacement_status(api_key, plan_id, repl_id)
                 state = status.get("state", "")
-                _p(f"轮询第 {i + 1}/15 次：状态={state or '未知'}")
+                _p(f"轮询第 {i + 1}/30 次：状态={state or '未知'}")
                 if state == "completed":
                     _p("✅ 替换完成，新 IP 已生效")
                     return ("ok", status.get("proxies_added", 1))
                 if state == "failed":
-                    err = status.get("error") or "替换失败"
-                    _p(f"❌ {err}")
-                    return ("fail", err)
+                    err = status.get("error") or ""
+                    code = status.get("error_code") or ""
+                    msg = err or "替换失败"
+                    if code:
+                        msg += f"（错误码 {code}）"
+                    _p(f"❌ {msg}")
+                    return ("fail", msg)
             _p("⏱ 替换超时（可能仍在处理，稍后刷新列表查看）")
             return ("fail", "替换超时（可能仍在处理，稍后刷新列表查看）")
 
