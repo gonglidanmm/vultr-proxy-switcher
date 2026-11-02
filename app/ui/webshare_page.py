@@ -1551,33 +1551,20 @@ class WebsharePage(QWidget):
         seen = {(r.get("host"), int(r.get("port", 0)), r.get("user")) for r in relays}
         pw_pool = config.get("relay_password_pool", {})
         returned_ips = config.get("returned_ips", {}) or {}
-        # 每个 IP 独立配额/到期：合并 + 独立线路都弹窗设置（独立线路也能设到期/流量）
+        # 合并线路：勾选 N 个 IP 合并成 1 条线路（候选上游仅连接参数；配额/到期统一到「分配用户」时设置）
         merge_candidates = None
-        per_ip_settings: dict = {}  # (ip_type, idx) -> {quota_gb, expiry}
-        if checked:
-            raw_cands = []
+        if merge and len(checked) > 1:
+            merge_candidates = []
             for ip_type, idx in checked:
                 pool = self._dc if ip_type == "dc" else self._res
                 p = pool[idx]
-                raw_cands.append({
+                merge_candidates.append({
                     "host": p.get("proxy_address") or "p.webshare.io",
                     "port": int(p.get("port", 0)),
                     "user": p.get("username", ""),
                     "password": p.get("password", ""),
                 })
-            dlg = _MergeSettingsDialog(self, raw_cands)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return  # 用户取消，不生成
-            settings = dlg.results()
-            if merge and len(checked) > 1:
-                merge_candidates = []
-                for c, s in zip(raw_cands, settings):
-                    c.update(s)  # 加 quota_gb/expiry（enabled 默认 True）
-                    merge_candidates.append(c)
-                checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
-            else:
-                for (ip_type, idx), s in zip(checked, settings):
-                    per_ip_settings[(ip_type, idx)] = s
+            checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0
         skipped = 0  # 跳过已生成/越界的 IP 数
         # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
@@ -1648,17 +1635,6 @@ class WebsharePage(QWidget):
             }
             if merge_candidates:
                 relay_dict["candidate_upstreams"] = merge_candidates
-                relay_dict["active_upstream_idx"] = 0
-            else:
-                # 独立线路：单候选带独立配额/到期（Worker 读 candidates[0].quota_gb/expiry）
-                s = per_ip_settings.get((ip_type, idx), {})
-                relay_dict["candidate_upstreams"] = [{
-                    "host": host, "port": port, "user": user,
-                    "password": p.get("password", ""),
-                    "quota_gb": s.get("quota_gb", 0),
-                    "expiry": s.get("expiry", ""),
-                    "enabled": True,
-                }]
                 relay_dict["active_upstream_idx"] = 0
             relays.append(relay_dict)
             used.add(rp)
