@@ -350,7 +350,7 @@ class _MergeSettingsDialog(SizedDialog):
 
     def __init__(self, parent, candidates: list[dict]) -> None:
         super().__init__(parent)
-        self.setWindowTitle("合并线路 - 设置每个 IP 的配额/到期")
+        self.setWindowTitle("设置每个 IP 的配额/到期")
         self.setMinimumWidth(720)
         self._quota_spins: list[QSpinBox] = []
         self._dur_spins: list[QSpinBox] = []
@@ -1550,10 +1550,10 @@ class WebsharePage(QWidget):
         seen = {(r.get("host"), int(r.get("port", 0)), r.get("user")) for r in relays}
         pw_pool = config.get("relay_password_pool", {})
         returned_ips = config.get("returned_ips", {}) or {}
-        # 合并线路：勾选 N 个 IP 合并成 1 条线路（1 域名/端口，切换 IP 轮换这 N 个上游）
+        # 每个 IP 独立配额/到期：合并 + 独立线路都弹窗设置（独立线路也能设到期/流量）
         merge_candidates = None
-        if merge and len(checked) > 1:
-            # 先构造候选 IP（仅连接参数），再弹窗让用户为每个 IP 设独立配额/到期
+        per_ip_settings: dict = {}  # (ip_type, idx) -> {quota_gb, expiry}
+        if checked:
             raw_cands = []
             for ip_type, idx in checked:
                 pool = self._dc if ip_type == "dc" else self._res
@@ -1568,11 +1568,15 @@ class WebsharePage(QWidget):
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return  # 用户取消，不生成
             settings = dlg.results()
-            merge_candidates = []
-            for c, s in zip(raw_cands, settings):
-                c.update(s)  # 加 quota_gb/expiry（enabled 默认 True）
-                merge_candidates.append(c)
-            checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
+            if merge and len(checked) > 1:
+                merge_candidates = []
+                for c, s in zip(raw_cands, settings):
+                    c.update(s)  # 加 quota_gb/expiry（enabled 默认 True）
+                    merge_candidates.append(c)
+                checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
+            else:
+                for (ip_type, idx), s in zip(checked, settings):
+                    per_ip_settings[(ip_type, idx)] = s
         added = 0
         # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
         _base_seq = sum(1 for r in relays if r.get("entry_domain") == entry_domain)
@@ -1638,6 +1642,17 @@ class WebsharePage(QWidget):
             }
             if merge_candidates:
                 relay_dict["candidate_upstreams"] = merge_candidates
+                relay_dict["active_upstream_idx"] = 0
+            else:
+                # 独立线路：单候选带独立配额/到期（Worker 读 candidates[0].quota_gb/expiry）
+                s = per_ip_settings.get((ip_type, idx), {})
+                relay_dict["candidate_upstreams"] = [{
+                    "host": host, "port": port, "user": user,
+                    "password": p.get("password", ""),
+                    "quota_gb": s.get("quota_gb", 0),
+                    "expiry": s.get("expiry", ""),
+                    "enabled": True,
+                }]
                 relay_dict["active_upstream_idx"] = 0
             relays.append(relay_dict)
             used.add(rp)
