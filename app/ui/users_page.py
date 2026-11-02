@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -1496,11 +1497,28 @@ class _UserLinesDialog(SizedDialog):
             ce = ip_exp2 or node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
-            for col, text in enumerate([name, type_text, exit_ip, traffic, assign_time, countdown]):
+            # 只读列：线路名称(0)/类型(1)/出口IP(2)/分配时间(4)
+            for col, text in zip([0, 1, 2, 4], [name, type_text, exit_ip, assign_time]):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setForeground(Qt.GlobalColor.white)
                 table.setItem(row, col, item)
+
+            # 流量列(3)：可点击设置配额
+            flow_btn = QPushButton(traffic)
+            flow_btn.setProperty("compact", True)
+            flow_btn.setToolTip("点击设置流量配额")
+            flow_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_quota(a, node))
+            table.setCellWidget(row, 3, flow_btn)
+
+            # 到期列(5)：可点击设置时长
+            exp_btn = QPushButton(countdown)
+            exp_btn.setProperty("compact", True)
+            exp_btn.setToolTip(f"点击设置到期时间\n当前: {ce or '不过期'}")
+            if "已过期" in countdown or "已到期" in countdown:
+                exp_btn.setStyleSheet("color:#ff453a;")
+            exp_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_expiry(a, node))
+            table.setCellWidget(row, 5, exp_btn)
 
             op_w = QWidget()
             op_lay = QHBoxLayout(op_w)
@@ -1543,6 +1561,78 @@ class _UserLinesDialog(SizedDialog):
 
     def _recycle(self, a: dict, node: dict, name: str) -> None:
         self._page._recycle_relay(a, node, name)
+        self.accept()
+
+    def _edit_expiry(self, a: dict, node: dict) -> None:
+        """点击到期列：设置该线路的到期时长（独立=线路级，合并=当前激活IP）。"""
+        rid = str(a.get("resource_id", ""))
+        nd = dict(node) if isinstance(node, dict) else {}
+        creds = nd.get("_creds", {}) or {}
+        cands = creds.get("candidates") or []
+        act = int(creds.get("active_idx", 0) or 0)
+        cur = ""
+        if cands and act < len(cands):
+            cur = (cands[act].get("expiry") or "").strip()
+        cur = cur or (nd.get("client_expiry") or "")
+        dlg = _DurationDialog(self, current_expiry=cur)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_exp = dlg.expires_at
+        nd["client_expiry"] = new_exp
+        if cands and act < len(cands):
+            cands[act]["expiry"] = new_exp
+            creds["candidates"] = cands
+            nd["_creds"] = creds
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                cu = r.get("candidate_upstreams") or []
+                if cu and act < len(cu):
+                    cu[act]["expiry"] = new_exp
+                    r["candidate_upstreams"] = cu
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.assign(a.get("user_id"), "relay", rid, nd)
+        except ApiError as e:
+            QMessageBox.warning(self, "设置失败", e.message)
+            return
+        self._page.refresh()
+        self.accept()
+
+    def _edit_quota(self, a: dict, node: dict) -> None:
+        """点击流量列：设置该线路的流量配额（GB，独立=线路级，合并=当前激活IP）。"""
+        rid = str(a.get("resource_id", ""))
+        nd = dict(node) if isinstance(node, dict) else {}
+        creds = nd.get("_creds", {}) or {}
+        cands = creds.get("candidates") or []
+        act = int(creds.get("active_idx", 0) or 0)
+        cur_quota = float(a.get("quota_gb") or 0)
+        if cands and act < len(cands):
+            cur_quota = float(cands[act].get("quota_gb") or 0)
+        txt, ok = QInputDialog.getDouble(self, "设置流量配额", "配额（GB，0=不限）:", cur_quota, 0, 1_000_000, 2)
+        if not ok:
+            return
+        new_q = txt
+        if cands and act < len(cands):
+            cands[act]["quota_gb"] = new_q
+            creds["candidates"] = cands
+            nd["_creds"] = creds
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                cu = r.get("candidate_upstreams") or []
+                if cu and act < len(cu):
+                    cu[act]["quota_gb"] = new_q
+                    r["candidate_upstreams"] = cu
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.assign(a.get("user_id"), "relay", rid, nd, quota_gb=new_q)
+        except ApiError as e:
+            QMessageBox.warning(self, "设置失败", e.message)
+            return
+        self._page.refresh()
         self.accept()
 
     def _manage_ips(self, a: dict) -> None:
