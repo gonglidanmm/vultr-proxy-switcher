@@ -1588,6 +1588,7 @@ class WebsharePage(QWidget):
                     "port": int(p.get("port", 0)),
                     "user": p.get("username", ""),
                     "password": p.get("password", ""),
+                    "ws_account": (self.account_combo.currentText() or ""),
                 })
             checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0

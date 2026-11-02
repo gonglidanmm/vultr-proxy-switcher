@@ -956,7 +956,7 @@ class _ManageIpsDialog(SizedDialog):
     _default_h = 460
     """管理某条线路的候选 IP：添加/删除/禁用/设为当前/改配额/改到期。"""
 
-    COLS = ["上游IP", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
+    COLS = ["上游IP", "账号", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
 
     def __init__(self, page, u: dict, line: dict) -> None:
         super().__init__(page)
@@ -977,6 +977,7 @@ class _ManageIpsDialog(SizedDialog):
         # 线路级配额/到期（分配时设置），作为候选 IP 的默认继承值
         self._line_quota = float(line.get("quota_gb") or 0)
         self._line_expiry = (nd.get("client_expiry") or "").strip()
+        self._line_ws_account = nd.get("ws_account", "") or ""
         self._quota_spins: list = []
         self._expiry_btns: list = []
         self._toggle_btns: list = []
@@ -1000,7 +1001,7 @@ class _ManageIpsDialog(SizedDialog):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        persist_col_widths(self.table, "manage_ips_col_widths", [150, 90, 80, 160, 70, 50, 250])
+        persist_col_widths(self.table, "manage_ips_col_widths", [140, 90, 80, 70, 150, 60, 50, 250])
         layout.addWidget(self.table, 1)
 
         # 操作回显（替换/添加/删除的结果提示）
@@ -1063,19 +1064,26 @@ class _ManageIpsDialog(SizedDialog):
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             it.setForeground(Qt.GlobalColor.white)
             self.table.setItem(i, 0, it)
+            # 账号（IP 级 ws_account 优先，否则继承线路级）
+            acct = c.get("ws_account") or self._line_ws_account or "默认账号"
+            acct_it = QTableWidgetItem(acct)
+            acct_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            acct_it.setForeground(Qt.GlobalColor.white)
+            acct_it.setToolTip("该 IP 所属的 webshare 上游账号")
+            self.table.setItem(i, 1, acct_it)
             # 配额
             q = QSpinBox()
             q.setRange(0, 1000000)
             # 预填：IP 级独立值优先，否则继承线路级（分配时设置的）
             q.setValue(int(c.get("quota_gb") or self._line_quota))
             q.setToolTip("0 = 不限流量；默认继承线路配额")
-            self.table.setCellWidget(i, 1, q)
+            self.table.setCellWidget(i, 2, q)
             self._quota_spins.append(q)
             # 已用
             used_it = QTableWidgetItem(f"{float(c.get('used_gb') or 0):.2f}G")
             used_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             used_it.setForeground(Qt.GlobalColor.white)
-            self.table.setItem(i, 2, used_it)
+            self.table.setItem(i, 3, used_it)
             # 到期（倒计时按钮，点击重新设置时长）
             exp = (c.get("expiry") or self._line_expiry or "").strip()
             countdown = _fmt_countdown(exp) if exp else "不过期"
@@ -1084,19 +1092,19 @@ class _ManageIpsDialog(SizedDialog):
             exp_btn.setFixedHeight(30)
             exp_btn.setToolTip(f"到期时间：{exp or '不过期'}（点击重新设置）")
             exp_btn.clicked.connect(lambda _=False, idx=i: self._edit_expiry(idx))
-            self.table.setCellWidget(i, 3, exp_btn)
+            self.table.setCellWidget(i, 4, exp_btn)
             self._expiry_btns.append(exp_btn)
             # 状态
             st_txt, st_color = self._ip_status(c)
             st_it = QTableWidgetItem(st_txt)
             st_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             st_it.setForeground(st_color)
-            self.table.setItem(i, 4, st_it)
+            self.table.setItem(i, 5, st_it)
             # 激活
             act_it = QTableWidgetItem("●" if i == self._active_idx else "")
             act_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
-            self.table.setItem(i, 5, act_it)
+            self.table.setItem(i, 6, act_it)
             # 操作
             op_w = QWidget()
             op_lay = QHBoxLayout(op_w)
@@ -1125,7 +1133,7 @@ class _ManageIpsDialog(SizedDialog):
             del_btn.setFixedSize(52, 30)
             del_btn.clicked.connect(lambda _=False, idx=i: self._remove(idx))
             op_lay.addWidget(del_btn)
-            self.table.setCellWidget(i, 6, op_w)
+            self.table.setCellWidget(i, 7, op_w)
         self._refresh_head()
 
     def _refresh_head(self) -> None:
@@ -1144,11 +1152,11 @@ class _ManageIpsDialog(SizedDialog):
         """编辑后刷新状态列 + 激活列 + 按钮文字（增量，不重建）。"""
         for i, c in enumerate(self._cands):
             st_txt, st_color = self._ip_status(c)
-            st_it = self.table.item(i, 4)
+            st_it = self.table.item(i, 5)
             if st_it:
                 st_it.setText(st_txt)
                 st_it.setForeground(st_color)
-            act_it = self.table.item(i, 5)
+            act_it = self.table.item(i, 6)
             if act_it:
                 act_it.setText("●" if i == self._active_idx else "")
                 act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
@@ -1204,9 +1212,17 @@ class _ManageIpsDialog(SizedDialog):
             except Exception:
                 nd = {}
         ws_account = nd.get("ws_account", "")
-        # 用当前要替换的 IP 反查所属账号（跨账号合并线路：替换哪个 IP 就用哪个账号的池）
+        # 用当前要替换的 IP 自己记录的账号（IP 级），否则反查，再否则线路级/当前账号
         target_host = self._cands[idx].get("host", "")
-        api_key = webshare.key_for_host(target_host)
+        target_ws = self._cands[idx].get("ws_account", "")
+        api_key = ""
+        if target_ws:
+            for acct in webshare.list_accounts():
+                if acct.get("name") == target_ws:
+                    api_key = acct.get("api_key", "")
+                    break
+        if not api_key:
+            api_key = webshare.key_for_host(target_host)
         if not api_key and ws_account:
             for acct in webshare.list_accounts():
                 if acct.get("name") == ws_account:
@@ -1214,6 +1230,12 @@ class _ManageIpsDialog(SizedDialog):
                     break
         if not api_key:
             api_key = webshare.get_active_key()
+        # 记录 api_key 对应的账号名（替换后写回候选 ws_account）
+        active_name = ""
+        for acct in webshare.list_accounts():
+            if acct.get("api_key") == api_key:
+                active_name = acct.get("name", "")
+                break
         if not api_key:
             self._status.setText('<span style="color:#ff9f0a;">⚠️ 请先在 Webshare-IP 页填写 API 密钥</span>')
             QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
@@ -1268,6 +1290,7 @@ class _ManageIpsDialog(SizedDialog):
         self._cands[idx]["expiry"] = item["expiry"]
         self._cands[idx]["used_gb"] = 0
         self._cands[idx]["enabled"] = True
+        self._cands[idx]["ws_account"] = active_name
         self._build_rows()
         self._status.setText(
             f'<span style="color:#32d74b;">✅ 已将 {old_host}:{old_port} 替换为 '
@@ -1294,6 +1317,11 @@ class _ManageIpsDialog(SizedDialog):
         if not api_key:
             QMessageBox.warning(self, "无法添加", "请先在 Webshare-IP 页填写 API 密钥。")
             return
+        active_name = ""
+        for acct in webshare.list_accounts():
+            if acct.get("api_key") == api_key:
+                active_name = acct.get("name", "")
+                break
         try:
             lists = webshare.load_lists(api_key)
         except Exception as e:
@@ -1333,6 +1361,7 @@ class _ManageIpsDialog(SizedDialog):
                 "used_gb": 0,
                 "expiry": item["expiry"],
                 "enabled": True,
+                "ws_account": active_name,
             })
         self._build_rows()
         self._status.setText(
@@ -1609,11 +1638,19 @@ class _UserLinesDialog(SizedDialog):
             name_item.setToolTip("双击编辑名称（复制节点/二维码/协议链接跟随）")
             table.setItem(row, 0, name_item)
 
-            # 上游账号(3)：该 IP 所属的 webshare 账号
-            acct = QTableWidgetItem(node.get("ws_account") or webshare.default_account_name())
+            # 上游账号(3)：单账号显示账号名，跨账号显示「多账号」
+            cands_acct = (node.get("_creds", {}) or {}).get("candidates") or []
+            acct_set = {c.get("ws_account") for c in cands_acct if c.get("ws_account")}
+            if len(acct_set) > 1:
+                acct_text = f"多账号({len(acct_set)})"
+                acct_tip = "、".join(sorted(acct_set))
+            else:
+                acct_text = (next(iter(acct_set)) if acct_set else "") or node.get("ws_account") or webshare.default_account_name()
+                acct_tip = acct_text
+            acct = QTableWidgetItem(acct_text)
             acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             acct.setForeground(Qt.GlobalColor.white)
-            acct.setToolTip("该 IP 所属的 webshare 上游账号")
+            acct.setToolTip(f"上游账号：{acct_tip}")
             table.setItem(row, 3, acct)
 
             # 流量列(4)：可点击设置配额

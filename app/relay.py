@@ -276,16 +276,17 @@ def norm_candidate(c) -> dict:
     """把候选上游 IP 规范化为带独立属性的结构（向后兼容旧结构）。
 
     旧结构只有 {host, port, user, password}，或纯字符串。
-    新结构加 quota_gb/used_gb/expiry/enabled（每个 IP 独立配额/流量/到期/禁用）。
+    新结构加 quota_gb/used_gb/expiry/enabled/ws_account（每个 IP 独立配额/流量/到期/禁用/账号）。
     """
     if isinstance(c, str):
         return {"host": c, "port": "", "user": "", "password": "",
-                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True}
+                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True, "ws_account": ""}
     d = dict(c or {})
     d.setdefault("quota_gb", 0)
     d.setdefault("used_gb", 0)
     d.setdefault("expiry", "")
     d.setdefault("enabled", True)
+    d.setdefault("ws_account", "")
     return d
 
 
@@ -318,6 +319,7 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "port": relay.get("port", ""),
         "user": relay.get("user", ""),
         "password": relay.get("password", ""),
+        "ws_account": relay.get("ws_account", ""),
     }
     candidates = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [upstream])]
     active_idx = int(relay.get("active_upstream_idx", 0) or 0)
