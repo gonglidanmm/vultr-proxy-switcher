@@ -958,11 +958,12 @@ class _ManageIpsDialog(SizedDialog):
 
     COLS = ["上游IP", "上游账号", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
 
-    def __init__(self, page, u: dict, line: dict) -> None:
+    def __init__(self, page, u: dict, line: dict, on_saved=None) -> None:
         super().__init__(page)
         self._page = page
         self._u = u
         self._line = line
+        self._on_saved = on_saved
         nd = line.get("node_data", {}) or {}
         if isinstance(nd, str):
             import json as _json
@@ -1479,6 +1480,11 @@ class _ManageIpsDialog(SizedDialog):
                 self._page.refresh()
             except Exception:
                 pass
+        if self._on_saved:
+            try:
+                self._on_saved()
+            except Exception:
+                pass
 
 
 class _IpPickerDialog(SizedDialog):
@@ -1720,110 +1726,7 @@ class _UserLinesDialog(SizedDialog):
 
         self._suppress = True
         for row, a in enumerate(lines):
-            table.setRowHeight(row, 44)  # 显式行高，按钮垂直完整
-            node = a.get("node_data", {}) or {}
-            if isinstance(node, str):
-                import json as _json
-                try:
-                    node = _json.loads(node)
-                except Exception:
-                    node = {}
-            name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
-            creds = node.get("_creds", {}) or {}
-            n_cands = len(creds.get("candidates") or [])
-            type_text = f"合并 {n_cands} 个" if n_cands > 1 else "独立"
-            exit_ip = node.get("ip", "") or node.get("host", "")
-            quota = float(a.get("quota_gb") or 0)
-            used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
-            if quota > 0:
-                traffic = f"已用 {_fmt_flow(used)} / {_fmt_flow(quota)}"
-            else:
-                traffic = f"已用 {_fmt_flow(used)}"
-            full_assign = a.get("created_at", "") or ""
-            try:
-                adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
-                if adt.tzinfo is not None:
-                    adt = adt.astimezone()
-                assign_time = adt.strftime("%m-%d %H:%M")
-            except Exception:
-                assign_time = "-"
-            # 到期：合并线路用当前激活 IP 的到期（IP 级优先），独立线路用线路级 client_expiry
-            cands2 = creds.get("candidates") or []
-            act2 = int(creds.get("active_idx", 0) or 0)
-            ip_exp2 = ""
-            if len(cands2) > 1 and act2 < len(cands2):
-                ip_exp2 = (cands2[act2].get("expiry") or "").strip()
-            ce = (ip_exp2 if len(cands2) > 1 else "") or node.get("client_expiry", "") or ""
-            countdown = _fmt_countdown(ce)
-
-            # 只读列：类型(1)/出口IP(2)/分配时间(5)
-            for col, text in zip([1, 2, 5], [type_text, exit_ip, assign_time]):
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(Qt.GlobalColor.white)
-                table.setItem(row, col, item)
-
-            # 线路名称(0)：可双击编辑（编辑后同步 config.relays + D1）
-            name_item = QTableWidgetItem(name)
-            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_item.setForeground(Qt.GlobalColor.white)
-            name_item.setData(Qt.ItemDataRole.UserRole, str(a.get("resource_id", "")))
-            name_item.setFlags(name_item.flags() | Qt.ItemFlag.ItemIsEditable)
-            name_item.setToolTip("双击编辑名称（复制节点/二维码/协议链接跟随）")
-            table.setItem(row, 0, name_item)
-
-            # 上游账号(3)：单账号显示账号名，跨账号显示「多账号」
-            cands_acct = (node.get("_creds", {}) or {}).get("candidates") or []
-            acct_set = {c.get("ws_account") for c in cands_acct if c.get("ws_account")}
-            if len(acct_set) > 1:
-                acct_text = f"多账号({len(acct_set)})"
-                acct_tip = "、".join(sorted(acct_set))
-            else:
-                acct_text = (next(iter(acct_set)) if acct_set else "") or node.get("ws_account") or webshare.default_account_name()
-                acct_tip = acct_text
-            acct = QTableWidgetItem(acct_text)
-            acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            acct.setForeground(Qt.GlobalColor.white)
-            acct.setToolTip(f"上游账号：{acct_tip}")
-            table.setItem(row, 3, acct)
-
-            # 流量列(4)：可点击设置配额
-            flow_btn = QPushButton(traffic)
-            flow_btn.setProperty("compact", True)
-            flow_btn.setToolTip("点击设置流量配额")
-            flow_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_quota(a, node))
-            table.setCellWidget(row, 4, flow_btn)
-
-            # 到期列(6)：可点击设置时长
-            exp_btn = QPushButton(countdown)
-            exp_btn.setProperty("compact", True)
-            exp_btn.setToolTip(f"点击设置到期时间\n当前: {ce or '不过期'}")
-            if "已过期" in countdown or "已到期" in countdown:
-                exp_btn.setStyleSheet("color:#ff453a;")
-            exp_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_expiry(a, node))
-            table.setCellWidget(row, 6, exp_btn)
-
-            op_w = QWidget()
-            op_lay = QHBoxLayout(op_w)
-            op_lay.setContentsMargins(0, 0, 0, 0)
-            op_lay.setSpacing(6)
-            manage = QPushButton("管理IP")
-            manage.setProperty("compact", True)
-            manage.setFixedSize(64, 32)
-            manage.clicked.connect(lambda _=False, a=a: self._manage_ips(a))
-            op_lay.addWidget(manage)
-            share = QPushButton("复制节点")
-            share.setProperty("compact", True)
-            share.setFixedSize(84, 32)
-            share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
-            op_lay.addWidget(share)
-            recycle = QPushButton("回收")
-            recycle.setProperty("compact", True)
-            recycle.setFixedSize(56, 32)
-            recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
-            op_lay.addWidget(recycle)
-            table.setCellWidget(row, 7, op_w)
-
+            self._render_line(table, row, a)
         self._suppress = False
 
         btns = QDialogButtonBox()
@@ -1832,6 +1735,122 @@ class _UserLinesDialog(SizedDialog):
         close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(btns)
+
+    def _render_line(self, table, row: int, a: dict) -> None:
+        """渲染线路明细的一行（__init__ 与 _reload 复用）。"""
+        table.setRowHeight(row, 44)  # 显式行高，按钮垂直完整
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
+        creds = node.get("_creds", {}) or {}
+        n_cands = len(creds.get("candidates") or [])
+        type_text = f"合并 {n_cands} 个" if n_cands > 1 else "独立"
+        exit_ip = node.get("ip", "") or node.get("host", "")
+        quota = float(a.get("quota_gb") or 0)
+        used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
+        if quota > 0:
+            traffic = f"已用 {_fmt_flow(used)} / {_fmt_flow(quota)}"
+        else:
+            traffic = f"已用 {_fmt_flow(used)}"
+        full_assign = a.get("created_at", "") or ""
+        try:
+            adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
+            if adt.tzinfo is not None:
+                adt = adt.astimezone()
+            assign_time = adt.strftime("%m-%d %H:%M")
+        except Exception:
+            assign_time = "-"
+        cands2 = creds.get("candidates") or []
+        act2 = int(creds.get("active_idx", 0) or 0)
+        ip_exp2 = ""
+        if len(cands2) > 1 and act2 < len(cands2):
+            ip_exp2 = (cands2[act2].get("expiry") or "").strip()
+        ce = (ip_exp2 if len(cands2) > 1 else "") or node.get("client_expiry", "") or ""
+        countdown = _fmt_countdown(ce)
+
+        for col, text in zip([1, 2, 5], [type_text, exit_ip, assign_time]):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setForeground(Qt.GlobalColor.white)
+            table.setItem(row, col, item)
+
+        name_item = QTableWidgetItem(name)
+        name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_item.setForeground(Qt.GlobalColor.white)
+        name_item.setData(Qt.ItemDataRole.UserRole, str(a.get("resource_id", "")))
+        name_item.setFlags(name_item.flags() | Qt.ItemFlag.ItemIsEditable)
+        name_item.setToolTip("双击编辑名称（复制节点/二维码/协议链接跟随）")
+        table.setItem(row, 0, name_item)
+
+        cands_acct = (node.get("_creds", {}) or {}).get("candidates") or []
+        acct_set = {c.get("ws_account") for c in cands_acct if c.get("ws_account")}
+        if len(acct_set) > 1:
+            acct_text = f"多账号({len(acct_set)})"
+            acct_tip = "、".join(sorted(acct_set))
+        else:
+            acct_text = (next(iter(acct_set)) if acct_set else "") or node.get("ws_account") or webshare.default_account_name()
+            acct_tip = acct_text
+        acct = QTableWidgetItem(acct_text)
+        acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        acct.setForeground(Qt.GlobalColor.white)
+        acct.setToolTip(f"上游账号：{acct_tip}")
+        table.setItem(row, 3, acct)
+
+        flow_btn = QPushButton(traffic)
+        flow_btn.setProperty("compact", True)
+        flow_btn.setToolTip("点击设置流量配额")
+        flow_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_quota(a, node))
+        table.setCellWidget(row, 4, flow_btn)
+
+        exp_btn = QPushButton(countdown)
+        exp_btn.setProperty("compact", True)
+        exp_btn.setToolTip(f"点击设置到期时间\n当前: {ce or '不过期'}")
+        if "已过期" in countdown or "已到期" in countdown:
+            exp_btn.setStyleSheet("color:#ff453a;")
+        exp_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_expiry(a, node))
+        table.setCellWidget(row, 6, exp_btn)
+
+        op_w = QWidget()
+        op_lay = QHBoxLayout(op_w)
+        op_lay.setContentsMargins(0, 0, 0, 0)
+        op_lay.setSpacing(6)
+        manage = QPushButton("管理IP")
+        manage.setProperty("compact", True)
+        manage.setFixedSize(64, 32)
+        manage.clicked.connect(lambda _=False, a=a: self._manage_ips(a))
+        op_lay.addWidget(manage)
+        share = QPushButton("复制节点")
+        share.setProperty("compact", True)
+        share.setFixedSize(84, 32)
+        share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
+        op_lay.addWidget(share)
+        recycle = QPushButton("回收")
+        recycle.setProperty("compact", True)
+        recycle.setFixedSize(56, 32)
+        recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
+        op_lay.addWidget(recycle)
+        table.setCellWidget(row, 7, op_w)
+
+    def _reload(self) -> None:
+        """保存/替换后重新加载线路数据并重建表格（修复「外面还是旧 IP」）。"""
+        try:
+            assigns = api_client.list_all_assignments().get("assignments", [])
+        except Exception:
+            return
+        uid = str(self._u.get("user_id", ""))
+        self._u["lines"] = [x for x in assigns if str(x.get("user_id", "")) == uid]
+        lines = self._u.get("lines", [])
+        self._suppress = True
+        self._table.setRowCount(0)
+        self._table.setRowCount(len(lines))
+        for row, a in enumerate(lines):
+            self._render_line(self._table, row, a)
+        self._suppress = False
 
     def _on_line_name_changed(self, item: QTableWidgetItem) -> None:
         """线路名称双击编辑后：同步 config.relays + D1 node_data.name（复制节点/二维码跟随）。"""
@@ -1945,8 +1964,9 @@ class _UserLinesDialog(SizedDialog):
         if a.get("resource_type") != "relay":
             QMessageBox.information(self, "提示", "只有中转线路支持管理 IP。")
             return
-        dlg = _ManageIpsDialog(self._page, self._u, a)
+        dlg = _ManageIpsDialog(self._page, self._u, a, on_saved=self._reload)
         dlg.exec()
+        self._reload()
         self._page.refresh()
 
     def _save_col_widths(self, *args) -> None:
