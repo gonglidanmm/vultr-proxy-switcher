@@ -1444,6 +1444,7 @@ class WebsharePage(QWidget):
                         self._selected[ip_key] = (ip_type, orig_i)
                     else:
                         self._selected.pop(ip_key, None)
+                    self._update_selected_label()
             return
         if item.column() != _NOTE_COL:
             return
@@ -1578,15 +1579,20 @@ class WebsharePage(QWidget):
                 for (ip_type, idx), s in zip(checked, settings):
                     per_ip_settings[(ip_type, idx)] = s
         added = 0
+        skipped = 0  # 跳过已生成/越界的 IP 数
         # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
         _base_seq = sum(1 for r in relays if r.get("entry_domain") == entry_domain)
         for ip_type, idx in checked:
             pool = self._dc if ip_type == "dc" else self._res
+            if not (0 <= idx < len(pool)):
+                skipped += 1
+                continue
             p = pool[idx]
             host = p.get("proxy_address") or "p.webshare.io"
             port = int(p.get("port", 0))
             user = p.get("username", "")
             if (host, port, user) in seen:
+                skipped += 1
                 continue
             country = p.get("country_code", "")
             city = p.get("city_name", "")
@@ -1676,10 +1682,16 @@ class WebsharePage(QWidget):
         self._load_servers()
         if added:
             self._sync_entry_dns(entry_domain, server_id)
-            self._set_status(f"已生成 {added} 个节点，正在部署到服务器…", loading=True)
+            msg = f"已生成 {added} 个节点"
+            if skipped:
+                msg += f"，跳过 {skipped} 个已存在的"
+            self._set_status(msg + "，正在部署到服务器…", loading=True)
             self._apply()  # 生成后自动部署，一步到位
         else:
-            self._set_status("选中的 IP 都已生成过，无新增", warn=True)
+            if skipped:
+                self._set_status(f"选中的 {skipped} 个 IP 都已生成过，无新增", warn=True)
+            else:
+                self._set_status("没有可生成的 IP", warn=True)
 
     def _sync_entry_dns(self, entry_domain: str, server_id: str) -> None:
         """入口域名 DNS 指向前置服务器 IP（失败重试 3 次 + 明确告警，不静默失败）。"""
