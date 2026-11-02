@@ -1490,12 +1490,15 @@ class _UserLinesDialog(SizedDialog):
             table.setColumnWidth(7, 220)  # 操作（管理IP + 复制节点 + 回收）
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.itemChanged.connect(self._on_line_name_changed)
+        self._suppress = False
         self._table = table
         _hdr.sectionResized.connect(self._save_col_widths)  # 拖列宽实时持久化
         layout.addWidget(table, 1)
 
+        self._suppress = True
         for row, a in enumerate(lines):
             table.setRowHeight(row, 44)  # 显式行高，按钮垂直完整
             node = a.get("node_data", {}) or {}
@@ -1533,12 +1536,21 @@ class _UserLinesDialog(SizedDialog):
             ce = (ip_exp2 if len(cands2) > 1 else "") or node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
-            # 只读列：线路名称(0)/类型(1)/出口IP(2)/分配时间(5)
-            for col, text in zip([0, 1, 2, 5], [name, type_text, exit_ip, assign_time]):
+            # 只读列：类型(1)/出口IP(2)/分配时间(5)
+            for col, text in zip([1, 2, 5], [type_text, exit_ip, assign_time]):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setForeground(Qt.GlobalColor.white)
                 table.setItem(row, col, item)
+
+            # 线路名称(0)：可双击编辑（编辑后同步 config.relays + D1）
+            name_item = QTableWidgetItem(name)
+            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_item.setForeground(Qt.GlobalColor.white)
+            name_item.setData(Qt.ItemDataRole.UserRole, str(a.get("resource_id", "")))
+            name_item.setFlags(name_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            name_item.setToolTip("双击编辑名称（复制节点/二维码/协议链接跟随）")
+            table.setItem(row, 0, name_item)
 
             # 上游账号(3)：该 IP 所属的 webshare 账号
             acct = QTableWidgetItem(node.get("ws_account") or webshare.default_account_name())
@@ -1584,12 +1596,35 @@ class _UserLinesDialog(SizedDialog):
             op_lay.addWidget(recycle)
             table.setCellWidget(row, 7, op_w)
 
+        self._suppress = False
+
         btns = QDialogButtonBox()
         edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
         edit.clicked.connect(self._edit_user)
         close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(btns)
+
+    def _on_line_name_changed(self, item: QTableWidgetItem) -> None:
+        """线路名称双击编辑后：同步 config.relays + D1 node_data.name（复制节点/二维码跟随）。"""
+        if getattr(self, "_suppress", False):
+            return
+        if item.column() != 0:
+            return
+        rid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        text = item.text().strip()
+        if not rid or not text:
+            return
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                r["name"] = text
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.rename_assignment(rid, text)
+        except Exception:
+            pass
 
     def _edit_user(self) -> None:
         user = {

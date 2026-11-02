@@ -767,13 +767,18 @@ class NodesPage(QWidget):
             config.set_value("webshare_notes", notes)
             return
         if col == 2:
-            # 名称：写 relay 的 name（key = relay id）
+            # 名称：写 relay 的 name（key = relay id）+ 同步 D1 node_data.name
             relays = config.get("relays", [])
             for r in relays:
                 if r["id"] == key:
                     r["name"] = text
                     break
             config.set_value("relays", relays)
+            # 同步已分配的 node_data.name（客户端/线路明细/复制节点跟随）
+            try:
+                api_client.rename_assignment(str(key), text)
+            except Exception:
+                pass
         else:
             # 备注：写 webshare_notes（共用，key = host:port）
             notes = config.get("webshare_notes", {})

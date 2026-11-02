@@ -140,6 +140,34 @@ def unassign(user_id: int, resource_type: str, resource_id: str) -> dict:
     })
 
 
+def rename_assignment(resource_id: str, new_name: str) -> int:
+    """把已分配的 relay 的 node_data.name 更新为新名称（客户端/线路明细/复制节点跟随）。
+
+    返回更新条数。仅改 node_data.name，不动 used_gb / client_expiry / quota_gb。
+    """
+    updated = 0
+    data = list_all_assignments()
+    for a in data.get("assignments", []):
+        if a.get("resource_type") != "relay":
+            continue
+        if str(a.get("resource_id", "")) != str(resource_id):
+            continue
+        nd = a.get("node_data") or {}
+        if isinstance(nd, str):
+            try:
+                nd = json.loads(nd)
+            except Exception:
+                nd = {}
+        nd["name"] = new_name
+        quota = a.get("quota_gb")
+        assign(
+            int(a["user_id"]), "relay", str(resource_id), nd,
+            quota_gb=float(quota) if quota else None,
+        )
+        updated += 1
+    return updated
+
+
 def list_resource_assignments(resource_type: str, resource_id: str) -> dict:
     """查询某个资源（vultr）分配给了哪些用户（含用户名/备注/分配时间）。"""
     from urllib.parse import quote
