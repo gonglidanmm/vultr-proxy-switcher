@@ -67,7 +67,6 @@ QPushButton[compact="true"] { padding: 5px 10px; font-size: 12px; }
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; padding: 7px 10px; color: #f2f2f7;
-    min-height: 38px;
 }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #0a84ff; }
 QComboBox QAbstractItemView { background-color: #2c2c2e; border: 1px solid #3a3a3c; selection-background-color: #0a84ff; }
