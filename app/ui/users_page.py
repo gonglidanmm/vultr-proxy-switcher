@@ -956,7 +956,7 @@ class _ManageIpsDialog(SizedDialog):
     _default_h = 460
     """管理某条线路的候选 IP：添加/删除/禁用/设为当前/改配额/改到期。"""
 
-    COLS = ["上游IP", "账号", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
+    COLS = ["上游IP", "上游账号", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
 
     def __init__(self, page, u: dict, line: dict) -> None:
         super().__init__(page)

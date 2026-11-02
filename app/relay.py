@@ -321,7 +321,14 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "password": relay.get("password", ""),
         "ws_account": relay.get("ws_account", ""),
     }
-    candidates = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [upstream])]
+    cands = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [])]
+    if not cands:
+        candidates = [norm_candidate(upstream)]
+    elif cands[0].get("host") != relay.get("host"):
+        # candidate_upstreams 缺主 IP（历史替换操作遗留），补主 IP 为 candidates[0]
+        candidates = [norm_candidate(upstream)] + cands
+    else:
+        candidates = cands
     active_idx = int(relay.get("active_upstream_idx", 0) or 0)
 
     return {
