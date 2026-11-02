@@ -299,6 +299,12 @@ def get_replacement_status(api_key: str, plan_id: int, replacement_id: int) -> d
         raise WebshareError(detail.get("detail") or detail.get("error") or f"HTTP {e.code}", e.code)
 
 
+def list_replaced_proxies(api_key: str) -> list[dict]:
+    """列出被替换的代理（旧 IP → 新 IP），用于标记替换成功的新 IP。"""
+    data = _get(api_key, "/proxy/list/replaced/")
+    return data.get("results", []) or []
+
+
 def load_subscription(api_key: str) -> dict:
     """轻量：只拉订阅信息（plans + subscription + 每 plan 流量统计），不拉代理列表。
 

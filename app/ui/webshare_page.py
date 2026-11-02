@@ -1020,8 +1020,15 @@ class WebsharePage(QWidget):
                 score_item = QTableWidgetItem("-")
                 score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             table.setItem(row, 9, score_item)
-            # 标记列：回收过的 IP 显示「回归」徽章（没回收过留空）
-            if ip_key in returned_ips:
+            # 标记列：替换成功的 IP 显示「替换」徽章，回收过的显示「回归」徽章
+            replaced_ips = config.get("webshare_replaced", {}) or {}
+            if ip_key in replaced_ips:
+                badge = QLabel("替换")
+                badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                badge.setStyleSheet("background:#0a84ff; color:#ffffff; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
+                badge.setToolTip(f"替换时间：{replaced_ips.get(ip_key, '')}")
+                table.setCellWidget(row, 8, badge)
+            elif ip_key in returned_ips:
                 badge = QLabel("回归")
                 badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 badge.setStyleSheet("background:#f5c542; color:#1a1a1a; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
@@ -1382,11 +1389,29 @@ class WebsharePage(QWidget):
     def _on_replaced(self, res) -> None:
         if res and res[0] == "ok":
             self._set_status(f"替换成功：新 IP 已生效", ok=True)
+            self._mark_replaced_ips()
             self.refresh()  # 刷新列表，显示新 IP
         else:
             self._set_status(f"替换失败：{res[1] if res else '未知错误'}", warn=True)
             self._fill(self.dc_table, self._dc, "dc")
             self._fill(self.res_table, self._res, "res")
+
+    def _mark_replaced_ips(self) -> None:
+        """替换成功后，记录新 IP（replaced_with）到 webshare_replaced，列表标记「替换」。"""
+        api_key = self.account_combo.currentData() or ""
+        if not api_key:
+            return
+        try:
+            recs = webshare.list_replaced_proxies(api_key)
+        except Exception:
+            return
+        replaced = dict(config.get("webshare_replaced", {}) or {})
+        for rec in recs[:10]:  # 最近 10 条
+            new_ip = rec.get("replaced_with", "")
+            new_port = rec.get("replaced_with_port", "")
+            if new_ip:
+                replaced[f"{new_ip}:{new_port}"] = str(rec.get("created_at", ""))[:19]
+        config.set_value("webshare_replaced", replaced)
 
     def _item(self, table: DragTableWidget, row: int, col: int, text: str) -> None:
         it = QTableWidgetItem(str(text))

@@ -80,6 +80,7 @@ DEFAULTS: dict = {
     "webshare_dc_order": [],          # webshare 机房列表拖拽排序（proxy_address:port 列表）
     "webshare_res_order": [],         # webshare 住宅列表拖拽排序
     "webshare_notes": {},             # webshare IP 备注（ip_key -> 备注文本）
+    "webshare_replaced": {},          # webshare 替换成功的新 IP（ip_key -> 替换时间）
     "nodes_col_widths": {},           # 中转节点列表列宽
     "nodes_order": [],                # 中转节点列表拖拽排序（relay id 列表）
 }
