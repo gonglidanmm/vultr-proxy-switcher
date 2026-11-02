@@ -1513,7 +1513,10 @@ class WebsharePage(QWidget):
             date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
             dom_prefix = (entry_domain or "").split(".")[0]
             seq_str = f"{_base_seq + added + 1:02d}"
-            node_type = "机房" if ip_type == "dc" else "住宅"
+            if merge_candidates:
+                node_type = f"IP{len(merge_candidates)}个"
+            else:
+                node_type = "机房" if ip_type == "dc" else "住宅"
             node_label = f"{node_type}({country_cn}-{city_cn})" if city_cn else f"{node_type}({country_cn})"
             name = f"{dom_prefix}-({date_str})-{node_label}-{seq_str}"
             # 合并生成：名称先放进文本框可手动修改，确认后应用到中转节点
