@@ -637,7 +637,7 @@ class UsersPage(QWidget):
         relay = next((r for r in relays if str(r.get("id", "")) == str(relay_id)), None)
         recycled = config.get("recycled_relays", []) or []
         if relay and not any(str(x.get("id", "")) == str(relay_id) for x in recycled):
-            recycled.append({
+            entry = {
                 "id": str(relay_id),
                 "host": relay.get("host", ""),
                 "port": relay.get("port", ""),
@@ -645,7 +645,11 @@ class UsersPage(QWidget):
                 "ip_type": relay.get("ip_type", "dc"),
                 "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "recycled_from_user": username,
-            })
+            }
+            cands = relay.get("candidate_upstreams") or []
+            if cands:
+                entry["candidate_upstreams"] = cands  # 合并线路：候选 IP 一起进冷却，避免回归误选中
+            recycled.append(entry)
             config.set_value("recycled_relays", recycled)
         config.set_value("relays", [r for r in relays if str(r.get("id", "")) != str(relay_id)])
 

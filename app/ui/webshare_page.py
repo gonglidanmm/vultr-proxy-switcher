@@ -760,7 +760,11 @@ class WebsharePage(QWidget):
             if cands:
                 for c in cands:
                     self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
-        self._recycled_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("recycled_relays", []) or []}
+        self._recycled_map = {}
+        for r in config.get("recycled_relays", []) or []:
+            self._recycled_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._recycled_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._server_ip_map = {sid: (ip, name) for sid, ip, name in self._servers}
         # 官网返回顺序（取消中转的 IP 按此插回，不套用拖拽顺序）
         self._official_order = {
@@ -846,10 +850,19 @@ class WebsharePage(QWidget):
         recycled = config.get("recycled_relays", []) or []
         returned = config.get("returned_ips", {}) or {}
         total_ip = len(self._dc) + len(self._res)
-        relayed = len({f"{r.get('host','')}:{r.get('port','')}" for r in relays})
-        recycled_cnt = len({f"{r.get('host','')}:{r.get('port','')}" for r in recycled})
+        def _count_ip(lst) -> int:
+            """中转 IP 数：主 host:port + 候选上游 host:port 去重。"""
+            s = set()
+            for r in lst:
+                s.add(f"{r.get('host','')}:{r.get('port','')}")
+                for c in r.get("candidate_upstreams", []) or []:
+                    s.add(f"{c.get('host','')}:{c.get('port','')}")
+            return len(s)
+
+        relayed = _count_ip(relays)
+        recycled_cnt = _count_ip(recycled)
         returned_cnt = len(returned)
-        unrelayed = total_ip - relayed - recycled_cnt
+        unrelayed = max(0, total_ip - relayed - recycled_cnt)
         if total_ip:
             self.stats_label.setText(
                 f'已中转 <span style="color:#9db8ff">{relayed}</span> · '
