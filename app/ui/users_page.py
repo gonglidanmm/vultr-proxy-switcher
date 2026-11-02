@@ -853,6 +853,61 @@ class _UserDialog(SizedDialog):
         self.accept()
 
 
+class _DurationDialog(SizedDialog):
+    """设置到期时长（分/时/日），转成绝对到期时间。"""
+
+    _size_key = "duration_dialog_size"
+    _default_w = 400
+    _default_h = 200
+
+    def __init__(self, parent, current_expiry: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("设置到期时间")
+        self.expires_at = current_expiry  # 默认保留原值（取消时用）
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        tip = QLabel("设置该 IP 的到期时长（从当前时间起算）")
+        tip.setStyleSheet("color:#98989d;")
+        layout.addWidget(tip)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("时长:"))
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["按天", "按小时", "按分钟"])
+        row.addWidget(self.unit_combo)
+        self.dur_spin = QSpinBox()
+        self.dur_spin.setRange(1, 9999)
+        self.dur_spin.setValue(1)
+        row.addWidget(self.dur_spin)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        btns = QHBoxLayout()
+        no_exp = QPushButton("不过期")
+        no_exp.clicked.connect(self._set_no_expiry)
+        btns.addWidget(no_exp)
+        btns.addStretch(1)
+        ok = QPushButton("确定")
+        ok.clicked.connect(self._ok)
+        btns.addWidget(ok)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+    def _set_no_expiry(self) -> None:
+        self.expires_at = ""
+        self.accept()
+
+    def _ok(self) -> None:
+        unit_idx = self.unit_combo.currentIndex()
+        seconds = self.dur_spin.value() * _UNIT_SECONDS[unit_idx]
+        self.expires_at = _duration_expiry(seconds)
+        self.accept()
+
+
 class _ManageIpsDialog(SizedDialog):
     _size_key = "manage_ips_dialog_size"
     _default_w = 800
@@ -881,7 +936,7 @@ class _ManageIpsDialog(SizedDialog):
         self._line_quota = float(line.get("quota_gb") or 0)
         self._line_expiry = (nd.get("client_expiry") or "").strip()
         self._quota_spins: list = []
-        self._expiry_edits: list = []
+        self._expiry_btns: list = []
         self._toggle_btns: list = []
         self._set_btns: list = []
 
@@ -903,7 +958,7 @@ class _ManageIpsDialog(SizedDialog):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        persist_col_widths(self.table, "manage_ips_col_widths", [150, 90, 80, 160, 70, 50, 210])
+        persist_col_widths(self.table, "manage_ips_col_widths", [150, 90, 80, 160, 70, 50, 250])
         layout.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -946,7 +1001,7 @@ class _ManageIpsDialog(SizedDialog):
     def _build_rows(self) -> None:
         self.table.setRowCount(len(self._cands))
         self._quota_spins.clear()
-        self._expiry_edits.clear()
+        self._expiry_btns.clear()
         self._toggle_btns.clear()
         self._set_btns.clear()
         for i, c in enumerate(self._cands):
@@ -969,13 +1024,16 @@ class _ManageIpsDialog(SizedDialog):
             used_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             used_it.setForeground(Qt.GlobalColor.white)
             self.table.setItem(i, 2, used_it)
-            # 到期
-            e = QLineEdit()
-            # 预填：IP 级独立值优先，否则继承线路级到期
-            e.setText((c.get("expiry") or self._line_expiry or "").strip())
-            e.setPlaceholderText("空=不过期")
-            self.table.setCellWidget(i, 3, e)
-            self._expiry_edits.append(e)
+            # 到期（倒计时按钮，点击重新设置时长）
+            exp = (c.get("expiry") or self._line_expiry or "").strip()
+            countdown = _fmt_countdown(exp) if exp else "不过期"
+            exp_btn = QPushButton(countdown)
+            exp_btn.setProperty("compact", True)
+            exp_btn.setFixedHeight(30)
+            exp_btn.setToolTip(f"到期时间：{exp or '不过期'}（点击重新设置）")
+            exp_btn.clicked.connect(lambda _=False, idx=i: self._edit_expiry(idx))
+            self.table.setCellWidget(i, 3, exp_btn)
+            self._expiry_btns.append(exp_btn)
             # 状态
             st_txt, st_color = self._ip_status(c)
             st_it = QTableWidgetItem(st_txt)
@@ -1004,6 +1062,12 @@ class _ManageIpsDialog(SizedDialog):
             tog.clicked.connect(lambda _=False, idx=i: self._toggle(idx))
             op_lay.addWidget(tog)
             self._toggle_btns.append(tog)
+            replace_btn = QPushButton("替换")
+            replace_btn.setProperty("compact", True)
+            replace_btn.setFixedSize(52, 30)
+            replace_btn.setToolTip("从 webshare 未中转列表选一个 IP 替换当前 IP")
+            replace_btn.clicked.connect(lambda _=False, idx=i: self._replace_ip(idx))
+            op_lay.addWidget(replace_btn)
             del_btn = QPushButton("删除")
             del_btn.setProperty("compact", True)
             del_btn.setFixedSize(52, 30)
@@ -1019,12 +1083,10 @@ class _ManageIpsDialog(SizedDialog):
         )
 
     def _collect(self) -> None:
-        """把表格里的配额/到期写回 self._cands。"""
+        """把表格里的配额写回 self._cands（到期已存在 self._cands[i]['expiry']，由倒计时按钮维护）。"""
         for i in range(len(self._cands)):
             if i < len(self._quota_spins):
                 self._cands[i]["quota_gb"] = self._quota_spins[i].value()
-            if i < len(self._expiry_edits):
-                self._cands[i]["expiry"] = self._expiry_edits[i].text().strip()
 
     def _refresh_after_edit(self) -> None:
         """编辑后刷新状态列 + 激活列 + 按钮文字（增量，不重建）。"""
@@ -1063,6 +1125,67 @@ class _ManageIpsDialog(SizedDialog):
             self._active_idx -= 1
         elif self._active_idx >= len(self._cands):
             self._active_idx = 0
+        self._build_rows()
+
+    def _replace_ip(self, idx: int) -> None:
+        """替换指定索引的 IP：从 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
+        self._collect()
+        api_key = config.get("webshare_api_key", "")
+        if not api_key:
+            QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
+            return
+        try:
+            lists = webshare.load_lists(api_key)
+        except Exception as e:
+            QMessageBox.warning(self, "拉取失败", str(e))
+            return
+        relays = config.get("relays", []) or []
+        used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
+        recycled = config.get("recycled_relays", []) or []
+        recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
+        cur_hosts = {c.get("host") for c in self._cands}
+        available = []
+        for pool in (lists.get("proxy_servers", []), lists.get("static_residential", [])):
+            for p in pool:
+                host = p.get("proxy_address") or "p.webshare.io"
+                key = (host, int(p.get("port", 0) or 0))
+                if key in used_keys and host not in cur_hosts:
+                    continue
+                if key in recycled_keys:
+                    continue
+                if host in cur_hosts:
+                    continue
+                available.append(p)
+        if not available:
+            QMessageBox.information(self, "无可用 IP", "没有可替换的 IP（未中转且不在冷却中的）。")
+            return
+        dlg = _IpPickerDialog(self, available, single=True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        items = dlg.selected()
+        if not items:
+            QMessageBox.information(self, "未选择", "请勾选一个要替换的 IP。")
+            return
+        item = items[0]
+        p = item["p"]
+        self._cands[idx]["host"] = p.get("proxy_address") or "p.webshare.io"
+        self._cands[idx]["port"] = int(p.get("port", 0) or 0)
+        self._cands[idx]["user"] = p.get("username", "")
+        self._cands[idx]["password"] = p.get("password", "")
+        self._cands[idx]["quota_gb"] = item["quota_gb"]
+        self._cands[idx]["expiry"] = item["expiry"]
+        self._cands[idx]["used_gb"] = 0
+        self._cands[idx]["enabled"] = True
+        self._build_rows()
+
+    def _edit_expiry(self, idx: int) -> None:
+        """点击到期倒计时 → 弹时长设置，重新设置该 IP 的到期时间。"""
+        self._collect()
+        cur = self._cands[idx].get("expiry", "") or ""
+        dlg = _DurationDialog(self, cur)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._cands[idx]["expiry"] = dlg.expires_at
         self._build_rows()
 
     def _add_ip(self) -> None:
@@ -1151,9 +1274,10 @@ class _IpPickerDialog(SizedDialog):
     _default_h = 480
     """从 webshare IP 列表多选要添加的候选 IP，每个 IP 独立设置配额 + 使用时长（分/时/日）。"""
 
-    def __init__(self, parent, available: list[dict]) -> None:
+    def __init__(self, parent, available: list[dict], single: bool = False) -> None:
         super().__init__(parent)
-        self.setWindowTitle("选择要添加的 IP")
+        self._single = single
+        self.setWindowTitle("选择要替换的 IP" if single else "选择要添加的 IP")
         self.setMinimumSize(820, 480)
         self._available = available
         self._checks: list = []
@@ -1230,11 +1354,22 @@ class _IpPickerDialog(SizedDialog):
             self._dur_spins.append(d)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText("添加")
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("替换" if single else "添加")
         btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+        if single:
+            self.table.itemChanged.connect(self._on_item_changed_single)
+
+    def _on_item_changed_single(self, item) -> None:
+        """单选模式：勾选一个后自动取消其他勾选。"""
+        if item.column() == 0 and item.checkState() == Qt.CheckState.Checked:
+            for i in range(self.table.rowCount()):
+                if i != item.row():
+                    chk = self._checks[i]
+                    if chk.checkState() == Qt.CheckState.Checked:
+                        chk.setCheckState(Qt.CheckState.Unchecked)
 
     def _apply_all(self) -> None:
         q = self.uni_quota.value()
