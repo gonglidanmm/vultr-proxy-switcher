@@ -509,9 +509,34 @@ async function switchResource(request, env, user) {
       return json({ error: "该线路只有 1 个 IP，无候选可切换", no_candidate: true }, 400);
     }
     const active = Number(creds.active_idx) || 0;
-    // 支持指定候选索引（弹窗指定切换）；默认顺序轮换
+    // 候选可用性判断：禁用/到期/流量用尽 → 不可切
+    const nowKey = bjNow().slice(0, 16);
+    const isUsable = (c) => {
+      if (!c || c.enabled === false) return false;
+      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 16);
+      if (expKey && expKey < nowKey) return false;
+      const q = Number(c.quota_gb) || 0;
+      const u = Number(c.used_gb) || 0;
+      if (q > 0 && u >= q) return false;
+      return true;
+    };
+    // 支持指定候选索引（弹窗指定切换）；默认顺序轮换（跳过禁用/到期/用尽）
     const want = (body.target_index !== undefined && body.target_index !== null) ? Number(body.target_index) : -1;
-    const next = (want >= 0 && want < candidates.length) ? want : (active + 1) % candidates.length;
+    let next = -1;
+    if (want >= 0 && want < candidates.length) {
+      if (!isUsable(candidates[want])) {
+        return json({ error: "该 IP 已禁用/到期/流量用尽，无法切换", no_candidate: true }, 400);
+      }
+      next = want;
+    } else {
+      for (let k = 1; k <= candidates.length; k++) {
+        const idx = (active + k) % candidates.length;
+        if (isUsable(candidates[idx])) { next = idx; break; }
+      }
+      if (next < 0) {
+        return json({ error: "没有可用的候选 IP（全部禁用/到期/用尽）", no_candidate: true }, 400);
+      }
+    }
     const target = candidates[next];
     const sw = creds.switch || {};
     const sip = sw.server_ip || "";
@@ -543,14 +568,21 @@ async function switchResource(request, env, user) {
     if (!switchOk) {
       return json({ error: switchErr || "切换失败，请稍后重试" }, 502);
     }
-    // 更新 node_data：active_idx 前移 + 当前 upstream + 出口 IP
+    // 切换封账：当前 relay 累计流量记到旧 IP，新 IP 从 0 开始（每个 IP 独立流量）
+    const oldUsed = Number(row.used_gb) || 0;
+    if (candidates[active]) {
+      candidates[active].used_gb = (Number(candidates[active].used_gb) || 0) + oldUsed;
+    }
+    // 更新 node_data：active_idx 前移 + 当前 upstream + 出口 IP + 新基线
+    creds.candidates = candidates;
     creds.active_idx = next;
     creds.upstream = { host: target.host, port: target.port, user: target.user, password: target.password };
+    creds.traffic_raw = undefined;  // 重置流量基线，新 IP 从 0 计
     nd._creds = creds;
     nd.ip = target.host;
     const newCount = (row.switch_date || "") === today ? (row.switch_count || 0) + 1 : 1;
     await env.DB.prepare(
-      "UPDATE assignments SET node_data = ?, switch_count = ?, switch_date = ? WHERE id = ?",
+      "UPDATE assignments SET node_data = ?, used_gb = 0, switch_count = ?, switch_date = ? WHERE id = ?",
     ).bind(JSON.stringify(nd), newCount, today, row.id).run();
     return json({ status: "done", new_ip: target.host });
   }
@@ -1579,6 +1611,47 @@ async function recycleExpiredRelays(env) {
   }
 }
 
+// ---------- 候选 IP 到期/用尽标红禁用（phase 5.5）：只禁用不回收，等管理员处理 ----------
+async function syncCandidateIpStatus(env) {
+  const nowKey = bjNow().slice(0, 16);
+  const rows = await env.DB.prepare(
+    "SELECT id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
+  ).all();
+  let changed = 0;
+  for (const r of rows.results) {
+    let nd = {};
+    try { nd = JSON.parse(r.node_data || "{}"); } catch (_) {}
+    const creds = (nd._creds && typeof nd._creds === "object") ? nd._creds : {};
+    const cands = Array.isArray(creds.candidates) ? creds.candidates : [];
+    const active = Number(creds.active_idx) || 0;
+    const relayUsed = Number(r.used_gb) || 0;
+    let dirty = false;
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i];
+      if (!c || c.enabled === false) continue;  // 已禁用跳过
+      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 16);
+      const expired = !!expKey && expKey < nowKey;
+      // 用尽判断：当前激活 IP 加实时流量，非激活 IP 用封账值
+      let used = Number(c.used_gb) || 0;
+      if (i === active) used += relayUsed;
+      const q = Number(c.quota_gb) || 0;
+      const exhausted = q > 0 && used >= q;
+      if (expired || exhausted) {
+        c.enabled = false;  // 标红禁用，不回收
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      creds.candidates = cands;
+      nd._creds = creds;
+      await env.DB.prepare("UPDATE assignments SET node_data = ? WHERE id = ?")
+        .bind(JSON.stringify(nd), r.id).run();
+      changed++;
+    }
+  }
+  if (changed) console.log(`[candidate-ip] ${changed} 条线路候选 IP 标红禁用（到期/用尽）`);
+}
+
 async function listRecycleLog(env) {
   const rows = await env.DB.prepare("SELECT * FROM recycle_log ORDER BY id DESC LIMIT 200").all();
   return json({ recycle: rows.results || [] });
@@ -1779,6 +1852,11 @@ export default {
       await syncRelayTraffic(env);   // relay 流量同步（先同步，再判用尽）
     } catch (e) {
       console.error("scheduled syncRelayTraffic 异常:", e && e.message ? e.message : e);
+    }
+    try {
+      await syncCandidateIpStatus(env);  // 候选 IP 到期/用尽标红禁用（不回收）
+    } catch (e) {
+      console.error("scheduled syncCandidateIpStatus 异常:", e && e.message ? e.message : e);
     }
     try {
       await recycleExpiredRelays(env);  // relay 到期/用尽自动回收停服务
