@@ -341,6 +341,7 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "ip": relay.get("host", ""),  # 上游出口 IP（客户端「当前 IP」列）
         "domain": entry,
         "ip_type": relay.get("ip_type", "dc"),
+        "ws_account": relay.get("ws_account", ""),  # 上游账号归属（列表「上游账号」列）
         "_creds": {
             "relay_id": relay.get("id", ""),
             "server_id": relay.get("server_id", ""),

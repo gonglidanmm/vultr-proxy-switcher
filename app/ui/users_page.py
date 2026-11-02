@@ -351,9 +351,9 @@ class UsersPage(QWidget):
                 cands = creds.get("candidates") or []
                 act = int(creds.get("active_idx", 0) or 0)
                 ip_exp = ""
-                if cands and act < len(cands):
+                if len(cands) > 1 and act < len(cands):
                     ip_exp = (cands[act].get("expiry") or "").strip()
-                ce = ip_exp or node.get("client_expiry", "") or ""
+                ce = (ip_exp if len(cands) > 1 else "") or node.get("client_expiry", "") or ""
                 if ce:
                     expiries.append(ce)
             min_exp = min(expiries) if expiries else ""
@@ -1524,13 +1524,13 @@ class _UserLinesDialog(SizedDialog):
                 assign_time = adt.strftime("%m-%d %H:%M")
             except Exception:
                 assign_time = "-"
-            # 到期：合并线路用当前激活 IP 的到期（IP 级优先），独立线路用线路级
+            # 到期：合并线路用当前激活 IP 的到期（IP 级优先），独立线路用线路级 client_expiry
             cands2 = creds.get("candidates") or []
             act2 = int(creds.get("active_idx", 0) or 0)
             ip_exp2 = ""
-            if cands2 and act2 < len(cands2):
+            if len(cands2) > 1 and act2 < len(cands2):
                 ip_exp2 = (cands2[act2].get("expiry") or "").strip()
-            ce = ip_exp2 or node.get("client_expiry", "") or ""
+            ce = (ip_exp2 if len(cands2) > 1 else "") or node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
             # 只读列：线路名称(0)/类型(1)/出口IP(2)/分配时间(5)
