@@ -990,10 +990,14 @@ class _ManageIpsDialog(SizedDialog):
         exp = (c.get("expiry") or "").strip()
         if exp:
             try:
+                from datetime import timedelta, timezone as _tz
+                _bj = _tz(timedelta(hours=8))
                 dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
-                if dt.tzinfo is not None:
-                    dt = dt.astimezone()
-                if dt < datetime.now().astimezone():
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_bj)  # 无时区 = 北京时间
+                else:
+                    dt = dt.astimezone(_bj)
+                if dt < datetime.now(_bj):
                     return "已到期", Qt.GlobalColor.red
             except Exception:
                 pass

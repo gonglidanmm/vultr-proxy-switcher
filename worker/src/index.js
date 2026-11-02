@@ -522,10 +522,10 @@ async function switchResource(request, env, user) {
     }
     const active = Number(creds.active_idx) || 0;
     // 候选可用性判断：禁用/到期/流量用尽 → 不可切
-    const nowKey = bjNow().slice(0, 16);
+    const nowKey = bjNow().slice(0, 19);
     const isUsable = (c) => {
       if (!c || c.enabled === false) return false;
-      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 16);
+      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 19);
       if (expKey && expKey < nowKey) return false;
       const q = Number(c.quota_gb) || 0;
       const u = Number(c.used_gb) || 0;
@@ -1625,7 +1625,7 @@ async function recycleExpiredRelays(env) {
 
 // ---------- 候选 IP 到期/用尽标红禁用（phase 5.5）：只禁用不回收，等管理员处理 ----------
 async function syncCandidateIpStatus(env) {
-  const nowKey = bjNow().slice(0, 16);
+  const nowKey = bjNow().slice(0, 19);
   const rows = await env.DB.prepare(
     "SELECT id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
   ).all();
@@ -1641,7 +1641,7 @@ async function syncCandidateIpStatus(env) {
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i];
       if (!c || c.enabled === false) continue;  // 已禁用跳过
-      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 16);
+      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 19);
       const expired = !!expKey && expKey < nowKey;
       // 用尽判断：当前激活 IP 加实时流量，非激活 IP 用封账值
       let used = Number(c.used_gb) || 0;
