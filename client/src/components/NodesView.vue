@@ -241,7 +241,7 @@ const nowTick = ref(Date.now());
 
 function formatExpiry(n) {
   const _ = nowTick.value; // 依赖 nowTick，每秒触发重渲染（驱动倒计时实时刷新）
-  const expiry = String(n.client_expiry || n.expiry || "");
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
   if (!expiry) return { text: "未设置", cls: "cell-muted" };
   // client_expiry 是北京时间字符串（如 2026-11-01 04:59:29），显式按 +08:00 解析，避免客户端时区差异
   const expTime = new Date(expiry.replace(" ", "T") + "+08:00").getTime();
@@ -366,7 +366,7 @@ function flowInfo(n) {
 }
 
 function isSwitchDisabled(n) {
-  const expiry = String(n.client_expiry || n.expiry || "");
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
   const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
   const expired = expTime > 0 && expTime <= Date.now();
   if (expired) return "已到期";
@@ -375,13 +375,13 @@ function isSwitchDisabled(n) {
     const cands = n.candidate_ips || [];
     if (cands.length <= 1) return "单线路";
   }
-  if ((n.resource_type === "vultr" || n.resource_type === "relay") && n.switch_remaining <= 0) return "次数用完";
+  if (n.resource_type === "vultr" && n.switch_remaining <= 0) return "次数用完";
   return "";
 }
 
 function isUpstreamDisabled(n) {
   // 「设为上游」= 本地代理测试，只被到期/流量用尽禁用；不因「单线路」「次数用完」禁用
-  const expiry = String(n.client_expiry || n.expiry || "");
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
   const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
   if (expTime > 0 && expTime <= Date.now()) return "已到期";
   if (n.flow_exhausted) return "流量用尽";

@@ -339,6 +339,7 @@ async function handleMeNodes(env, user) {
       flow_used_gb: effUsed,
       flow_quota_gb: effQuota,
       flow_exhausted: effQuota > 0 && effUsed >= effQuota,
+      eff_expiry: effExpiry,  // 生效到期时间（当前激活 IP 或线路级）
       expired,
       candidate_ips: candidateIps,   // 候选上游 IP 列表（合并线路 >1，单线路 =1）
       candidate_infos: candidateInfos,  // 候选 IP 独立属性（配额/流量/到期/启用）
@@ -504,7 +505,8 @@ async function switchResource(request, env, user) {
     return json({ error: "该节点已到期，无法切换 IP", expired: true }, 403);
   }
 
-  if (count >= limit) {
+  // 切换次数上限只针对 vultr（销毁重建有成本）；relay 候选 IP 轮换无成本，不设限
+  if (!isRelay && count >= limit) {
     return json({ error: `今天切换次数已达上限（${limit} 个 IP/天）`, remaining: 0 }, 429);
   }
 
