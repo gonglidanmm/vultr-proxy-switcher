@@ -1459,24 +1459,25 @@ class _UserLinesDialog(SizedDialog):
         head.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(head)
 
-        table = QTableWidget(len(lines), 7)
-        table.setHorizontalHeaderLabels(["线路名称", "类型", "出口IP", "流量", "分配时间", "到期", "操作"])
+        table = QTableWidget(len(lines), 8)
+        table.setHorizontalHeaderLabels(["线路名称", "类型", "出口IP", "上游账号", "流量", "分配时间", "到期", "操作"])
         _hdr = table.horizontalHeader()
         _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         _hdr.setStretchLastSection(False)
         # 恢复上次调整的列宽（否则用默认）
         _saved_w = config.get("user_lines_col_widths")
-        if _saved_w and len(_saved_w) == 7:
+        if _saved_w and len(_saved_w) == 8:
             for c, w in enumerate(_saved_w):
                 table.setColumnWidth(c, int(w))
         else:
-            table.setColumnWidth(0, 150)  # 线路名称
-            table.setColumnWidth(1, 100)  # 类型（独立/合并 N 个）
-            table.setColumnWidth(2, 130)  # 出口IP
-            table.setColumnWidth(3, 120)  # 流量
-            table.setColumnWidth(4, 110)  # 分配时间
-            table.setColumnWidth(5, 120)  # 到期
-            table.setColumnWidth(6, 220)  # 操作（管理IP + 复制节点 + 回收）
+            table.setColumnWidth(0, 140)  # 线路名称
+            table.setColumnWidth(1, 90)   # 类型（独立/合并 N 个）
+            table.setColumnWidth(2, 120)  # 出口IP
+            table.setColumnWidth(3, 100)  # 上游账号
+            table.setColumnWidth(4, 110)  # 流量
+            table.setColumnWidth(5, 100)  # 分配时间
+            table.setColumnWidth(6, 110)  # 到期
+            table.setColumnWidth(7, 220)  # 操作（管理IP + 复制节点 + 回收）
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1522,28 +1523,35 @@ class _UserLinesDialog(SizedDialog):
             ce = ip_exp2 or node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
-            # 只读列：线路名称(0)/类型(1)/出口IP(2)/分配时间(4)
-            for col, text in zip([0, 1, 2, 4], [name, type_text, exit_ip, assign_time]):
+            # 只读列：线路名称(0)/类型(1)/出口IP(2)/分配时间(5)
+            for col, text in zip([0, 1, 2, 5], [name, type_text, exit_ip, assign_time]):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setForeground(Qt.GlobalColor.white)
                 table.setItem(row, col, item)
 
-            # 流量列(3)：可点击设置配额
+            # 上游账号(3)：该 IP 所属的 webshare 账号
+            acct = QTableWidgetItem(node.get("ws_account") or "默认账号")
+            acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            acct.setForeground(Qt.GlobalColor.white)
+            acct.setToolTip("该 IP 所属的 webshare 上游账号")
+            table.setItem(row, 3, acct)
+
+            # 流量列(4)：可点击设置配额
             flow_btn = QPushButton(traffic)
             flow_btn.setProperty("compact", True)
             flow_btn.setToolTip("点击设置流量配额")
             flow_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_quota(a, node))
-            table.setCellWidget(row, 3, flow_btn)
+            table.setCellWidget(row, 4, flow_btn)
 
-            # 到期列(5)：可点击设置时长
+            # 到期列(6)：可点击设置时长
             exp_btn = QPushButton(countdown)
             exp_btn.setProperty("compact", True)
             exp_btn.setToolTip(f"点击设置到期时间\n当前: {ce or '不过期'}")
             if "已过期" in countdown or "已到期" in countdown:
                 exp_btn.setStyleSheet("color:#ff453a;")
             exp_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_expiry(a, node))
-            table.setCellWidget(row, 5, exp_btn)
+            table.setCellWidget(row, 6, exp_btn)
 
             op_w = QWidget()
             op_lay = QHBoxLayout(op_w)
@@ -1564,7 +1572,7 @@ class _UserLinesDialog(SizedDialog):
             recycle.setFixedSize(56, 32)
             recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
             op_lay.addWidget(recycle)
-            table.setCellWidget(row, 6, op_w)
+            table.setCellWidget(row, 7, op_w)
 
         btns = QDialogButtonBox()
         edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
@@ -1669,7 +1677,7 @@ class _UserLinesDialog(SizedDialog):
         self._page.refresh()
 
     def _save_col_widths(self, *args) -> None:
-        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(7)])
+        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(8)])
 
 
 class _UserDetailDialog(SizedDialog):

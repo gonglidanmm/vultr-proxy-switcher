@@ -38,8 +38,8 @@ from .drag_table import DragTableWidget
 from .persist import SizedDialog, persist_col_widths
 from .workers import CallWorker
 
-_COLS = ["", "#", "名称", "类型", "评分", "前置服务器", "前置域名", "上游出口", "备注", "操作"]
-_COL_DEFAULTS = {0: 30, 1: 35, 2: 110, 3: 45, 4: 130, 5: 110, 6: 150, 7: 125, 8: 85}
+_COLS = ["", "#", "名称", "类型", "评分", "前置服务器", "前置域名", "上游出口", "上游账号", "备注", "操作"]
+_COL_DEFAULTS = {0: 30, 1: 35, 2: 110, 3: 45, 4: 130, 5: 110, 6: 150, 7: 125, 8: 90, 9: 85}
 _OP_COL = len(_COLS) - 1  # 操作列索引
 _SEL_COL = 0              # 勾选列（checkbox，批量分配用）
 
@@ -541,13 +541,19 @@ class NodesPage(QWidget):
             table.setItem(row, 6, domain_item)
             self._item(table, row, 7, upstream)
 
+            # 上游账号（该 IP 来自哪个 webshare 账号）
+            account_item = QTableWidgetItem(r.get("ws_account") or "默认账号")
+            account_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            account_item.setToolTip("该上游 IP 所属的 webshare 账号")
+            table.setItem(row, 8, account_item)
+
             # 备注（共用 webshare_notes，key = host:port，与 webshare-IP 页一致）
             notes = config.get("webshare_notes", {})
             note_item = QTableWidgetItem(notes.get(ip_key, ""))
             note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
             note_item.setToolTip("双击编辑备注（与 webshare-IP 页共用）")
-            table.setItem(row, 8, note_item)
+            table.setItem(row, 9, note_item)
 
             w = QWidget()
             lay = QHBoxLayout(w)
@@ -707,7 +713,7 @@ class NodesPage(QWidget):
         if getattr(table, "_width_key", "") == "nodes_recycle_col_widths":
             if col == 6:  # 回收页备注
                 table.editItem(table.item(row, col))
-        elif col in (2, 8):  # 名称、备注
+        elif col in (2, 9):  # 名称、备注
             table.editItem(table.item(row, col))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -733,7 +739,7 @@ class NodesPage(QWidget):
         if is_recycle:
             if col != 6:  # 回收页只有备注可编辑
                 return
-        elif col not in (2, 8):  # 名称、备注
+        elif col not in (2, 9):  # 名称、备注
             return
         key = item.data(Qt.ItemDataRole.UserRole)
         if not key:
