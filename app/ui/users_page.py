@@ -1191,6 +1191,7 @@ class _IpPickerDialog(SizedDialog):
         self.table = QTableWidget(len(available), 5)
         self.table.setHorizontalHeaderLabels(["", "IP", "配额(GB)", "时长单位", "时长"])
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)  # 行高，控件完整显示
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -1199,6 +1200,7 @@ class _IpPickerDialog(SizedDialog):
         layout.addWidget(self.table, 1)
 
         for i, p in enumerate(available):
+            self.table.setRowHeight(i, 40)  # 显式行高，控件垂直完整
             host = p.get("proxy_address") or "p.webshare.io"
             country = p.get("country_code", "")
             city = p.get("city_name", "")
