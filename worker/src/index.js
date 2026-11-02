@@ -1870,10 +1870,7 @@ export default {
     } catch (e) {
       console.error("scheduled syncCandidateIpStatus 异常:", e && e.message ? e.message : e);
     }
-    try {
-      await recycleExpiredRelays(env);  // relay 到期/用尽自动回收停服务
-    } catch (e) {
-      console.error("scheduled recycleExpiredRelays 异常:", e && e.message ? e.message : e);
-    }
+    // 注：recycleExpiredRelays（线路级到期自动回收）已停用——到期/用尽一律标红禁用，
+    // 等管理员在服务端改到期/流量/替换/加IP后恢复；只有手动「回收」才进回收页。
   },
 };
