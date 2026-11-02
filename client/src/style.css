@@ -290,6 +290,10 @@ body {
 .cand-idx { color: var(--muted); font-size: 13px; min-width: 20px; }
 .cand-ip { flex: 1; text-align: left; }
 .cand-cur { color: var(--accent); font-size: 12px; font-weight: 600; }
+.cand-disabled { opacity: 0.45; cursor: not-allowed; border-color: transparent; }
+.cand-disabled:hover { background: var(--card); }
+.cand-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.cand-badge { color: #ff453a; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .batch-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .batch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .batch-node { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

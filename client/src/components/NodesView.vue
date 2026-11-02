@@ -289,6 +289,44 @@ function candidateTip(n) {
   return "候选 IP（点击指定切换）：\n" + cands.map((ip, i) => `${i + 1}. ${ip}${i === active ? " ← 当前" : ""}`).join("\n");
 }
 
+function candInfo(n, i) {
+  return (n.candidate_infos || [])[i] || {};
+}
+
+function candExpired(info) {
+  const exp = ((info && info.expiry) || "").trim();
+  if (!exp) return false;
+  const expKey = exp.replace("T", " ").slice(0, 16);
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const p = (x) => String(x).padStart(2, "0");
+  const nowKey = `${now.getUTCFullYear()}-${p(now.getUTCMonth() + 1)}-${p(now.getUTCDate())} ${p(now.getUTCHours())}:${p(now.getUTCMinutes())}`;
+  return expKey < nowKey;
+}
+
+function candStatus(n, i) {
+  const info = candInfo(n, i);
+  if (info.enabled === false) return "已禁用";
+  if (candExpired(info)) return "已到期";
+  const q = Number(info.quota_gb) || 0;
+  const u = Number(info.used_gb) || 0;
+  if (q > 0 && u >= q) return "已用尽";
+  return "";
+}
+
+function candFlowText(n, i) {
+  const info = candInfo(n, i);
+  const q = Number(info.quota_gb) || 0;
+  const u = Number(info.used_gb) || 0;
+  const uText = u < 1 ? `${Math.round(u * 1024)}M` : `${u.toFixed(2)}G`;
+  if (q > 0) return `${uText} / ${Math.round(q)}G`;
+  return `已用 ${uText}`;
+}
+
+function candExpiryText(n, i) {
+  const info = candInfo(n, i);
+  return (info.expiry || "").trim() || "不过期";
+}
+
 function openCandidateModal(n) {
   if ((n.candidate_ips || []).length <= 1) return;
   candidateModal.node = n;
@@ -737,13 +775,18 @@ onMounted(() => {
               v-for="(ip, i) in candidateModal.node?.candidate_ips || []"
               :key="i"
               class="cand-item"
-              :class="{ 'cand-active': i === (Number(candidateModal.node?.active_ip_idx) || 0) }"
-              :disabled="switching[candidateModal.node?.resource_id]?.disabled"
+              :class="{
+                'cand-active': i === (Number(candidateModal.node?.active_ip_idx) || 0),
+                'cand-disabled': candDisabled(candidateModal.node, i),
+              }"
+              :disabled="switching[candidateModal.node?.resource_id]?.disabled || candDisabled(candidateModal.node, i)"
               @click="switchToCandidate(candidateModal.node, i)"
             >
               <span class="cand-idx">{{ i + 1 }}</span>
               <span class="cand-ip">{{ ip }}</span>
               <span v-if="i === (Number(candidateModal.node?.active_ip_idx) || 0)" class="cand-cur">当前</span>
+              <span class="cand-meta">{{ candFlowText(candidateModal.node, i) }} · {{ candExpiryText(candidateModal.node, i) }}</span>
+              <span v-if="candStatus(candidateModal.node, i)" class="cand-badge">{{ candStatus(candidateModal.node, i) }}</span>
             </button>
           </div>
         </div>
