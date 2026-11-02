@@ -301,6 +301,11 @@ async function handleMeNodes(env, user) {
       expiry: (c && c.expiry) || "",
       enabled: (c && c.enabled) !== false,
     }));
+    // 当前激活 IP 的独立配额/到期（切换后客户端显示跟着变）
+    const activeInfo = candidateInfos[activeIdx] || {};
+    const ipQuota = Number(activeInfo.quota_gb) || 0;
+    const ipExpiry = (activeInfo.expiry || "").trim();
+    const ipSealed = Number(activeInfo.used_gb) || 0;  // 该 IP 封账流量（切换时累加）
     // 每个「用户↔资源」独立计数，按天重置
     let count = r.switch_count || 0;
     const nodeLimit = r.switch_limit == null ? 0 : Number(r.switch_limit);
@@ -316,7 +321,12 @@ async function handleMeNodes(env, user) {
     const exp = data.expiry || "";
     let eff = exp;
     if (ce && (!eff || ce < eff)) eff = ce;
-    const expired = !!eff && eff < now;
+    // 生效值：IP 有独立配额/到期时，用当前激活 IP 的（切换后客户端显示跟着变）
+    const effQuota = ipQuota > 0 ? ipQuota : quota;
+    const effUsed = ipQuota > 0 ? (ipSealed + (Number(r.used_gb) || 0)) : used;
+    let effExpiry = ipExpiry || eff;
+    if (!ipExpiry && ce && (!effExpiry || ce < effExpiry)) effExpiry = ce;
+    const expired = !!effExpiry && effExpiry < now;
     return {
       resource_type: r.resource_type,
       resource_id: r.resource_id,
@@ -326,9 +336,9 @@ async function handleMeNodes(env, user) {
       created_at: r.created_at || "",  // 真实分配时间（assignments.created_at）
       switch_remaining: Math.max(0, limit - 1 - count),
       switch_limit: limit,
-      flow_used_gb: used,
-      flow_quota_gb: quota,
-      flow_exhausted: quota > 0 && used >= quota,
+      flow_used_gb: effUsed,
+      flow_quota_gb: effQuota,
+      flow_exhausted: effQuota > 0 && effUsed >= effQuota,
       expired,
       candidate_ips: candidateIps,   // 候选上游 IP 列表（合并线路 >1，单线路 =1）
       candidate_infos: candidateInfos,  // 候选 IP 独立属性（配额/流量/到期/启用）
