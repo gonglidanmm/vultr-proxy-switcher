@@ -155,14 +155,15 @@ class SettingsPage(QWidget):
         wc.addWidget(ws_tip)
         self.ws_accounts_table = QTableWidget(0, 2)
         self.ws_accounts_table.setHorizontalHeaderLabels(["账号名", "API 密钥"])
-        self.ws_accounts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.ws_accounts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.ws_accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.ws_accounts_table.horizontalHeader().setStretchLastSection(True)
         self.ws_accounts_table.verticalHeader().setVisible(False)
         self.ws_accounts_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ws_accounts_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ws_accounts_table.setColumnWidth(0, 140)
         self.ws_accounts_table.setMinimumHeight(140)
         self.ws_accounts_table.setMinimumWidth(480)
-        self.ws_accounts_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.ws_accounts_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         wc.addWidget(self.ws_accounts_table)
         ws_btn_row = QHBoxLayout()
         add_ws_btn = QPushButton("添加账号")
@@ -264,10 +265,19 @@ class SettingsPage(QWidget):
         )
         # 向下兼容：保留第一个账号的 key 到旧字段，老代码仍可读
         config.set_value("webshare_api_key", accounts[0]["api_key"] if accounts else "")
-        # 若当前选中账号被删，回退到第一个
+        # 若当前选中账号被改名（编辑账号名），同步 active_account 到新名字；被删则回退第一个
         active = config.get("webshare_active_account", "")
-        if active and not any(a["name"] == active for a in accounts):
-            config.set_value("webshare_active_account", accounts[0]["name"] if accounts else "")
+        if active:
+            matched = False
+            for row in range(self.ws_accounts_table.rowCount()):
+                it = self.ws_accounts_table.item(row, 0)
+                if it and it.data(Qt.ItemDataRole.UserRole) == active:
+                    new_name = it.text().strip()
+                    config.set_value("webshare_active_account", new_name or active)
+                    matched = True
+                    break
+            if not matched and not any(a["name"] == active for a in accounts):
+                config.set_value("webshare_active_account", accounts[0]["name"] if accounts else "")
         self.save_btn.setText("已保存 ✓")
         self.save_btn.setEnabled(False)
 
@@ -291,12 +301,14 @@ class SettingsPage(QWidget):
             row = self.ws_accounts_table.rowCount()
             self.ws_accounts_table.insertRow(row)
             name_item = QTableWidgetItem(a.get("name", ""))
+            name_item.setData(Qt.ItemDataRole.UserRole, a.get("name", ""))
             self.ws_accounts_table.setItem(row, 0, name_item)
             key = a.get("api_key", "")
             masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("•" * min(len(key), 8))
             key_item = QTableWidgetItem(masked)
             key_item.setData(Qt.ItemDataRole.UserRole, key)
-            key_item.setToolTip("双击无法查看完整密钥；如需修改请删除后重新添加")
+            key_item.setToolTip("密钥不可直接编辑；如需修改请删除后重新添加")
+            key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.ws_accounts_table.setItem(row, 1, key_item)
 
     def _add_ws_account(self) -> None:
@@ -307,20 +319,26 @@ class SettingsPage(QWidget):
         key = dlg.key().strip()
         if not key:
             return
+
+        def _mk_key_item(k: str) -> QTableWidgetItem:
+            it = QTableWidgetItem((k[:6] + "…" + k[-4:]) if len(k) > 12 else "•" * min(len(k), 8))
+            it.setData(Qt.ItemDataRole.UserRole, k)
+            it.setToolTip("密钥不可直接编辑；如需修改请删除后重新添加")
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return it
+
         # 重名则覆盖
         for row in range(self.ws_accounts_table.rowCount()):
             if self.ws_accounts_table.item(row, 0) and self.ws_accounts_table.item(row, 0).text() == name:
-                key_item = QTableWidgetItem((key[:6] + "…" + key[-4:]) if len(key) > 12 else "•" * min(len(key), 8))
-                key_item.setData(Qt.ItemDataRole.UserRole, key)
-                self.ws_accounts_table.setItem(row, 1, key_item)
+                self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
                 self.save_btn.setEnabled(True)
                 return
         row = self.ws_accounts_table.rowCount()
         self.ws_accounts_table.insertRow(row)
-        self.ws_accounts_table.setItem(row, 0, QTableWidgetItem(name))
-        key_item = QTableWidgetItem((key[:6] + "…" + key[-4:]) if len(key) > 12 else "•" * min(len(key), 8))
-        key_item.setData(Qt.ItemDataRole.UserRole, key)
-        self.ws_accounts_table.setItem(row, 1, key_item)
+        name_item = QTableWidgetItem(name)
+        name_item.setData(Qt.ItemDataRole.UserRole, name)
+        self.ws_accounts_table.setItem(row, 0, name_item)
+        self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
         self.save_btn.setEnabled(True)
 
     def _del_ws_account(self) -> None:
