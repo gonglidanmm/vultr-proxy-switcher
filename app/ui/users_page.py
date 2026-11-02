@@ -1073,6 +1073,8 @@ class _ManageIpsDialog(QDialog):
             return
         relays = config.get("relays", []) or []
         used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
+        recycled = config.get("recycled_relays", []) or []
+        recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
         cur_hosts = {c.get("host") for c in self._cands}
         available = []
         for pool in (lists.get("proxy_servers", []), lists.get("static_residential", [])):
@@ -1081,22 +1083,28 @@ class _ManageIpsDialog(QDialog):
                 key = (host, int(p.get("port", 0) or 0))
                 if key in used_keys and host not in cur_hosts:
                     continue  # 已中转且不在本线路候选里（属于别的线路）
+                if key in recycled_keys:
+                    continue  # 冷却中（已回收还没回正常列表）
                 if host in cur_hosts:
                     continue  # 已在本线路候选里
                 available.append(p)
         if not available:
-            QMessageBox.information(self, "无可用 IP", "没有可添加的 IP（未中转或未在本线路里的）。")
+            QMessageBox.information(self, "无可用 IP", "没有可添加的 IP（未中转且不在冷却中的）。")
             return
         dlg = _IpPickerDialog(self, available)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        for p in dlg.selected():
+        for item in dlg.selected():
+            p = item["p"]
             self._cands.append({
                 "host": p.get("proxy_address") or "p.webshare.io",
                 "port": int(p.get("port", 0) or 0),
                 "user": p.get("username", ""),
                 "password": p.get("password", ""),
-                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True,
+                "quota_gb": item["quota_gb"],
+                "used_gb": 0,
+                "expiry": item["expiry"],
+                "enabled": True,
             })
         self._build_rows()
 
@@ -1133,22 +1141,58 @@ class _ManageIpsDialog(QDialog):
 
 
 class _IpPickerDialog(QDialog):
-    """从 webshare IP 列表多选要添加的候选 IP。"""
+    """从 webshare IP 列表多选要添加的候选 IP，每个 IP 独立设置配额 + 使用时长（分/时/日）。"""
 
     def __init__(self, parent, available: list[dict]) -> None:
         super().__init__(parent)
         self.setWindowTitle("选择要添加的 IP")
-        self.setMinimumSize(520, 440)
+        self.setMinimumSize(820, 480)
+        self._available = available
+        self._checks: list = []
+        self._quota_spins: list = []
+        self._unit_combos: list = []
+        self._dur_spins: list = []
+
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        tip = QLabel(f"勾选要添加的 IP（共 {len(available)} 个可用）")
+
+        tip = QLabel(f"勾选要添加的 IP，并为每个 IP 设置配额和到期时长（共 {len(available)} 个可用）")
         layout.addWidget(tip)
-        self.table = QTableWidget(len(available), 2)
-        self.table.setHorizontalHeaderLabels(["", "IP"])
+
+        # 统一设置区
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(0)
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一时长:"))
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟"])
+        uni.addWidget(self.uni_unit)
+        self.uni_dur = QSpinBox()
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        uni.addWidget(self.uni_dur)
+        apply_btn = QPushButton("应用到勾选")
+        apply_btn.clicked.connect(self._apply_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        self.table = QTableWidget(len(available), 5)
+        self.table.setHorizontalHeaderLabels(["", "IP", "配额(GB)", "时长单位", "时长"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(1)
         self.table.setColumnWidth(0, 40)
+        self.table.setColumnWidth(2, 90)
+        self.table.setColumnWidth(3, 90)
+        self.table.setColumnWidth(4, 70)
+        layout.addWidget(self.table, 1)
+
         for i, p in enumerate(available):
             host = p.get("proxy_address") or "p.webshare.io"
             country = p.get("country_code", "")
@@ -1157,25 +1201,57 @@ class _IpPickerDialog(QDialog):
             chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             chk.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(i, 0, chk)
+            self._checks.append(chk)
             label = f"{host}:{p.get('port', '')}  ({country} {city})"
             it = QTableWidgetItem(label)
             it.setForeground(Qt.GlobalColor.white)
             self.table.setItem(i, 1, it)
-        layout.addWidget(self.table, 1)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(0)
+            q.setToolTip("0 = 不限流量")
+            self.table.setCellWidget(i, 2, q)
+            self._quota_spins.append(q)
+            u = QComboBox()
+            u.addItems(["按天", "按小时", "按分钟"])
+            self.table.setCellWidget(i, 3, u)
+            self._unit_combos.append(u)
+            d = QSpinBox()
+            d.setRange(1, 9999)
+            d.setValue(1)
+            self.table.setCellWidget(i, 4, d)
+            self._dur_spins.append(d)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.button(QDialogButtonBox.StandardButton.Ok).setText("添加")
         btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
-        self._available = available
+
+    def _apply_all(self) -> None:
+        q = self.uni_quota.value()
+        u_idx = self.uni_unit.currentIndex()
+        d = self.uni_dur.value()
+        for i in range(len(self._checks)):
+            if self._checks[i].checkState() == Qt.CheckState.Checked:
+                self._quota_spins[i].setValue(q)
+                self._unit_combos[i].setCurrentIndex(u_idx)
+                self._dur_spins[i].setValue(d)
 
     def selected(self) -> list[dict]:
         out = []
         for i in range(self.table.rowCount()):
-            chk = self.table.item(i, 0)
-            if chk and chk.checkState() == Qt.CheckState.Checked:
-                out.append(self._available[i])
+            chk = self._checks[i]
+            if chk.checkState() != Qt.CheckState.Checked:
+                continue
+            p = self._available[i]
+            quota = self._quota_spins[i].value()
+            unit_idx = self._unit_combos[i].currentIndex()
+            dur = self._dur_spins[i].value()
+            seconds = dur * _UNIT_SECONDS[unit_idx]
+            expiry = _duration_expiry(seconds)
+            out.append({"p": p, "quota_gb": quota, "expiry": expiry})
         return out
 
 
