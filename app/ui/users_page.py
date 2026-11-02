@@ -1003,6 +1003,12 @@ class _ManageIpsDialog(SizedDialog):
         persist_col_widths(self.table, "manage_ips_col_widths", [150, 90, 80, 160, 70, 50, 250])
         layout.addWidget(self.table, 1)
 
+        # 操作回显（替换/添加/删除的结果提示）
+        self._status = QLabel("")
+        self._status.setTextFormat(Qt.TextFormat.RichText)
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
         btns = QHBoxLayout()
         add_btn = QPushButton("＋ 添加 IP")
         add_btn.setFixedHeight(32)
@@ -1155,23 +1161,36 @@ class _ManageIpsDialog(SizedDialog):
         self._collect()
         self._active_idx = idx
         self._refresh_after_edit()
+        host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已将 {host} 设为当前 IP，点「保存」生效</span>'
+        )
 
     def _toggle(self, idx: int) -> None:
         self._collect()
         self._cands[idx]["enabled"] = not self._cands[idx].get("enabled", True)
         self._refresh_after_edit()
+        c = self._cands[idx]
+        state = "禁用" if not c.get("enabled", True) else "启用"
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已{state} {c.get("host", "")}，点「保存」生效</span>'
+        )
 
     def _remove(self, idx: int) -> None:
         self._collect()
         if len(self._cands) <= 1:
             QMessageBox.warning(self, "无法删除", "至少保留 1 个 IP（删除最后一个请用「回收」）。")
             return
+        removed_host = self._cands[idx].get("host", "")
         del self._cands[idx]
         if self._active_idx > idx:
             self._active_idx -= 1
         elif self._active_idx >= len(self._cands):
             self._active_idx = 0
         self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已删除 {removed_host}，点「保存」生效</span>'
+        )
 
     def _replace_ip(self, idx: int) -> None:
         """替换指定索引的 IP：从 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
@@ -1214,8 +1233,12 @@ class _ManageIpsDialog(SizedDialog):
             return
         item = items[0]
         p = item["p"]
-        self._cands[idx]["host"] = p.get("proxy_address") or "p.webshare.io"
-        self._cands[idx]["port"] = int(p.get("port", 0) or 0)
+        old_host = self._cands[idx].get("host", "")
+        old_port = self._cands[idx].get("port", "")
+        new_host = p.get("proxy_address") or "p.webshare.io"
+        new_port = int(p.get("port", 0) or 0)
+        self._cands[idx]["host"] = new_host
+        self._cands[idx]["port"] = new_port
         self._cands[idx]["user"] = p.get("username", "")
         self._cands[idx]["password"] = p.get("password", "")
         self._cands[idx]["quota_gb"] = item["quota_gb"]
@@ -1223,6 +1246,10 @@ class _ManageIpsDialog(SizedDialog):
         self._cands[idx]["used_gb"] = 0
         self._cands[idx]["enabled"] = True
         self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已将 {old_host}:{old_port} 替换为 '
+            f'{new_host}:{new_port}（配额 {item["quota_gb"]}G，点「保存」生效）</span>'
+        )
 
     def _edit_expiry(self, idx: int) -> None:
         """点击到期倒计时 → 弹时长设置，重新设置该 IP 的到期时间。"""
@@ -1233,6 +1260,10 @@ class _ManageIpsDialog(SizedDialog):
             return
         self._cands[idx]["expiry"] = dlg.expires_at
         self._build_rows()
+        host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已设置 {host} 的到期时间，点「保存」生效</span>'
+        )
 
     def _add_ip(self) -> None:
         self._collect()
@@ -1281,6 +1312,9 @@ class _ManageIpsDialog(SizedDialog):
                 "enabled": True,
             })
         self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已添加 {len(dlg.selected())} 个 IP，点「保存」生效</span>'
+        )
 
     # ---------- 保存 ----------
     def _save(self) -> None:
