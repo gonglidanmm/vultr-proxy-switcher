@@ -306,18 +306,30 @@ class DomainDialog(SizedDialog):
         return f"{sub}.{zone}"
 
 
+def _duration_to_expiry(value: int, unit: str) -> str:
+    """时长(按天/按小时/按分钟) → 北京时间绝对到期时间；「不过期」返回空串。"""
+    if unit == "不过期":
+        return ""
+    from datetime import timedelta, timezone
+
+    seconds = {"按天": 86400, "按小时": 3600, "按分钟": 60}.get(unit, 86400) * value
+    tz = timezone(timedelta(hours=8))
+    return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 class _MergeSettingsDialog(SizedDialog):
     _size_key = "merge_settings_dialog_size"
-    _default_w = 620
+    _default_w = 720
     _default_h = 480
-    """合并线路时，为每个候选 IP 设置独立配额/到期（可一键统一）。"""
+    """合并线路时，为每个候选 IP 设置独立配额/到期（可一键统一，时分天时长设置）。"""
 
     def __init__(self, parent, candidates: list[dict]) -> None:
         super().__init__(parent)
         self.setWindowTitle("合并线路 - 设置每个 IP 的配额/到期")
-        self.setMinimumWidth(620)
-        self._quota_edits: list[QSpinBox] = []
-        self._expiry_edits: list[QLineEdit] = []
+        self.setMinimumWidth(720)
+        self._quota_spins: list[QSpinBox] = []
+        self._dur_spins: list[QSpinBox] = []
+        self._unit_combos: list[QComboBox] = []
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -329,10 +341,14 @@ class _MergeSettingsDialog(SizedDialog):
         self.uni_quota.setRange(0, 1000000)
         self.uni_quota.setValue(0)
         uni.addWidget(self.uni_quota)
-        uni.addWidget(QLabel("统一到期(YYYY-MM-DD HH:MM,空=不过期):"))
-        self.uni_expiry = QLineEdit()
-        self.uni_expiry.setPlaceholderText("留空=不过期")
-        uni.addWidget(self.uni_expiry)
+        uni.addWidget(QLabel("统一到期:"))
+        self.uni_dur = QSpinBox()
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        uni.addWidget(self.uni_dur)
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+        uni.addWidget(self.uni_unit)
         apply_btn = QPushButton("应用到全部")
         apply_btn.clicked.connect(self._apply_all)
         uni.addWidget(apply_btn)
@@ -343,7 +359,7 @@ class _MergeSettingsDialog(SizedDialog):
         grid = QGridLayout()
         grid.addWidget(QLabel("上游 IP"), 0, 0)
         grid.addWidget(QLabel("配额(GB)"), 0, 1)
-        grid.addWidget(QLabel("到期时间"), 0, 2)
+        grid.addWidget(QLabel("到期时长"), 0, 2)
         for i, c in enumerate(candidates):
             host = c.get("host", "") or ""
             grid.addWidget(QLabel(host), i + 1, 0)
@@ -352,11 +368,21 @@ class _MergeSettingsDialog(SizedDialog):
             q.setValue(0)
             q.setToolTip("0 = 不限流量")
             grid.addWidget(q, i + 1, 1)
-            self._quota_edits.append(q)
-            e = QLineEdit()
-            e.setPlaceholderText("空=不过期")
-            grid.addWidget(e, i + 1, 2)
-            self._expiry_edits.append(e)
+            self._quota_spins.append(q)
+            drow = QHBoxLayout()
+            drow.setContentsMargins(0, 0, 0, 0)
+            dspin = QSpinBox()
+            dspin.setRange(1, 9999)
+            dspin.setValue(1)
+            unit = QComboBox()
+            unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+            drow.addWidget(dspin)
+            drow.addWidget(unit)
+            dw = QWidget()
+            dw.setLayout(drow)
+            grid.addWidget(dw, i + 1, 2)
+            self._dur_spins.append(dspin)
+            self._unit_combos.append(unit)
         grid.setColumnStretch(2, 1)
         layout.addLayout(grid)
 
@@ -369,18 +395,21 @@ class _MergeSettingsDialog(SizedDialog):
 
     def _apply_all(self) -> None:
         q = self.uni_quota.value()
-        e = self.uni_expiry.text().strip()
-        for edit in self._quota_edits:
-            edit.setValue(q)
-        for edit in self._expiry_edits:
-            edit.setText(e)
+        d = self.uni_dur.value()
+        u = self.uni_unit.currentText()
+        for spin in self._quota_spins:
+            spin.setValue(q)
+        for dspin, unit in zip(self._dur_spins, self._unit_combos):
+            dspin.setValue(d)
+            unit.setCurrentText(u)
 
     def results(self) -> list[dict]:
-        """返回每个 IP 的 {quota_gb, expiry}。"""
-        return [
-            {"quota_gb": q.value(), "expiry": e.text().strip()}
-            for q, e in zip(self._quota_edits, self._expiry_edits)
-        ]
+        """返回每个 IP 的 {quota_gb, expiry}（expiry 为北京时间绝对时间，不过期=空串）。"""
+        out = []
+        for q, dspin, unit in zip(self._quota_spins, self._dur_spins, self._unit_combos):
+            exp = _duration_to_expiry(dspin.value(), unit.currentText())
+            out.append({"quota_gb": q.value(), "expiry": exp})
+        return out
 
 
 class WebsharePage(QWidget):
