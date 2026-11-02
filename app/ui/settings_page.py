@@ -289,7 +289,8 @@ class SettingsPage(QWidget):
         out = []
         for row in range(self.ws_accounts_table.rowCount()):
             name = (self.ws_accounts_table.item(row, 0).text().strip() if self.ws_accounts_table.item(row, 0) else "")
-            key = self.ws_accounts_table.item(row, 1).data(Qt.ItemDataRole.UserRole) or ""
+            key_item = self.ws_accounts_table.item(row, 1)
+            key = key_item.data(Qt.ItemDataRole.UserRole) if key_item else ""
             if key:
                 out.append({"name": name or f"账号{row + 1}", "api_key": key})
         return out
@@ -344,10 +345,12 @@ class SettingsPage(QWidget):
             it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
             return it
 
+        self._ws_suppress = True
         # 重名则覆盖
         for row in range(self.ws_accounts_table.rowCount()):
             if self.ws_accounts_table.item(row, 0) and self.ws_accounts_table.item(row, 0).text() == name:
                 self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
+                self._ws_suppress = False
                 self._persist_ws_accounts()
                 return
         row = self.ws_accounts_table.rowCount()
@@ -356,6 +359,7 @@ class SettingsPage(QWidget):
         name_item.setData(Qt.ItemDataRole.UserRole, name)
         self.ws_accounts_table.setItem(row, 0, name_item)
         self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
+        self._ws_suppress = False
         self._persist_ws_accounts()
 
     def _del_ws_account(self) -> None:
