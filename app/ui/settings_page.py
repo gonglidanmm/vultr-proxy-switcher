@@ -74,6 +74,7 @@ class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._workers: list[CallWorker] = []
+        self._ws_suppress = False
         self._build()
 
     def _build(self) -> None:
@@ -164,6 +165,7 @@ class SettingsPage(QWidget):
         self.ws_accounts_table.setMinimumHeight(140)
         self.ws_accounts_table.setMinimumWidth(480)
         self.ws_accounts_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self.ws_accounts_table.itemChanged.connect(self._on_ws_item_changed)
         wc.addWidget(self.ws_accounts_table)
         ws_btn_row = QHBoxLayout()
         add_ws_btn = QPushButton("添加账号")
@@ -292,10 +294,17 @@ class SettingsPage(QWidget):
                 out.append({"name": name or f"账号{row + 1}", "api_key": key})
         return out
 
+    def _persist_ws_accounts(self) -> None:
+        """立即保存账号列表到 config（添加/删除/改名后即时生效，不必点保存按钮）。"""
+        accounts = self._collect_ws_accounts()
+        config.set_value("webshare_accounts", accounts)
+        config.set_value("webshare_api_key", accounts[0]["api_key"] if accounts else "")
+
     def _load_ws_accounts(self) -> None:
         """填充账号表格（从 config.webshare_accounts 或旧 webshare_api_key）。"""
         from .. import webshare
         accounts = webshare.list_accounts()
+        self._ws_suppress = True
         self.ws_accounts_table.setRowCount(0)
         for a in accounts:
             row = self.ws_accounts_table.rowCount()
@@ -310,6 +319,14 @@ class SettingsPage(QWidget):
             key_item.setToolTip("密钥不可直接编辑；如需修改请删除后重新添加")
             key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.ws_accounts_table.setItem(row, 1, key_item)
+        self._ws_suppress = False
+
+    def _on_ws_item_changed(self, item: QTableWidgetItem) -> None:
+        """账号名双击编辑后立即保存（列 0 = 账号名）。"""
+        if self._ws_suppress:
+            return
+        if item.column() == 0:
+            self._persist_ws_accounts()
 
     def _add_ws_account(self) -> None:
         dlg = _WsAccountDialog(self)
@@ -331,7 +348,7 @@ class SettingsPage(QWidget):
         for row in range(self.ws_accounts_table.rowCount()):
             if self.ws_accounts_table.item(row, 0) and self.ws_accounts_table.item(row, 0).text() == name:
                 self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
-                self.save_btn.setEnabled(True)
+                self._persist_ws_accounts()
                 return
         row = self.ws_accounts_table.rowCount()
         self.ws_accounts_table.insertRow(row)
@@ -339,7 +356,7 @@ class SettingsPage(QWidget):
         name_item.setData(Qt.ItemDataRole.UserRole, name)
         self.ws_accounts_table.setItem(row, 0, name_item)
         self.ws_accounts_table.setItem(row, 1, _mk_key_item(key))
-        self.save_btn.setEnabled(True)
+        self._persist_ws_accounts()
 
     def _del_ws_account(self) -> None:
         row = self.ws_accounts_table.currentRow()
@@ -350,7 +367,7 @@ class SettingsPage(QWidget):
         if QMessageBox.question(self, "删除账号", f"确定删除账号「{name}」吗？") != QMessageBox.StandardButton.Yes:
             return
         self.ws_accounts_table.removeRow(row)
-        self.save_btn.setEnabled(True)
+        self._persist_ws_accounts()
 
     def _test_cf(self) -> None:
         from ..cloudflare import test_connection

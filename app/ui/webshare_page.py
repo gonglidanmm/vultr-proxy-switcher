@@ -671,6 +671,7 @@ class WebsharePage(QWidget):
         return w
 
     def activate(self) -> None:
+        self._load_accounts()  # 刷新账号下拉框（用户可能在设置页新加了 key）
         if self.account_combo.currentData():
             self.refresh()
         if not self.server_combo.count():
