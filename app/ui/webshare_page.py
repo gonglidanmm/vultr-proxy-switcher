@@ -40,7 +40,7 @@ from ..relay import RELAY_PORT_START, gen_relay_id, gen_relay_password, hysteria
 from ..gencreds import generate_reality
 from .drag_table import DragTableWidget
 from .persist import SizedDialog, persist_col_widths
-from .workers import CallWorker
+from .workers import CallWorker, ProgressWorker
 
 _COLS = ["选择", "#", "地址", "端口", "国家", "城市", "套餐", "状态", "标记", "评分", "备注", "操作"]
 _COL_DEFAULTS = {0: 45, 1: 40, 2: 140, 3: 60, 4: 50, 5: 100, 6: 80, 7: 50, 8: 60, 9: 130, 10: 110}
@@ -1359,28 +1359,41 @@ class WebsharePage(QWidget):
         self._fill(self.res_table, self._res, "res")
 
     def _replace_ip(self, addr: str, plan_id, country_code: str, btn: QPushButton) -> None:
-        """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表）。"""
+        """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表），实时回显详细过程。"""
         btn.setEnabled(False)
         btn.setText("替换中…")
         api_key = self.account_combo.currentData() or ""
 
-        def _do():
+        def _do(progress=None):
+            def _p(msg):
+                if progress:
+                    progress(msg)
+
+            _p(f"提交替换请求：{addr}（同国家 {country_code}）…")
             result = webshare.replace_proxy(api_key, plan_id, addr, country_code)
             repl_id = result.get("id")
             if not repl_id:
-                return ("fail", result.get("error") or result.get("detail") or "替换请求失败")
-            # 轮询状态直到 completed / failed（最多约 30 秒）
-            for _ in range(15):
+                err = result.get("error") or result.get("detail") or "替换请求失败"
+                _p(f"❌ {err}")
+                return ("fail", err)
+            _p(f"✅ 已提交，任务 ID={repl_id}，开始轮询状态…")
+            for i in range(15):
                 time.sleep(2)
                 status = webshare.get_replacement_status(api_key, plan_id, repl_id)
                 state = status.get("state", "")
+                _p(f"轮询第 {i + 1}/15 次：状态={state or '未知'}")
                 if state == "completed":
+                    _p("✅ 替换完成，新 IP 已生效")
                     return ("ok", status.get("proxies_added", 1))
                 if state == "failed":
-                    return ("fail", status.get("error") or "替换失败")
+                    err = status.get("error") or "替换失败"
+                    _p(f"❌ {err}")
+                    return ("fail", err)
+            _p("⏱ 替换超时（可能仍在处理，稍后刷新列表查看）")
             return ("fail", "替换超时（可能仍在处理，稍后刷新列表查看）")
 
-        w = CallWorker(_do)
+        w = ProgressWorker(_do)
+        w.progress.connect(lambda m: self._set_status(m))
         w.done.connect(self._on_replaced)
         w.failed.connect(lambda m: self._on_replaced(("fail", str(m))))
         self._workers.append(w)
