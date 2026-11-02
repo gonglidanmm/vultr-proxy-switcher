@@ -317,6 +317,31 @@ def _duration_to_expiry(value: int, unit: str) -> str:
     return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+class _RelayNameDialog(SizedDialog):
+    _size_key = "relay_name_dialog_size"
+    _default_w = 560
+    _default_h = 150
+    """线路名称确认：预填自动生成的名称，可手动修改。"""
+
+    def __init__(self, parent, default_name: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("线路名称（可修改）")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("生成的线路名称，可手动修改后确定："))
+        self._edit = QLineEdit(default_name)
+        layout.addWidget(self._edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def name(self) -> str:
+        return self._edit.text().strip()
+
+
 class _MergeSettingsDialog(SizedDialog):
     _size_key = "merge_settings_dialog_size"
     _default_w = 720
@@ -1488,10 +1513,15 @@ class WebsharePage(QWidget):
             date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
             dom_prefix = (entry_domain or "").split(".")[0]
             seq_str = f"{_base_seq + added + 1:02d}"
-            if city_cn:
-                name = f"({date_str}){country_cn}-{city_cn}-{dom_prefix}-{seq_str}"
-            else:
-                name = f"({date_str}){country_cn}-{dom_prefix}-{seq_str}"
+            node_type = "机房" if ip_type == "dc" else "住宅"
+            node_label = f"{node_type}({country_cn}-{city_cn})" if city_cn else f"{node_type}({country_cn})"
+            name = f"{dom_prefix}-({date_str})-{node_label}-{seq_str}"
+            # 合并生成：名称先放进文本框可手动修改，确认后应用到中转节点
+            if merge_candidates:
+                ndlg = _RelayNameDialog(self, name)
+                if ndlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                name = ndlg.name() or name
             rp = next_relay_port(used, start=high_water + 1)
             key = f"{host}:{port}"
             # 同样 IP 复用之前取消时保留的完整凭据（SS + Reality + Hysteria2，客户端不用改）
