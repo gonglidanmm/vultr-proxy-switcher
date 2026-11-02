@@ -871,6 +871,9 @@ class _ManageIpsDialog(QDialog):
         self._cands = [norm_candidate(c) for c in (self._creds.get("candidates") or [])]
         self._active_idx = int(self._creds.get("active_idx", 0) or 0)
         self._name = nd.get("name", "") or line.get("resource_id", "")
+        # 线路级配额/到期（分配时设置），作为候选 IP 的默认继承值
+        self._line_quota = float(line.get("quota_gb") or 0)
+        self._line_expiry = (nd.get("client_expiry") or "").strip()
         self._quota_spins: list = []
         self._expiry_edits: list = []
         self._toggle_btns: list = []
@@ -951,8 +954,9 @@ class _ManageIpsDialog(QDialog):
             # 配额
             q = QSpinBox()
             q.setRange(0, 1000000)
-            q.setValue(int(c.get("quota_gb") or 0))
-            q.setToolTip("0 = 不限流量")
+            # 预填：IP 级独立值优先，否则继承线路级（分配时设置的）
+            q.setValue(int(c.get("quota_gb") or self._line_quota))
+            q.setToolTip("0 = 不限流量；默认继承线路配额")
             self.table.setCellWidget(i, 1, q)
             self._quota_spins.append(q)
             # 已用
@@ -962,7 +966,8 @@ class _ManageIpsDialog(QDialog):
             self.table.setItem(i, 2, used_it)
             # 到期
             e = QLineEdit()
-            e.setText((c.get("expiry") or "").strip())
+            # 预填：IP 级独立值优先，否则继承线路级到期
+            e.setText((c.get("expiry") or self._line_expiry or "").strip())
             e.setPlaceholderText("空=不过期")
             self.table.setCellWidget(i, 3, e)
             self._expiry_edits.append(e)
