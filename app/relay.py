@@ -261,10 +261,14 @@ def _relay_location(name: str) -> str:
     for cn in _CN_CITIES:
         if cn in name:
             return f"美国·{cn}"
-    m = re.search(r"US[- ]([A-Za-z]+(?:\s+[A-Za-z]+)?)", name)
+    # 中文「美国-城市」模式（城市不在 _CN_CITIES 里也能显示，如 webshare 数据 country=US/city=Melbourne）
+    m = re.search(r"美国[-·]([^-·]+)", name)
     if m:
-        key = m.group(1).lower()
-        return f"美国·{_CITY_EN2CN.get(key, m.group(1).title())}"
+        return f"美国·{m.group(1)}"
+    m2 = re.search(r"US[- ]([A-Za-z]+(?:\s+[A-Za-z]+)?)", name)
+    if m2:
+        key = m2.group(1).lower()
+        return f"美国·{_CITY_EN2CN.get(key, m2.group(1).title())}"
     return ""
 
 
