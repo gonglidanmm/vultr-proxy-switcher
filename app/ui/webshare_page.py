@@ -18,8 +18,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -295,6 +297,80 @@ class DomainDialog(QDialog):
         if not sub or not zone:
             return ""
         return f"{sub}.{zone}"
+
+
+class _MergeSettingsDialog(QDialog):
+    """合并线路时，为每个候选 IP 设置独立配额/到期（可一键统一）。"""
+
+    def __init__(self, parent, candidates: list[dict]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("合并线路 - 设置每个 IP 的配额/到期")
+        self.setMinimumWidth(620)
+        self._quota_edits: list[QSpinBox] = []
+        self._expiry_edits: list[QLineEdit] = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 统一设置区
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(0)
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一到期(YYYY-MM-DD HH:MM,空=不过期):"))
+        self.uni_expiry = QLineEdit()
+        self.uni_expiry.setPlaceholderText("留空=不过期")
+        uni.addWidget(self.uni_expiry)
+        apply_btn = QPushButton("应用到全部")
+        apply_btn.clicked.connect(self._apply_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        # 每个 IP 一行
+        grid = QGridLayout()
+        grid.addWidget(QLabel("上游 IP"), 0, 0)
+        grid.addWidget(QLabel("配额(GB)"), 0, 1)
+        grid.addWidget(QLabel("到期时间"), 0, 2)
+        for i, c in enumerate(candidates):
+            host = c.get("host", "") or ""
+            grid.addWidget(QLabel(host), i + 1, 0)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(0)
+            q.setToolTip("0 = 不限流量")
+            grid.addWidget(q, i + 1, 1)
+            self._quota_edits.append(q)
+            e = QLineEdit()
+            e.setPlaceholderText("空=不过期")
+            grid.addWidget(e, i + 1, 2)
+            self._expiry_edits.append(e)
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _apply_all(self) -> None:
+        q = self.uni_quota.value()
+        e = self.uni_expiry.text().strip()
+        for edit in self._quota_edits:
+            edit.setValue(q)
+        for edit in self._expiry_edits:
+            edit.setText(e)
+
+    def results(self) -> list[dict]:
+        """返回每个 IP 的 {quota_gb, expiry}。"""
+        return [
+            {"quota_gb": q.value(), "expiry": e.text().strip()}
+            for q, e in zip(self._quota_edits, self._expiry_edits)
+        ]
 
 
 class WebsharePage(QWidget):
@@ -1335,16 +1411,25 @@ class WebsharePage(QWidget):
         # 合并线路：勾选 N 个 IP 合并成 1 条线路（1 域名/端口，切换 IP 轮换这 N 个上游）
         merge_candidates = None
         if merge and len(checked) > 1:
-            merge_candidates = []
+            # 先构造候选 IP（仅连接参数），再弹窗让用户为每个 IP 设独立配额/到期
+            raw_cands = []
             for ip_type, idx in checked:
                 pool = self._dc if ip_type == "dc" else self._res
                 p = pool[idx]
-                merge_candidates.append({
+                raw_cands.append({
                     "host": p.get("proxy_address") or "p.webshare.io",
                     "port": int(p.get("port", 0)),
                     "user": p.get("username", ""),
                     "password": p.get("password", ""),
                 })
+            dlg = _MergeSettingsDialog(self, raw_cands)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return  # 用户取消，不生成
+            settings = dlg.results()
+            merge_candidates = []
+            for c, s in zip(raw_cands, settings):
+                c.update(s)  # 加 quota_gb/expiry（enabled 默认 True）
+                merge_candidates.append(c)
             checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0
         # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
