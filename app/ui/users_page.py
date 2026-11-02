@@ -1377,6 +1377,15 @@ class _ManageIpsDialog(SizedDialog):
             if str(r.get("id", "")) == rid:
                 r["candidate_upstreams"] = self._cands
                 r["active_upstream_idx"] = self._active_idx
+                # 同步主 IP = candidates[0]（替换/删除后 host 与候选保持一致，避免「外面还是旧 IP」）
+                if self._cands:
+                    c0 = self._cands[0]
+                    r["host"] = c0.get("host", "")
+                    r["port"] = c0.get("port", 0)
+                    r["user"] = c0.get("user", "")
+                    r["password"] = c0.get("password", "")
+                    if c0.get("ws_account"):
+                        r["ws_account"] = c0.get("ws_account", "")
                 break
         config.set_value("relays", relays)
         # 2. 更新 D1 node_data（快照）
@@ -1390,6 +1399,19 @@ class _ManageIpsDialog(SizedDialog):
         creds = nd.get("_creds", {}) or {}
         creds["candidates"] = self._cands
         creds["active_idx"] = self._active_idx
+        # 同步主 IP 快照（node_data.ip / ws_account / upstream），客户端「当前 IP」跟替换后一致
+        if self._cands:
+            c0 = self._cands[0]
+            nd["ip"] = c0.get("host", "")
+            if c0.get("ws_account"):
+                nd["ws_account"] = c0.get("ws_account", "")
+            creds["upstream"] = {
+                "host": c0.get("host", ""),
+                "port": c0.get("port", 0),
+                "user": c0.get("user", ""),
+                "password": c0.get("password", ""),
+                "ws_account": c0.get("ws_account", ""),
+            }
         nd["_creds"] = creds
         try:
             api_client.assign(self._u["user_id"], "relay", rid, nd)
