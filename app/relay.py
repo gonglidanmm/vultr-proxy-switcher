@@ -268,6 +268,23 @@ def _relay_location(name: str) -> str:
     return ""
 
 
+def norm_candidate(c) -> dict:
+    """把候选上游 IP 规范化为带独立属性的结构（向后兼容旧结构）。
+
+    旧结构只有 {host, port, user, password}，或纯字符串。
+    新结构加 quota_gb/used_gb/expiry/enabled（每个 IP 独立配额/流量/到期/禁用）。
+    """
+    if isinstance(c, str):
+        return {"host": c, "port": "", "user": "", "password": "",
+                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True}
+    d = dict(c or {})
+    d.setdefault("quota_gb", 0)
+    d.setdefault("used_gb", 0)
+    d.setdefault("expiry", "")
+    d.setdefault("enabled", True)
+    return d
+
+
 def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> dict:
     """构建 relay 的 node_data 快照（与 vultr 同构，客户端零改动渲染）。
 
@@ -298,7 +315,7 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "user": relay.get("user", ""),
         "password": relay.get("password", ""),
     }
-    candidates = relay.get("candidate_upstreams") or [upstream]
+    candidates = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [upstream])]
     active_idx = int(relay.get("active_upstream_idx", 0) or 0)
 
     return {

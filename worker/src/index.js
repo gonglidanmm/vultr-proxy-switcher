@@ -293,6 +293,14 @@ async function handleMeNodes(env, user) {
     // 候选上游 IP（合并线路 >1，单线路 =1），供客户端显示进度/悬停/指定切换（不含密码）
     const candidateIps = cands.map((c) => (c && c.host) || "");
     const activeIp = candidateIps[activeIdx] || "";
+    // 候选 IP 独立属性（配额/流量/到期/启用，不含密码），供客户端切换弹窗显示
+    const candidateInfos = cands.map((c) => ({
+      host: (c && c.host) || "",
+      quota_gb: Number((c && c.quota_gb) || 0),
+      used_gb: Number((c && c.used_gb) || 0),
+      expiry: (c && c.expiry) || "",
+      enabled: (c && c.enabled) !== false,
+    }));
     // 每个「用户↔资源」独立计数，按天重置
     let count = r.switch_count || 0;
     const nodeLimit = r.switch_limit == null ? 0 : Number(r.switch_limit);
@@ -323,6 +331,7 @@ async function handleMeNodes(env, user) {
       flow_exhausted: quota > 0 && used >= quota,
       expired,
       candidate_ips: candidateIps,   // 候选上游 IP 列表（合并线路 >1，单线路 =1）
+      candidate_infos: candidateInfos,  // 候选 IP 独立属性（配额/流量/到期/启用）
       active_ip_idx: activeIdx,      // 当前激活的候选索引
       active_ip: activeIp,           // 当前激活的上游 IP
     };
