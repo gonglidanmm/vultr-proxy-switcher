@@ -313,6 +313,10 @@ function candStatus(n, i) {
   return "";
 }
 
+function candDisabled(n, i) {
+  return !!candStatus(n, i);
+}
+
 function candFlowText(n, i) {
   const info = candInfo(n, i);
   const q = Number(info.quota_gb) || 0;

@@ -1207,23 +1207,24 @@ class _UserLinesDialog(QDialog):
         head.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(head)
 
-        table = QTableWidget(len(lines), 6)
-        table.setHorizontalHeaderLabels(["线路名称", "出口IP", "流量", "分配时间", "到期", "操作"])
+        table = QTableWidget(len(lines), 7)
+        table.setHorizontalHeaderLabels(["线路名称", "类型", "出口IP", "流量", "分配时间", "到期", "操作"])
         _hdr = table.horizontalHeader()
         _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         _hdr.setStretchLastSection(False)
         # 恢复上次调整的列宽（否则用默认）
         _saved_w = config.get("user_lines_col_widths")
-        if _saved_w and len(_saved_w) == 6:
+        if _saved_w and len(_saved_w) == 7:
             for c, w in enumerate(_saved_w):
                 table.setColumnWidth(c, int(w))
         else:
             table.setColumnWidth(0, 150)  # 线路名称
-            table.setColumnWidth(1, 130)  # 出口IP
-            table.setColumnWidth(2, 120)  # 流量
-            table.setColumnWidth(3, 110)  # 分配时间
-            table.setColumnWidth(4, 120)  # 到期
-            table.setColumnWidth(5, 220)  # 操作（管理IP + 复制节点 + 回收）
+            table.setColumnWidth(1, 100)  # 类型（独立/合并 N 个）
+            table.setColumnWidth(2, 130)  # 出口IP
+            table.setColumnWidth(3, 120)  # 流量
+            table.setColumnWidth(4, 110)  # 分配时间
+            table.setColumnWidth(5, 120)  # 到期
+            table.setColumnWidth(6, 220)  # 操作（管理IP + 复制节点 + 回收）
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1242,6 +1243,9 @@ class _UserLinesDialog(QDialog):
                 except Exception:
                     node = {}
             name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
+            creds = node.get("_creds", {}) or {}
+            n_cands = len(creds.get("candidates") or [])
+            type_text = f"合并 {n_cands} 个" if n_cands > 1 else "独立"
             exit_ip = node.get("ip", "") or node.get("host", "")
             quota = float(a.get("quota_gb") or 0)
             used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
@@ -1260,7 +1264,7 @@ class _UserLinesDialog(QDialog):
             ce = node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
-            for col, text in enumerate([name, exit_ip, traffic, assign_time, countdown]):
+            for col, text in enumerate([name, type_text, exit_ip, traffic, assign_time, countdown]):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setForeground(Qt.GlobalColor.white)
@@ -1285,7 +1289,7 @@ class _UserLinesDialog(QDialog):
             recycle.setFixedSize(56, 32)
             recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
             op_lay.addWidget(recycle)
-            table.setCellWidget(row, 5, op_w)
+            table.setCellWidget(row, 6, op_w)
 
         btns = QDialogButtonBox()
         edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
@@ -1318,7 +1322,7 @@ class _UserLinesDialog(QDialog):
         self._page.refresh()
 
     def _save_col_widths(self, *args) -> None:
-        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(6)])
+        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(7)])
 
 
 class _UserDetailDialog(QDialog):
