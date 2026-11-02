@@ -337,7 +337,13 @@ class UsersPage(QWidget):
                         node = _json.loads(node)
                     except Exception:
                         node = {}
-                ce = node.get("client_expiry", "") or ""
+                creds = node.get("_creds", {}) or {}
+                cands = creds.get("candidates") or []
+                act = int(creds.get("active_idx", 0) or 0)
+                ip_exp = ""
+                if cands and act < len(cands):
+                    ip_exp = (cands[act].get("expiry") or "").strip()
+                ce = ip_exp or node.get("client_expiry", "") or ""
                 if ce:
                     expiries.append(ce)
             min_exp = min(expiries) if expiries else ""
@@ -1477,7 +1483,13 @@ class _UserLinesDialog(SizedDialog):
                 assign_time = adt.strftime("%m-%d %H:%M")
             except Exception:
                 assign_time = "-"
-            ce = node.get("client_expiry", "") or ""
+            # 到期：合并线路用当前激活 IP 的到期（IP 级优先），独立线路用线路级
+            cands2 = creds.get("candidates") or []
+            act2 = int(creds.get("active_idx", 0) or 0)
+            ip_exp2 = ""
+            if cands2 and act2 < len(cands2):
+                ip_exp2 = (cands2[act2].get("expiry") or "").strip()
+            ce = ip_exp2 or node.get("client_expiry", "") or ""
             countdown = _fmt_countdown(ce)
 
             for col, text in enumerate([name, type_text, exit_ip, traffic, assign_time, countdown]):
