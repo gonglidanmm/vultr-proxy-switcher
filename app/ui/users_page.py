@@ -547,13 +547,20 @@ class UsersPage(QWidget):
         creds = node.get("_creds", {}) or {}
         server_id = creds.get("server_id", "")
         server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
+        stopped = True
         if server_ip and server_id:
-            self._ssh_stop_relay(relay_id, server_id, server_ip)
+            stopped = self._ssh_stop_relay(relay_id, server_id, server_ip)
         self._mark_recycled(relay_id, username)
         self._log(f"✅ 已回收「{username}」的「{name}」，IP 进回收页冷却")
+        if not stopped:
+            QMessageBox.warning(
+                self, "回收警告",
+                f"「{name}」已进回收页，但服务器上的 relay 服务未能确认停止，可能继续消耗流量。\n"
+                f"请手动停掉 gost-relay-{relay_id} / sing-box-relay-{relay_id}（服务器 {server_ip}）。",
+            )
 
-    def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
-        """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等；失败不阻断回收）。"""
+    def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> bool:
+        """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等），并校验真的停了。返回是否成功。"""
         import subprocess
 
         root_pw = config.get("root_password", "")
@@ -567,16 +574,30 @@ class UsersPage(QWidget):
             sc = (config.get("server_configs", {}) or {}).get(server_id, {})
             root_pw = sc.get("root_password") or root_pw
         if not root_pw or not server_ip:
-            return
-        cmd = f"systemctl disable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; echo DONE"
+            return False
+        # 停服务 + 校验 is-active 是否真的 inactive（防孤儿服务偷跑流量）
+        cmd = (
+            f"systemctl disable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; "
+            f"sleep 1; "
+            f"g=$(systemctl is-active gost-relay-{relay_id} 2>/dev/null); "
+            f"s=$(systemctl is-active sing-box-relay-{relay_id} 2>/dev/null); "
+            f"echo RESULT:$g,$s"
+        )
         try:
-            subprocess.run(
+            r = subprocess.run(
                 ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
                  "-o", "ConnectTimeout=10", f"root@{server_ip}", cmd],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=40,
             )
+            out = r.stdout + r.stderr
+            if "RESULT:" not in out:
+                return False
+            states = out.split("RESULT:")[-1].strip()
+            g_state, s_state = (states.split(",") + ["", ""])[:2]
+            # 两个服务都不是 active 才算停成功（inactive/failed 都算停了）
+            return g_state.strip() != "active" and s_state.strip() != "active"
         except Exception:
-            pass  # 停服务失败不阻断回收（兜底清理在手动回归）
+            return False
 
     def _ssh_start_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
         """SSH 重启 relay 的 gost + sing-box 服务（启用用户用，幂等；失败不阻断）。"""

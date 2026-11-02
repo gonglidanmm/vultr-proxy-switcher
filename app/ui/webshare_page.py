@@ -1715,7 +1715,10 @@ class WebsharePage(QWidget):
                 f"ufw delete allow {reality_port(relay_port)}/udp 2>/dev/null; "
                 f"ufw delete allow {hysteria_port(relay_port)}/udp 2>/dev/null; "
                 f"{sb_cmd}"
-                f"echo DONE"
+                f"sleep 1; "
+                f"g=$(systemctl is-active gost-relay-{rid} 2>/dev/null); "
+                f"s=$(systemctl is-active sing-box-relay-{rid} 2>/dev/null); "
+                f"echo RESULT:$g,$s"
             )
             r = subprocess.run(
                 ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
@@ -1733,7 +1736,17 @@ class WebsharePage(QWidget):
 
     def _on_cancelled(self, text: str) -> None:
         lines = str(text).strip().splitlines()
-        self._set_status(f"已取消中转：{lines[-1] if lines else text}", ok="DONE" in str(text))
+        # 校验服务是否真的停了（防孤儿服务偷跑流量）
+        if "RESULT:" in str(text):
+            states = str(text).split("RESULT:")[-1].strip()
+            g, s = (states.split(",") + ["", ""])[:2]
+            stopped = g.strip() != "active" and s.strip() != "active"
+        else:
+            stopped = "DONE" in str(text)
+        if stopped:
+            self._set_status("已取消中转，服务已确认停止", ok=True)
+        else:
+            self._set_status("已取消中转，但服务器服务未确认停止，需手动清理", warn=True)
 
     def _apply(self) -> None:
         relays = config.get("relays", [])
