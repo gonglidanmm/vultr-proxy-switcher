@@ -659,45 +659,27 @@ class NodesPage(QWidget):
         ip_type = "res" if ip_types == {"res"} else "dc"
         sub_info = subscription_quota_info(ip_type)
         sub_info["mixed"] = len(ip_types) > 1
-        dlg = _UserPickerDialog(self, resource_type="relay", sub_info=sub_info)
+        relay_hosts = [r.get("host", "") for r in self._selected.values()]
+        dlg = _UserPickerDialog(self, resource_type="relay", sub_info=sub_info, relay_hosts=relay_hosts)
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.user_id is None:
             return
 
         switch_api_key = str(config.get("switch_api_key", "") or "")
         server_map = getattr(self, "_server_map", {})
         selected_list = list(self._selected.values())
-
-        # 勾选多个时，每个 IP 单独设置到期/流量（弹窗设置，统一值作为默认）
-        per_ip_settings: dict = {}
-        if len(selected_list) > 1:
-            from .webshare_page import _MergeSettingsDialog
-
-            raw_cands = []
-            for relay in selected_list:
-                raw_cands.append({
-                    "host": relay.get("host", ""),
-                    "port": int(relay.get("port", 0) or 0),
-                    "user": relay.get("user", ""),
-                    "password": relay.get("password", ""),
-                })
-            mdlg = _MergeSettingsDialog(self, raw_cands)
-            if mdlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            settings = mdlg.results()
-            for relay, s in zip(selected_list, settings):
-                per_ip_settings[relay["id"]] = s
+        # 勾选多个 IP 时，弹窗内已为每个 IP 单独设置配额/到期；单 IP 时为空列表
+        per_ip_settings = dlg.per_ip_results()
 
         ok = fail = 0
-        for relay in selected_list:
+        for i, relay in enumerate(selected_list):
             sid = relay.get("server_id", "")
             srv_ip = server_map.get(sid, ("未知", ""))[0]
             if not srv_ip or srv_ip == "未知":
                 fail += 1
                 continue
             nd = relay_node_data(relay, srv_ip, switch_api_key)
-            s = per_ip_settings.get(relay["id"])
-            if s is not None:
-                # 单独设置：expiry 空串=不过期，quota_gb 0=不限（不 fallback 到统一值）
+            if per_ip_settings:
+                s = per_ip_settings[i]
                 expires_at = s.get("expiry")
                 quota = s.get("quota_gb") or 0
             else:

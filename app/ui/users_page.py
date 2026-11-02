@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -148,6 +149,14 @@ def _duration_expiry(seconds: int) -> str:
 
     tz = timezone(timedelta(hours=8))
     return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _per_ip_expiry(value: int, unit: str) -> str:
+    """value + 单位 → 绝对到期时间；「不过期」返回空串。"""
+    if unit == "不过期":
+        return ""
+    idx = {"按天": 0, "按小时": 1, "按分钟": 2}[unit]
+    return _duration_expiry(value * _UNIT_SECONDS[idx])
 
 
 def _max_settable_duration(sub_expiry: str) -> str:
@@ -2192,10 +2201,10 @@ class _UserPickerDialog(SizedDialog):
     _default_h = 360
     """选择要分配的用户（只列活跃用户）。"""
 
-    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None) -> None:
+    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None, relay_hosts: list[str] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("选择用户")
-        self.setMinimumSize(500, 360)
+        self.setMinimumSize(560, 520 if (relay_hosts or []) else 360)
         self.user_id: int | None = None
         self.expires_at: str | None = None
         self.quota_gb: float = 0.0
@@ -2205,6 +2214,7 @@ class _UserPickerDialog(SizedDialog):
         self._remaining_quota = remaining_quota
         self._resource_type = resource_type
         self._sub_info = sub_info or {}
+        self._relay_hosts = relay_hosts or []
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -2239,31 +2249,35 @@ class _UserPickerDialog(SizedDialog):
             info_lbl.setStyleSheet("color:#98989d;")
             layout.addWidget(info_lbl)
 
-            dur_lbl = QLabel("使用时长（不能晚于订阅到期）")
-            dur_lbl.setStyleSheet("color:#98989d;")
-            layout.addWidget(dur_lbl)
-            dur_row = QHBoxLayout()
-            self.unit_combo = QComboBox()
-            self.unit_combo.addItems(["按天", "按小时", "按分钟"])
-            self.unit_combo.setCurrentIndex(0)  # 默认按天
-            self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
-            dur_row.addWidget(self.unit_combo)
-            self.duration_spin = QSpinBox()
-            self.duration_spin.setRange(*_UNIT_RANGES[0])
-            self.duration_spin.setValue(1)
-            self.duration_spin.setSuffix(_UNIT_SUFFIXES[0])
-            dur_row.addWidget(self.duration_spin)
-            dur_row.addStretch(1)
-            layout.addLayout(dur_row)
+            if len(self._relay_hosts) > 1:
+                # 多个 IP：每个 IP 单独设置配额/到期（含一键应用到全部）
+                self._build_per_ip_grid(layout)
+            else:
+                dur_lbl = QLabel("使用时长（不能晚于订阅到期）")
+                dur_lbl.setStyleSheet("color:#98989d;")
+                layout.addWidget(dur_lbl)
+                dur_row = QHBoxLayout()
+                self.unit_combo = QComboBox()
+                self.unit_combo.addItems(["按天", "按小时", "按分钟"])
+                self.unit_combo.setCurrentIndex(0)  # 默认按天
+                self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+                dur_row.addWidget(self.unit_combo)
+                self.duration_spin = QSpinBox()
+                self.duration_spin.setRange(*_UNIT_RANGES[0])
+                self.duration_spin.setValue(1)
+                self.duration_spin.setSuffix(_UNIT_SUFFIXES[0])
+                dur_row.addWidget(self.duration_spin)
+                dur_row.addStretch(1)
+                layout.addLayout(dur_row)
 
-            quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
-            quota_lbl.setStyleSheet("color:#98989d;")
-            layout.addWidget(quota_lbl)
-            self.quota_edit = QLineEdit()
-            self.quota_edit.setPlaceholderText(
-                f"如 100，不能大于剩余 {remaining:.1f}G" if plan_total > 0 else "如 100，留空 = 不限额"
-            )
-            layout.addWidget(self.quota_edit)
+                quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
+                quota_lbl.setStyleSheet("color:#98989d;")
+                layout.addWidget(quota_lbl)
+                self.quota_edit = QLineEdit()
+                self.quota_edit.setPlaceholderText(
+                    f"如 100，不能大于剩余 {remaining:.1f}G" if plan_total > 0 else "如 100，留空 = 不限额"
+                )
+                layout.addWidget(self.quota_edit)
         else:
             if resource_expiry:
                 exp_info = QLabel(f'资源原始到期：<span style="color:#ff9f0a;">{str(resource_expiry)[:10]}</span>')
@@ -2301,6 +2315,74 @@ class _UserPickerDialog(SizedDialog):
         self.duration_spin.setSuffix(_UNIT_SUFFIXES[idx])
         self.duration_spin.setValue(lo)
 
+    def _build_per_ip_grid(self, layout) -> None:
+        """多个 IP：每个 IP 一行，独立设置配额(GB) 与到期时长；顶部可一键统一。"""
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(0)
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一到期:"))
+        self.uni_dur = QSpinBox()
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        uni.addWidget(self.uni_dur)
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+        uni.addWidget(self.uni_unit)
+        apply_btn = QPushButton("应用到全部")
+        apply_btn.setProperty("compact", True)
+        apply_btn.clicked.connect(self._apply_per_ip_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        self._per_ip_rows: list[tuple] = []
+        grid = QGridLayout()
+        grid.addWidget(QLabel("上游 IP"), 0, 0)
+        grid.addWidget(QLabel("配额(GB)"), 0, 1)
+        grid.addWidget(QLabel("到期时长"), 0, 2)
+        for i, host in enumerate(self._relay_hosts):
+            grid.addWidget(QLabel(host or ""), i + 1, 0)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(0)
+            q.setToolTip("0 = 不限流量")
+            grid.addWidget(q, i + 1, 1)
+            drow = QHBoxLayout()
+            drow.setContentsMargins(0, 0, 0, 0)
+            dspin = QSpinBox()
+            dspin.setRange(1, 9999)
+            dspin.setValue(1)
+            unit = QComboBox()
+            unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+            drow.addWidget(dspin)
+            drow.addWidget(unit)
+            dw = QWidget()
+            dw.setLayout(drow)
+            grid.addWidget(dw, i + 1, 2)
+            self._per_ip_rows.append((q, dspin, unit))
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
+
+    def _apply_per_ip_all(self) -> None:
+        q = self.uni_quota.value()
+        d = self.uni_dur.value()
+        u = self.uni_unit.currentText()
+        for spin, _, _ in self._per_ip_rows:
+            spin.setValue(q)
+        for _, dspin, unit in self._per_ip_rows:
+            dspin.setValue(d)
+            unit.setCurrentText(u)
+
+    def per_ip_results(self) -> list[dict]:
+        """返回每个 IP 的 {quota_gb, expiry}（expiry 为绝对时间，不过期=空串）。"""
+        out = []
+        for q, dspin, unit in getattr(self, "_per_ip_rows", []):
+            out.append({"quota_gb": q.value(), "expiry": _per_ip_expiry(dspin.value(), unit.currentText())})
+        return out
+
     def _load_users(self) -> None:
         try:
             users = api_client.list_users().get("users", [])
@@ -2326,8 +2408,9 @@ class _UserPickerDialog(SizedDialog):
         if data is None:
             QMessageBox.warning(self, "提示", "请先选择用户")
             return
-        # 流量配额校验（仅 vultr 有配额输入框时）
-        if hasattr(self, "quota_edit"):
+        multi_ip = len(self._relay_hosts) > 1
+        # 流量配额校验（仅 vultr 有配额输入框时；多 IP 每 IP 单独设置，不在此校验）
+        if not multi_ip and hasattr(self, "quota_edit"):
             q_text = self.quota_edit.text().strip()
             if q_text:
                 try:
@@ -2351,7 +2434,7 @@ class _UserPickerDialog(SizedDialog):
                 self.quota_gb = q
             else:
                 self.quota_gb = self._remaining_quota  # 留空 = 分配全部剩余
-        if self._resource_type == "relay":
+        if self._resource_type == "relay" and not multi_ip:
             unit_idx = self.unit_combo.currentIndex()
             seconds = self.duration_spin.value() * _UNIT_SECONDS[unit_idx]
             self.expires_at = _duration_expiry(seconds)
