@@ -39,6 +39,7 @@ from .. import cloudflare, config, ipqs, vultr, webshare
 from ..relay import RELAY_PORT_START, gen_relay_id, gen_relay_password, hysteria_port, next_relay_port, reality_port
 from ..gencreds import generate_reality
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 from .workers import CallWorker
 
 _COLS = ["选择", "#", "地址", "端口", "国家", "城市", "套餐", "状态", "标记", "评分", "备注", "操作"]
@@ -77,7 +78,10 @@ def _bj_today() -> str:
     return ipqs.bj_today()
 
 
-class BatchGenerateDialog(QDialog):
+class BatchGenerateDialog(SizedDialog):
+    _size_key = "batch_generate_dialog_size"
+    _default_w = 560
+    _default_h = 520
     """批量生成中转：选国家/城市/数量/方式（随机或顺序）。"""
 
     def __init__(self, countries: list, country_cities: dict, parent=None):
@@ -180,7 +184,10 @@ class _ServerCard(QFrame):
         super().mousePressEvent(e)
 
 
-class DomainDialog(QDialog):
+class DomainDialog(SizedDialog):
+    _size_key = "domain_dialog_size"
+    _default_w = 480
+    _default_h = 380
     """生成中转前选择入口域名：Cloudflare 主域名 + 现有域名下拉框（或手动新建二级域名）。"""
 
     def __init__(self, parent=None):
@@ -299,7 +306,10 @@ class DomainDialog(QDialog):
         return f"{sub}.{zone}"
 
 
-class _MergeSettingsDialog(QDialog):
+class _MergeSettingsDialog(SizedDialog):
+    _size_key = "merge_settings_dialog_size"
+    _default_w = 620
+    _default_h = 480
     """合并线路时，为每个候选 IP 设置独立配额/到期（可一键统一）。"""
 
     def __init__(self, parent, candidates: list[dict]) -> None:

@@ -35,6 +35,7 @@ from .. import api_client, config, ipqs
 from ..relay import SOCKS_USER, SS_METHOD, hysteria_port, reality_port, relay_node_data, socks_port
 from ..share import hysteria2_link, socks5_link, ss_link, vless_reality_link
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 from .workers import CallWorker
 
 _COLS = ["", "#", "名称", "类型", "评分", "前置服务器", "前置域名", "上游出口", "备注", "操作"]
@@ -62,7 +63,10 @@ def _make_qr(link: str, size: int = 150) -> QPixmap:
     )
 
 
-class QrDialog(QDialog):
+class QrDialog(SizedDialog):
+    _size_key = "qr_dialog_size"
+    _default_w = 360
+    _default_h = 420
     """二维码弹窗：大二维码 + 复制二维码图片（方便粘贴发给客户扫码导入）。"""
 
     def __init__(self, name: str, link: str, parent=None):
@@ -96,7 +100,10 @@ class QrDialog(QDialog):
         self.copy_img_btn.setText("已复制 ✓")
 
 
-class NodeShareDialog(QDialog):
+class NodeShareDialog(SizedDialog):
+    _size_key = "node_share_dialog_size"
+    _default_w = 560
+    _default_h = 560
     """复制节点：展示 SS + SOCKS5 两个协议，含字段、复制链接、二维码。"""
 
     def __init__(self, relay: dict, server_ip: str, parent=None):
@@ -910,11 +917,7 @@ class NodesPage(QWidget):
         _hdr = table.horizontalHeader()
         _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         _hdr.setStretchLastSection(False)
-        table.setColumnWidth(0, 70)   # 角色
-        table.setColumnWidth(1, 150)  # IP:端口
-        table.setColumnWidth(2, 90)   # 用户名
-        table.setColumnWidth(3, 140)  # 备注
-        table.setColumnWidth(4, 90)   # 操作（固定，按钮 84px 完整放下）
+        persist_col_widths(table, "merge_candidates_col_widths", [70, 150, 90, 140, 90])
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(36)  # 行高 36px，按钮垂直完整放下
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

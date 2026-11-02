@@ -56,6 +56,7 @@ from ..vultr import (
 )
 from .proxy_controller import ProxyStatusCard
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 from .workers import CallWorker, ProgressWorker
 
 COLS = ["序号", "名称", "区域", "IP", "域名", "状态", "流量(已用/剩余)", "到期时间", "备注", "操作"]
@@ -1889,7 +1890,10 @@ class ServersPage(QWidget):
         self.refresh()
 
 
-class CreateServerDialog(QDialog):
+class CreateServerDialog(SizedDialog):
+    _size_key = "create_server_dialog_size"
+    _default_w = 640
+    _default_h = 700
     """新建服务器：区域 + 套餐 + 子域名 + 完整凭据设置（留空自动生成）。"""
 
     def __init__(self, regions: list, plans: list, parent=None):
@@ -2170,7 +2174,10 @@ class CreateServerDialog(QDialog):
         return self.region.currentData(), self.plan.currentData(), self._full_subdomain(), self.creds_override()
 
 
-class ManualServerDialog(QDialog):
+class ManualServerDialog(SizedDialog):
+    _size_key = "manual_server_dialog_size"
+    _default_w = 520
+    _default_h = 480
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("手工添加服务器")
@@ -2199,7 +2206,10 @@ class ManualServerDialog(QDialog):
         return self.name.text().strip() or "手动节点", self.host.text().strip(), self.port.value(), self.user.text(), self.password.text()
 
 
-class SwitchIpDialog(QDialog):
+class SwitchIpDialog(SizedDialog):
+    _size_key = "switch_ip_dialog_size"
+    _default_w = 520
+    _default_h = 480
     """切换IP 前选目标国家 + 具体区域（州/城市）+ 套餐，标注大陆直连速度。"""
 
     def __init__(self, current_region: str, parent=None, current_plan: str = ""):
@@ -2258,7 +2268,10 @@ class SwitchIpDialog(QDialog):
         return self.plan_combo.currentData() or ""
 
 
-class NodeShareDialog(QDialog):
+class NodeShareDialog(SizedDialog):
+    _size_key = "server_node_share_dialog_size"
+    _default_w = 560
+    _default_h = 560
     """显示各协议节点信息：每个参数详细列出 + 独立复制按钮 + 一键复制链接。"""
 
     def __init__(self, host: str, relays: list, creds: dict, parent=None):
@@ -2416,7 +2429,10 @@ class NodeShareDialog(QDialog):
             QTimer.singleShot(1500, lambda: btn.setText(restore))
 
 
-class RelayAddDialog(QDialog):
+class RelayAddDialog(SizedDialog):
+    _size_key = "relay_add_dialog_size"
+    _default_w = 520
+    _default_h = 480
     """输入朋友的 SOCKS5，生成中转节点。"""
 
     def __init__(self, parent=None):
@@ -2447,7 +2463,10 @@ class RelayAddDialog(QDialog):
         return self.name.text().strip() or "中转", self.host.text().strip(), self.port.value(), self.user.text(), self.password.text()
 
 
-class RelayManagerDialog(QDialog):
+class RelayManagerDialog(SizedDialog):
+    _size_key = "relay_manager_dialog_size"
+    _default_w = 720
+    _default_h = 560
     """管理中转节点：添加/删除 + 应用到服务器。"""
 
     def __init__(self, server_id: str, server_ip: str, parent=None):
@@ -2473,9 +2492,7 @@ class RelayManagerDialog(QDialog):
         hdr.setStretchLastSection(True)
         for c in range(3):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 110)
-        self.table.setColumnWidth(1, 200)
-        self.table.setColumnWidth(2, 80)
+        persist_col_widths(self.table, "relay_manager_col_widths", [110, 200, 80])
         layout.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -2580,7 +2597,10 @@ class RelayManagerDialog(QDialog):
         self._output.setPlainText(str(text))
 
 
-class ServerSettingsDialog(QDialog):
+class ServerSettingsDialog(SizedDialog):
+    _size_key = "server_settings_dialog_size"
+    _default_w = 660
+    _default_h = 660
     """单台服务器的独立设置：按协议分组，标注可改/需重建/建议默认。"""
 
     def __init__(self, srv: dict, parent=None):

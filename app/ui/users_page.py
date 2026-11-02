@@ -34,6 +34,7 @@ from .. import api_client, config, webshare
 from ..api_client import ApiError
 from ..relay import norm_candidate
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 
 # 全局回显：让 Vultr-IP 页面的操作也能写入用户管理页的日志区
 _g_echo = None
@@ -731,14 +732,16 @@ class UsersPage(QWidget):
     def _detail(self, u: dict) -> None:
         dlg = _UserLinesDialog(self, u)
         dlg.exec()
-        config.set_value("user_lines_dialog_size", [dlg.width(), dlg.height()])  # 持久化弹窗大小
         self.refresh()
 
     def activate(self) -> None:
         self.refresh()
 
 
-class _UserDialog(QDialog):
+class _UserDialog(SizedDialog):
+    _size_key = "user_dialog_size"
+    _default_w = 420
+    _default_h = 520
     """新增/编辑用户。编辑时密码留空 = 不修改。"""
 
     def __init__(self, parent=None, user: dict | None = None, resource_expiry: str = "") -> None:
@@ -850,7 +853,10 @@ class _UserDialog(QDialog):
         self.accept()
 
 
-class _ManageIpsDialog(QDialog):
+class _ManageIpsDialog(SizedDialog):
+    _size_key = "manage_ips_dialog_size"
+    _default_w = 800
+    _default_h = 460
     """管理某条线路的候选 IP：添加/删除/禁用/设为当前/改配额/改到期。"""
 
     COLS = ["上游IP", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
@@ -897,8 +903,7 @@ class _ManageIpsDialog(QDialog):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        for c, w in enumerate([150, 90, 80, 160, 70, 50, 210]):
-            self.table.setColumnWidth(c, w)
+        persist_col_widths(self.table, "manage_ips_col_widths", [150, 90, 80, 160, 70, 50, 210])
         layout.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -1140,7 +1145,10 @@ class _ManageIpsDialog(QDialog):
         self.accept()
 
 
-class _IpPickerDialog(QDialog):
+class _IpPickerDialog(SizedDialog):
+    _size_key = "ip_picker_dialog_size"
+    _default_w = 820
+    _default_h = 480
     """从 webshare IP 列表多选要添加的候选 IP，每个 IP 独立设置配额 + 使用时长（分/时/日）。"""
 
     def __init__(self, parent, available: list[dict]) -> None:
@@ -1186,11 +1194,8 @@ class _IpPickerDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setStretchLastSection(1)
-        self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(2, 90)
-        self.table.setColumnWidth(3, 90)
-        self.table.setColumnWidth(4, 70)
+        hdr.setStretchLastSection(False)
+        persist_col_widths(self.table, "ip_picker_col_widths", [40, 300, 90, 90, 70])
         layout.addWidget(self.table, 1)
 
         for i, p in enumerate(available):
@@ -1255,7 +1260,10 @@ class _IpPickerDialog(QDialog):
         return out
 
 
-class _UserLinesDialog(QDialog):
+class _UserLinesDialog(SizedDialog):
+    _size_key = "user_lines_dialog_size"
+    _default_w = 860
+    _default_h = 620
     """用户线路明细弹窗：列出该用户名下所有线路，每条线路可复制节点/回收。"""
 
     def __init__(self, page, u: dict) -> None:
@@ -1266,11 +1274,6 @@ class _UserLinesDialog(QDialog):
         status = self._u.get("status", "active")
         self.setWindowTitle(f"「{self._u.get('username', '')}」的线路明细")
         self.setMinimumSize(760, 520)
-        _saved = config.get("user_lines_dialog_size")
-        if _saved and len(_saved) == 2:
-            self.resize(int(_saved[0]), int(_saved[1]))  # 恢复上次调整的大小
-        else:
-            self.resize(860, 620)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -1401,7 +1404,10 @@ class _UserLinesDialog(QDialog):
         config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(7)])
 
 
-class _UserDetailDialog(QDialog):
+class _UserDetailDialog(SizedDialog):
+    _size_key = "user_detail_dialog_size"
+    _default_w = 640
+    _default_h = 520
     """用户详情/设置：编辑表单 + 名下分配（文字展示）。"""
 
     def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "", resource_type: str = "") -> None:
@@ -1715,7 +1721,10 @@ class _UserDetailDialog(QDialog):
             QMessageBox.warning(self, "保存失败", e.message)
 
 
-class _AssignDetailDialog(QDialog):
+class _AssignDetailDialog(SizedDialog):
+    _size_key = "assigndetail_dialog_size"
+    _default_w = 680
+    _default_h = 560
     """资源分配详情：已分配用户列表（用户名/备注/时间）+ 新增分配 + 取消分配。"""
 
     def __init__(self, parent, resource_type: str, resource_id: str, node_data: dict, resource_expiry: str = "", total_quota_gb: float = 0.0, used_gb: float = 0.0) -> None:
@@ -1900,7 +1909,10 @@ class _AssignDetailDialog(QDialog):
         except ApiError as e:
             QMessageBox.warning(self, "分配失败", e.message)
 
-class _UserPickerDialog(QDialog):
+class _UserPickerDialog(SizedDialog):
+    _size_key = "user_picker_dialog_size"
+    _default_w = 500
+    _default_h = 360
     """选择要分配的用户（只列活跃用户）。"""
 
     def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None) -> None:
