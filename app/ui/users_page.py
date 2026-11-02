@@ -982,6 +982,7 @@ class _ManageIpsDialog(SizedDialog):
         self._expiry_btns: list = []
         self._toggle_btns: list = []
         self._set_btns: list = []
+        self._workers: list = []
 
         self.setWindowTitle(f"管理 IP - {self._name}")
         self.setMinimumSize(800, 460)
@@ -1395,7 +1396,61 @@ class _ManageIpsDialog(SizedDialog):
         except ApiError as e:
             QMessageBox.warning(self, "保存失败", e.message)
             return
-        self.accept()
+        # 重新部署服务器（替换/添加 IP 后，服务器需用新 upstream 才能通）
+        self._deploy_after_save(rid)
+
+    def _deploy_after_save(self, rid: str) -> None:
+        """保存后重新部署该 relay 的服务器（替换/添加 IP 后服务器需用新 upstream）。"""
+        import subprocess
+        from pathlib import Path
+
+        from .workers import CallWorker
+
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == str(rid)), None)
+        if not relay:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 已保存，但找不到该线路，请手动点「重新部署」</span>')
+            return
+        sid = relay.get("server_id", "")
+        srv_ip = ""
+        if sid.startswith("manual:"):
+            mid = sid[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    srv_ip = m.get("host", "") or ""
+                    break
+        if not srv_ip:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 已保存，但找不到服务器 IP，请到 Webshare-IP 页点「重新部署」</span>')
+            return
+        root = Path(__file__).resolve().parent.parent.parent
+        script = root / "scripts" / "apply_relays.py"
+        self._status.setText('<span style="color:#30d158;">已保存，正在重新部署到服务器…</span>')
+
+        def _do():
+            r = subprocess.run(
+                ["uv", "run", "python", str(script), sid, srv_ip],
+                capture_output=True, text=True, timeout=900, cwd=str(root),
+            )
+            return r.stdout + r.stderr
+
+        w = CallWorker(_do)
+        w.done.connect(self._on_deployed)
+        w.failed.connect(lambda m: self._on_deployed(f"失败：{m}"))
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _on_deployed(self, text: str) -> None:
+        lines = str(text).strip().splitlines()
+        last = lines[-1] if lines else str(text)
+        ok = "DONE" in str(text)
+        color = "#32d74b" if ok else "#ff9f0a"
+        self._status.setText(f'<span style="color:{color};">{"✅ 部署完成" if ok else "⚠️ 部署未完全成功"}：{last}</span>')
+        if hasattr(self._page, "refresh"):
+            try:
+                self._page.refresh()
+            except Exception:
+                pass
 
 
 class _IpPickerDialog(SizedDialog):
