@@ -1011,6 +1011,7 @@ class NodesPage(QWidget):
             "ip_type": relay.get("ip_type", "dc"),
             "recycled_at": _ts,
             "recycled_from_user": "未分配",
+            "ws_account": relay.get("ws_account", ""),
         }
         if not any(str(x.get("id", "")) == rec["id"] for x in recycled):
             recycled.append(rec)
@@ -1045,6 +1046,7 @@ class NodesPage(QWidget):
             "ip_type": relay.get("ip_type", "dc"),
             "recycled_at": _ts,
             "recycled_from_user": "未分配",
+            "ws_account": relay.get("ws_account", ""),
         }]
         cands = relay.get("candidate_upstreams") or []
         for i, c in enumerate(cands[1:], start=2):  # 跳过主线路（cands[0] 即主线路）
@@ -1056,6 +1058,7 @@ class NodesPage(QWidget):
                 "ip_type": relay.get("ip_type", "dc"),
                 "recycled_at": _ts,
                 "recycled_from_user": "未分配",
+                "ws_account": relay.get("ws_account", ""),
             })
         for e in _entries:
             if not any(str(x.get("id", "")) == str(e["id"]) for x in recycled):
