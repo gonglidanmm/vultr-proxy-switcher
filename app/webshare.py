@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 
 _BASE = "https://proxy.webshare.io/api/v2"
+_BASE_V3 = "https://proxy.webshare.io/api/v3"  # 替换/刷新等新端点走 v3
 _TIMEOUT = 20
 
 # 归到「静态住宅」的 plan 子类型（isp=静态住宅，residential=轮换住宅）
@@ -234,9 +235,9 @@ def replace_proxy(api_key: str, plan_id: int, ip_address: str, country_code: str
     """替换单个代理 IP（异步 API：返回 replacement request，需轮询状态到 completed）。"""
     if not api_key:
         raise WebshareError("请先填写 webshare API 密钥")
-    base, extra_headers, use_direct = _resolve_base()
     path = f"/proxy/replace/?plan_id={plan_id}" if plan_id else "/proxy/replace/"
-    url = base + path
+    # 替换端点走 v3（v2 的 POST /proxy/replace/ 返回分页列表，不是替换请求对象，导致取不到 id）
+    url = _BASE_V3 + path
     replace_with = (
         [{"type": "country", "country_code": country_code}]
         if country_code
@@ -252,14 +253,10 @@ def replace_proxy(api_key: str, plan_id: int, ip_address: str, country_code: str
         "Authorization": f"Token {api_key}",
         "User-Agent": "vultr-proxy-switcher/1.0",
         "Content-Type": "application/json",
-        **extra_headers,
     }
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    opener = (
-        urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        if use_direct
-        else urllib.request.build_opener()
-    )
+    # v3 替换端点直连 webshare，走系统代理（大陆需翻墙；低频操作）
+    opener = urllib.request.build_opener()
     try:
         with opener.open(req, timeout=_TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -279,13 +276,27 @@ def replace_proxy(api_key: str, plan_id: int, ip_address: str, country_code: str
 
 
 def get_replacement_status(api_key: str, plan_id: int, replacement_id: int) -> dict:
-    """查询替换请求状态（state：validating → completed / failed）。"""
+    """查询替换请求状态（v3：state validating/validated/processing → completed / failed）。"""
     path = (
         f"/proxy/replace/{replacement_id}/?plan_id={plan_id}"
         if plan_id
         else f"/proxy/replace/{replacement_id}/"
     )
-    return _get(api_key, path)
+    url = _BASE_V3 + path
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Token {api_key}", "User-Agent": "vultr-proxy-switcher/1.0"},
+    )
+    try:
+        with urllib.request.build_opener().open(req, timeout=_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = {}
+        try:
+            detail = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            pass
+        raise WebshareError(detail.get("detail") or detail.get("error") or f"HTTP {e.code}", e.code)
 
 
 def load_subscription(api_key: str) -> dict:
