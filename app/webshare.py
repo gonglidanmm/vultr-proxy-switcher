@@ -30,6 +30,38 @@ class WebshareError(Exception):
         self.status = status
 
 
+def list_accounts() -> list[dict]:
+    """返回 webshare 多账号列表 [{name, api_key}]（向下兼容旧的 webshare_api_key）。"""
+    from . import config
+
+    accounts = config.get("webshare_accounts", []) or []
+    if not accounts:
+        legacy = config.get("webshare_api_key", "")
+        if legacy:
+            accounts = [{"name": "默认账号", "api_key": legacy}]
+    return [a for a in accounts if a.get("api_key")]
+
+
+def get_active_account() -> dict | None:
+    """返回当前选中的账号 {name, api_key}；无账号返回 None。"""
+    accounts = list_accounts()
+    if not accounts:
+        return None
+    from . import config
+
+    active_name = config.get("webshare_active_account", "")
+    for a in accounts:
+        if a.get("name") == active_name:
+            return a
+    return accounts[0]
+
+
+def get_active_key() -> str:
+    """返回当前选中账号的 api_key；无账号返回空串。"""
+    a = get_active_account()
+    return (a or {}).get("api_key", "")
+
+
 def _resolve_base() -> tuple[str, dict, bool]:
     """返回 (base_url, extra_headers, use_direct)。
 
@@ -324,6 +356,8 @@ def subscription_quota_info(ip_type: str) -> dict:
             used = float(p.get("bandwidth_used", 0) or 0)
             break
     assigned = 0.0
+    active_account = get_active_account()
+    active_name = (active_account or {}).get("name", "默认账号")
     try:
         data = api_client.list_all_assignments()
         for a in data.get("assignments", []):
@@ -338,6 +372,9 @@ def subscription_quota_info(ip_type: str) -> dict:
                 except Exception:
                     nd = {}
             if nd.get("ip_type", "dc") == ip_type:
+                # 按账号过滤（旧 relay 无 ws_account 归属默认账号）
+                if (nd.get("ws_account") or "默认账号") != active_name:
+                    continue
                 try:
                     assigned += float(nd.get("quota_gb") or 0)
                 except (TypeError, ValueError):

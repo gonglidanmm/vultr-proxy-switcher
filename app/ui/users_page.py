@@ -1166,7 +1166,7 @@ class _ManageIpsDialog(SizedDialog):
     def _replace_ip(self, idx: int) -> None:
         """替换指定索引的 IP：从 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
         self._collect()
-        api_key = config.get("webshare_api_key", "")
+        api_key = webshare.get_active_key()
         if not api_key:
             QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
             return
@@ -1226,7 +1226,7 @@ class _ManageIpsDialog(SizedDialog):
 
     def _add_ip(self) -> None:
         self._collect()
-        api_key = config.get("webshare_api_key", "")
+        api_key = webshare.get_active_key()
         if not api_key:
             QMessageBox.warning(self, "无法添加", "请先在 Webshare-IP 页填写 API 密钥。")
             return

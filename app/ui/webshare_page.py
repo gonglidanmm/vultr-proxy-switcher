@@ -462,18 +462,50 @@ class WebsharePage(QWidget):
         self._sub_timer.timeout.connect(self._refresh_subscription)
         self._sub_timer.start()
         self._build()
+        self._load_accounts()
         self._load_servers()
+
+    def _load_accounts(self) -> None:
+        """填充上游账号下拉框（多 key），选中当前账号。"""
+        from .. import webshare as ws
+
+        accounts = ws.list_accounts()
+        self.account_combo.blockSignals(True)
+        self.account_combo.clear()
+        for a in accounts:
+            self.account_combo.addItem(a.get("name", ""), a.get("api_key", ""))
+        active = ws.get_active_account()
+        if active:
+            idx = self.account_combo.findText(active.get("name", ""))
+            if idx >= 0:
+                self.account_combo.setCurrentIndex(idx)
+        self.account_combo.blockSignals(False)
+
+    def _on_account_changed(self, _idx: int) -> None:
+        """切换上游账号：保存选中账号 + 重新加载该账号的 IP 列表/套餐。"""
+        name = self.account_combo.currentText()
+        key = self.account_combo.currentData() or ""
+        config.set_value("webshare_active_account", name)
+        config.set_value("webshare_api_key", key)  # 向下兼容旧字段
+        self._selected.clear()
+        self.refresh()
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(12)
 
-        # 标题行：标题 + 刷新列表
+        # 标题行：标题 + 上游账号下拉框 + 刷新列表
         title_row = QHBoxLayout()
         title = QLabel("🛜 Webshare-IP")
         title.setStyleSheet("font-size: 20px; font-weight: 700;")
         title_row.addWidget(title)
+        title_row.addSpacing(16)
+        title_row.addWidget(QLabel("上游账号"))
+        self.account_combo = QComboBox()
+        self.account_combo.setMinimumWidth(160)
+        self.account_combo.currentIndexChanged.connect(self._on_account_changed)
+        title_row.addWidget(self.account_combo)
         title_row.addStretch(1)
         self.refresh_btn = QPushButton("刷新列表")
         self.refresh_btn.clicked.connect(self.refresh)
@@ -639,7 +671,7 @@ class WebsharePage(QWidget):
         return w
 
     def activate(self) -> None:
-        if config.get("webshare_api_key", ""):
+        if self.account_combo.currentData():
             self.refresh()
         if not self.server_combo.count():
             self._load_servers()
@@ -726,9 +758,9 @@ class WebsharePage(QWidget):
         pool.sort(key=lambda p: order_map.get(self._ip_key(p), official.get(self._ip_key(p), len(order) + 99999)))
 
     def refresh(self) -> None:
-        key = config.get("webshare_api_key", "")
+        key = self.account_combo.currentData() or ""
         if not key:
-            self._set_status("请先在「设置」填写 webshare API 密钥", warn=True)
+            self._set_status("请先在「设置」添加 webshare 账号（API 密钥）", warn=True)
             return
         self._set_status("加载中…", loading=True)
         self.refresh_btn.setEnabled(False)
@@ -824,7 +856,7 @@ class WebsharePage(QWidget):
 
     def _refresh_subscription(self) -> None:
         """每分钟刷新订阅流量（plans + stats），更新 config 供「分配用户」弹窗读最新剩余。"""
-        api_key = str(config.get("webshare_api_key", "") or "")
+        api_key = self.account_combo.currentData() or ""
         if not api_key:
             return
         from ..webshare import load_subscription
@@ -845,15 +877,22 @@ class WebsharePage(QWidget):
         self._update_plans(data.get("plans", []), data.get("subscription", {}))
 
     def _update_relay_overview(self) -> None:
-        """更新顶部统计（已中转 / 冷却 / 回归 / 未中转）。"""
+        """更新顶部统计（已中转 / 冷却 / 回归 / 未中转），按当前上游账号隔离。"""
         relays = config.get("relays", [])
         recycled = config.get("recycled_relays", []) or []
         returned = config.get("returned_ips", {}) or {}
         total_ip = len(self._dc) + len(self._res)
+        cur_account = self.account_combo.currentText() or "默认账号"
+
+        def _account_of(r) -> str:
+            return r.get("ws_account") or "默认账号"  # 旧 relay 无 ws_account 归属默认账号
+
         def _count_ip(lst) -> int:
-            """中转 IP 数：主 host:port + 候选上游 host:port 去重。"""
+            """中转 IP 数（只算当前账号的）：主 host:port + 候选上游 host:port 去重。"""
             s = set()
             for r in lst:
+                if _account_of(r) != cur_account:
+                    continue
                 s.add(f"{r.get('host','')}:{r.get('port','')}")
                 for c in r.get("candidate_upstreams", []) or []:
                     s.add(f"{c.get('host','')}:{c.get('port','')}")
@@ -1315,7 +1354,7 @@ class WebsharePage(QWidget):
         """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表）。"""
         btn.setEnabled(False)
         btn.setText("替换中…")
-        api_key = config.get("webshare_api_key", "")
+        api_key = self.account_combo.currentData() or ""
 
         def _do():
             result = webshare.replace_proxy(api_key, plan_id, addr, country_code)
@@ -1563,6 +1602,7 @@ class WebsharePage(QWidget):
                 "relay_port": rp, "relay_password": relay_pw,
                 "ip_type": ip_type,
                 "entry_domain": entry_domain,
+                "ws_account": (self.account_combo.currentText() or ""),  # 归属账号（多账号流量隔离）
                 "reality_uuid": reality["reality_uuid"],
                 "reality_private_key": reality["reality_private_key"],
                 "reality_public_key": reality["reality_public_key"],

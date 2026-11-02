@@ -59,8 +59,10 @@ DEFAULTS: dict = {
     "relay_port_high_water": 45678,
     # 取消中转时保留的密码（host:port -> 密码），重新生成同样 IP 复用，客户端不用改
     "relay_password_pool": {},
-    # webshare 静态住宅 / 代理服务器（API 密钥由用户在 webshare 页输入）
+    # webshare 静态住宅 / 代理服务器（多账号：每个账号一个 API key；向下兼容旧的 webshare_api_key）
     "webshare_api_key": "",
+    "webshare_accounts": [],          # [{name, api_key}] 多账号列表
+    "webshare_active_account": "",    # 当前选中的账号名（webshare-IP 页下拉框）
     # 服务器备注（server_id -> 备注文本，用户手动输入便于区分多台）
     "server_notes": {},
     # 服务器显示名称（server_id -> 自定义名称，本地显示用，不影响 Vultr label / 切换IP）
