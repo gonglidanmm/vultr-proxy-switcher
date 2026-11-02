@@ -1571,7 +1571,11 @@ class WebsharePage(QWidget):
         config.set_value("relay_port_high_water", high_water)
         config.set_value("returned_ips", returned_ips)
         # 更新 relay 匹配表 + 重新渲染
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in relays}
+        self._relay_map = {}
+        for r in relays:
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._fill(self.dc_table, self._dc, "dc")
         self._fill(self.res_table, self._res, "res")
         self._update_relay_overview()
@@ -1658,7 +1662,11 @@ class WebsharePage(QWidget):
         # per-relay sing-box：取消中转只删该 relay 的独立 sing-box 服务（不再重建单进程 config）
         sb_cmd = (f"systemctl disable --now sing-box-relay-{rid} 2>/dev/null; "
                   f"rm -f /etc/systemd/system/sing-box-relay-{rid}.service /etc/sing-box/relay-{rid}.json; ")
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in relays}
+        self._relay_map = {}
+        for r in relays:
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._fill(self.dc_table, self._dc, "dc")
         self._fill(self.res_table, self._res, "res")
         self._update_relay_overview()
