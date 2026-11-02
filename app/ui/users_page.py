@@ -1212,63 +1212,57 @@ class _ManageIpsDialog(SizedDialog):
             except Exception:
                 nd = {}
         ws_account = nd.get("ws_account", "")
-        # 用当前要替换的 IP 自己记录的账号（IP 级），否则反查，再否则线路级/当前账号
+        from ..relay_ops import available_pool, resolve_replace_account
+
+        accounts = webshare.list_accounts()
         target_host = self._cands[idx].get("host", "")
         target_ws = self._cands[idx].get("ws_account", "")
-        api_key = ""
-        if target_ws:
-            for acct in webshare.list_accounts():
-                if acct.get("name") == target_ws:
-                    api_key = acct.get("api_key", "")
-                    break
-        if not api_key:
-            api_key = webshare.key_for_host(target_host)
-        if not api_key and ws_account:
-            for acct in webshare.list_accounts():
-                if acct.get("name") == ws_account:
-                    api_key = acct.get("api_key", "")
-                    break
+        # 默认账号：当前 IP 记录 > host 反查 > 线路级 > active
+        default_name, api_key = resolve_replace_account(
+            target_ws, target_host, ws_account, accounts, webshare.key_for_host
+        )
         if not api_key:
             api_key = webshare.get_active_key()
-        # 记录 api_key 对应的账号名（替换后写回候选 ws_account）
-        active_name = ""
-        for acct in webshare.list_accounts():
-            if acct.get("api_key") == api_key:
-                active_name = acct.get("name", "")
-                break
+            default_name = ""
+            for acct in accounts:
+                if acct.get("api_key") == api_key:
+                    default_name = acct.get("name", "")
+                    break
         if not api_key:
             self._status.setText('<span style="color:#ff9f0a;">⚠️ 请先在 Webshare-IP 页填写 API 密钥</span>')
             QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
             return
-        try:
-            lists = webshare.load_lists(api_key)
-        except Exception as e:
-            self._status.setText(f'<span style="color:#ff453a;">❌ 拉取失败：{e}</span>')
-            QMessageBox.warning(self, "拉取失败", str(e))
-            return
+
+        # 预计算过滤条件（pool_loader 复用；切换账号时也用它）
         relays = config.get("relays", []) or []
         used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
         recycled = config.get("recycled_relays", []) or []
         recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
         cur_hosts = {c.get("host") for c in self._cands}
-        available = []
-        for pool in (lists.get("proxy_servers", []), lists.get("static_residential", [])):
-            for p in pool:
-                host = p.get("proxy_address") or "p.webshare.io"
-                key = (host, int(p.get("port", 0) or 0))
-                if key in used_keys and host not in cur_hosts:
-                    continue
-                if key in recycled_keys:
-                    continue
-                if host in cur_hosts:
-                    continue
-                available.append(p)
+
+        def pool_loader(name: str) -> list[dict]:
+            key = ""
+            for acct in accounts:
+                if acct.get("name") == name:
+                    key = acct.get("api_key", "")
+                    break
+            if not key:
+                return []
+            try:
+                lists = webshare.load_lists(key)
+            except Exception:
+                return []
+            all_p = (lists.get("proxy_servers", []) or []) + (lists.get("static_residential", []) or [])
+            return available_pool(all_p, used_keys, recycled_keys, cur_hosts)
+
+        available = pool_loader(default_name)
         if not available:
             self._status.setText('<span style="color:#ff9f0a;">⚠️ 没有可替换的 IP（未中转且不在冷却中的）</span>')
             QMessageBox.information(self, "无可用 IP", "没有可替换的 IP（未中转且不在冷却中的）。")
             return
         self._status.setText(f'<span style="color:#30d158;">加载 {len(available)} 个可用 IP，请选择要替换的新 IP…</span>')
-        dlg = _IpPickerDialog(self, available, single=True)
+        dlg = _IpPickerDialog(self, available, single=True, accounts=accounts,
+                              pool_loader=pool_loader, default_account=default_name)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         items = dlg.selected()
@@ -1290,11 +1284,11 @@ class _ManageIpsDialog(SizedDialog):
         self._cands[idx]["expiry"] = item["expiry"]
         self._cands[idx]["used_gb"] = 0
         self._cands[idx]["enabled"] = True
-        self._cands[idx]["ws_account"] = active_name
+        self._cands[idx]["ws_account"] = item.get("ws_account") or default_name
         self._build_rows()
         self._status.setText(
             f'<span style="color:#32d74b;">✅ 已将 {old_host}:{old_port} 替换为 '
-            f'{new_host}:{new_port}（配额 {item["quota_gb"]}G，点「保存」生效）</span>'
+            f'{new_host}:{new_port}（账号 {item.get("ws_account") or default_name}，配额 {item["quota_gb"]}G，点「保存」生效）</span>'
         )
 
     def _edit_expiry(self, idx: int) -> None:
@@ -1313,41 +1307,45 @@ class _ManageIpsDialog(SizedDialog):
 
     def _add_ip(self) -> None:
         self._collect()
+        from ..relay_ops import available_pool
+
+        accounts = webshare.list_accounts()
         api_key = webshare.get_active_key()
         if not api_key:
             QMessageBox.warning(self, "无法添加", "请先在 Webshare-IP 页填写 API 密钥。")
             return
-        active_name = ""
-        for acct in webshare.list_accounts():
+        default_name = ""
+        for acct in accounts:
             if acct.get("api_key") == api_key:
-                active_name = acct.get("name", "")
+                default_name = acct.get("name", "")
                 break
-        try:
-            lists = webshare.load_lists(api_key)
-        except Exception as e:
-            QMessageBox.warning(self, "拉取失败", str(e))
-            return
         relays = config.get("relays", []) or []
         used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
         recycled = config.get("recycled_relays", []) or []
         recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
         cur_hosts = {c.get("host") for c in self._cands}
-        available = []
-        for pool in (lists.get("proxy_servers", []), lists.get("static_residential", [])):
-            for p in pool:
-                host = p.get("proxy_address") or "p.webshare.io"
-                key = (host, int(p.get("port", 0) or 0))
-                if key in used_keys and host not in cur_hosts:
-                    continue  # 已中转且不在本线路候选里（属于别的线路）
-                if key in recycled_keys:
-                    continue  # 冷却中（已回收还没回正常列表）
-                if host in cur_hosts:
-                    continue  # 已在本线路候选里
-                available.append(p)
+
+        def pool_loader(name: str) -> list[dict]:
+            key = ""
+            for acct in accounts:
+                if acct.get("name") == name:
+                    key = acct.get("api_key", "")
+                    break
+            if not key:
+                return []
+            try:
+                lists = webshare.load_lists(key)
+            except Exception:
+                return []
+            all_p = (lists.get("proxy_servers", []) or []) + (lists.get("static_residential", []) or [])
+            return available_pool(all_p, used_keys, recycled_keys, cur_hosts)
+
+        available = pool_loader(default_name)
         if not available:
             QMessageBox.information(self, "无可用 IP", "没有可添加的 IP（未中转且不在冷却中的）。")
             return
-        dlg = _IpPickerDialog(self, available)
+        dlg = _IpPickerDialog(self, available, accounts=accounts,
+                              pool_loader=pool_loader, default_account=default_name)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         for item in dlg.selected():
@@ -1361,7 +1359,7 @@ class _ManageIpsDialog(SizedDialog):
                 "used_gb": 0,
                 "expiry": item["expiry"],
                 "enabled": True,
-                "ws_account": active_name,
+                "ws_account": item.get("ws_account") or default_name,
             })
         self._build_rows()
         self._status.setText(
@@ -1406,9 +1404,12 @@ class _IpPickerDialog(SizedDialog):
     _default_h = 480
     """从 webshare IP 列表多选要添加的候选 IP，每个 IP 独立设置配额 + 使用时长（分/时/日）。"""
 
-    def __init__(self, parent, available: list[dict], single: bool = False) -> None:
+    def __init__(self, parent, available: list[dict], single: bool = False,
+                 accounts: list[dict] | None = None, pool_loader=None, default_account: str = "") -> None:
         super().__init__(parent)
         self._single = single
+        self._accounts = accounts or []
+        self._pool_loader = pool_loader
         self.setWindowTitle("选择要替换的 IP" if single else "选择要添加的 IP")
         self.setMinimumSize(820, 480)
         self._available = available
@@ -1420,8 +1421,26 @@ class _IpPickerDialog(SizedDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        tip = QLabel(f"勾选要添加的 IP，并为每个 IP 设置配额和到期时长（共 {len(available)} 个可用）")
-        layout.addWidget(tip)
+        # 上游账号下拉框（跨账号选择：替换/添加时可切到别的账号池）
+        self.account_combo: QComboBox | None = None
+        if len(self._accounts) > 1:
+            acct_row = QHBoxLayout()
+            acct_row.addWidget(QLabel("上游账号:"))
+            self.account_combo = QComboBox()
+            for a in self._accounts:
+                self.account_combo.addItem(a.get("name", ""))
+            if default_account:
+                _i = self.account_combo.findText(default_account)
+                if _i >= 0:
+                    self.account_combo.setCurrentIndex(_i)
+            self.account_combo.currentIndexChanged.connect(self._on_account_changed)
+            acct_row.addWidget(self.account_combo)
+            acct_row.addStretch(1)
+            layout.addLayout(acct_row)
+
+        self._tip = QLabel("")
+        layout.addWidget(self._tip)
+        self._update_tip()
 
         # 统一设置区
         uni = QHBoxLayout()
@@ -1444,7 +1463,7 @@ class _IpPickerDialog(SizedDialog):
         uni.addStretch(1)
         layout.addLayout(uni)
 
-        self.table = QTableWidget(len(available), 5)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["", "IP", "配额(GB)", "时长单位", "时长"])
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(40)  # 行高，控件完整显示
@@ -1455,8 +1474,44 @@ class _IpPickerDialog(SizedDialog):
         persist_col_widths(self.table, "ip_picker_col_widths", [40, 300, 90, 90, 70])
         layout.addWidget(self.table, 1)
 
-        for i, p in enumerate(available):
-            self.table.setRowHeight(i, 40)  # 显式行高，控件垂直完整
+        self._suppress_picker = False
+        self._fill_table(available)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("替换" if single else "添加")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        if single:
+            self.table.itemChanged.connect(self._on_item_changed_single)
+
+    def _update_tip(self) -> None:
+        self._tip.setText(f"勾选要添加的 IP，并为每个 IP 设置配额和到期时长（共 {len(self._available)} 个可用）")
+
+    def _current_account(self) -> str:
+        if self.account_combo:
+            return self.account_combo.currentText()
+        return (self._accounts[0].get("name", "") if self._accounts else "")
+
+    def _on_account_changed(self, _idx: int) -> None:
+        """切换上游账号 → 重新加载该账号的 IP 池。"""
+        if self._pool_loader:
+            proxies = self._pool_loader(self._current_account()) or []
+            self._fill_table(proxies)
+
+    def _fill_table(self, proxies: list[dict]) -> None:
+        """用给定 IP 池重建表格（切换账号时复用）。"""
+        self._suppress_picker = True
+        self._available = proxies
+        self._checks.clear()
+        self._quota_spins.clear()
+        self._unit_combos.clear()
+        self._dur_spins.clear()
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(proxies))
+        for i, p in enumerate(proxies):
+            self.table.setRowHeight(i, 40)
             host = p.get("proxy_address") or "p.webshare.io"
             country = p.get("country_code", "")
             city = p.get("city_name", "")
@@ -1484,18 +1539,13 @@ class _IpPickerDialog(SizedDialog):
             d.setValue(1)
             self.table.setCellWidget(i, 4, d)
             self._dur_spins.append(d)
-
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText("替换" if single else "添加")
-        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-        if single:
-            self.table.itemChanged.connect(self._on_item_changed_single)
+        self._suppress_picker = False
+        self._update_tip()
 
     def _on_item_changed_single(self, item) -> None:
         """单选模式：勾选一个后自动取消其他勾选。"""
+        if getattr(self, "_suppress_picker", False):
+            return
         if item.column() == 0 and item.checkState() == Qt.CheckState.Checked:
             for i in range(self.table.rowCount()):
                 if i != item.row():
@@ -1515,6 +1565,7 @@ class _IpPickerDialog(SizedDialog):
 
     def selected(self) -> list[dict]:
         out = []
+        acct = self._current_account()
         for i in range(self.table.rowCount()):
             chk = self._checks[i]
             if chk.checkState() != Qt.CheckState.Checked:
@@ -1525,7 +1576,7 @@ class _IpPickerDialog(SizedDialog):
             dur = self._dur_spins[i].value()
             seconds = dur * _UNIT_SECONDS[unit_idx]
             expiry = _duration_expiry(seconds)
-            out.append({"p": p, "quota_gb": quota, "expiry": expiry})
+            out.append({"p": p, "quota_gb": quota, "expiry": expiry, "ws_account": acct})
         return out
 
 
