@@ -1370,6 +1370,8 @@ class _ManageIpsDialog(SizedDialog):
     # ---------- 保存 ----------
     def _save(self) -> None:
         self._collect()
+        # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
+        old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
         # 1. 更新 config.relays 的 candidate_upstreams（源）
         rid = str(self._line.get("resource_id", ""))
         relays = config.get("relays", []) or []
@@ -1418,8 +1420,12 @@ class _ManageIpsDialog(SizedDialog):
         except ApiError as e:
             QMessageBox.warning(self, "保存失败", e.message)
             return
-        # 重新部署服务器（替换/添加 IP 后，服务器需用新 upstream 才能通）
-        self._deploy_after_save(rid)
+        # 只有 IP 变化（替换/添加/删除）才重新部署；改配额/到期/禁用不部署
+        new_keys = {f"{c.get('host')}:{c.get('port')}" for c in self._cands}
+        if new_keys != old_keys:
+            self._deploy_after_save(rid)
+        else:
+            self._status.setText('<span style="color:#32d74b;">✅ 已保存（IP 未变，无需重新部署）</span>')
 
     def _deploy_after_save(self, rid: str) -> None:
         """保存后重新部署该 relay 的服务器（替换/添加 IP 后服务器需用新 upstream）。"""
