@@ -1070,7 +1070,7 @@ class _ManageIpsDialog(QDialog):
         used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
         cur_hosts = {c.get("host") for c in self._cands}
         available = []
-        for pool in (lists.get("dc", []), lists.get("res", [])):
+        for pool in (lists.get("proxy_servers", []), lists.get("static_residential", [])):
             for p in pool:
                 host = p.get("proxy_address") or "p.webshare.io"
                 key = (host, int(p.get("port", 0) or 0))
