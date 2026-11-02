@@ -1204,8 +1204,10 @@ class _ManageIpsDialog(SizedDialog):
             except Exception:
                 nd = {}
         ws_account = nd.get("ws_account", "")
-        api_key = ""
-        if ws_account:
+        # 用当前要替换的 IP 反查所属账号（跨账号合并线路：替换哪个 IP 就用哪个账号的池）
+        target_host = self._cands[idx].get("host", "")
+        api_key = webshare.key_for_host(target_host)
+        if not api_key and ws_account:
             for acct in webshare.list_accounts():
                 if acct.get("name") == ws_account:
                     api_key = acct.get("api_key", "")

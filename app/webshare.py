@@ -69,6 +69,24 @@ def default_account_name() -> str:
     return accounts[0].get("name", "默认账号") if accounts else "默认账号"
 
 
+def key_for_host(host: str) -> str:
+    """按上游 IP 反查所属账号的 api_key（跨账号合并线路替换时定位正确池）。"""
+    if not host:
+        return ""
+    for a in list_accounts():
+        key = a.get("api_key", "")
+        if not key:
+            continue
+        try:
+            lists = load_lists(key)
+        except Exception:
+            continue
+        for p in (lists.get("proxy_servers", []) or []) + (lists.get("static_residential", []) or []):
+            if p.get("proxy_address") == host:
+                return key
+    return ""
+
+
 def _resolve_base() -> tuple[str, dict, bool]:
     """返回 (base_url, extra_headers, use_direct)。
 
