@@ -1193,15 +1193,33 @@ class _ManageIpsDialog(SizedDialog):
         )
 
     def _replace_ip(self, idx: int) -> None:
-        """替换指定索引的 IP：从 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
+        """替换指定索引的 IP：从同账号的 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
         self._collect()
-        api_key = webshare.get_active_key()
+        # 用当前线路的上游账号（避免跨账号替换 / 当前账号无可用 IP 导致「没反应」）
+        nd = self._line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        ws_account = nd.get("ws_account", "")
+        api_key = ""
+        if ws_account:
+            for acct in webshare.list_accounts():
+                if acct.get("name") == ws_account:
+                    api_key = acct.get("api_key", "")
+                    break
         if not api_key:
+            api_key = webshare.get_active_key()
+        if not api_key:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 请先在 Webshare-IP 页填写 API 密钥</span>')
             QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
             return
         try:
             lists = webshare.load_lists(api_key)
         except Exception as e:
+            self._status.setText(f'<span style="color:#ff453a;">❌ 拉取失败：{e}</span>')
             QMessageBox.warning(self, "拉取失败", str(e))
             return
         relays = config.get("relays", []) or []
@@ -1222,13 +1240,16 @@ class _ManageIpsDialog(SizedDialog):
                     continue
                 available.append(p)
         if not available:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 没有可替换的 IP（未中转且不在冷却中的）</span>')
             QMessageBox.information(self, "无可用 IP", "没有可替换的 IP（未中转且不在冷却中的）。")
             return
+        self._status.setText(f'<span style="color:#30d158;">加载 {len(available)} 个可用 IP，请选择要替换的新 IP…</span>')
         dlg = _IpPickerDialog(self, available, single=True)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         items = dlg.selected()
         if not items:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 未选择 IP</span>')
             QMessageBox.information(self, "未选择", "请勾选一个要替换的 IP。")
             return
         item = items[0]
