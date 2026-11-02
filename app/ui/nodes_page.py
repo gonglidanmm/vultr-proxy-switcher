@@ -667,6 +667,26 @@ class NodesPage(QWidget):
         server_map = getattr(self, "_server_map", {})
         selected_list = list(self._selected.values())
 
+        # 勾选多个时，每个 IP 单独设置到期/流量（弹窗设置，统一值作为默认）
+        per_ip_settings: dict = {}
+        if len(selected_list) > 1:
+            from .webshare_page import _MergeSettingsDialog
+
+            raw_cands = []
+            for relay in selected_list:
+                raw_cands.append({
+                    "host": relay.get("host", ""),
+                    "port": int(relay.get("port", 0) or 0),
+                    "user": relay.get("user", ""),
+                    "password": relay.get("password", ""),
+                })
+            mdlg = _MergeSettingsDialog(self, raw_cands)
+            if mdlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            settings = mdlg.results()
+            for relay, s in zip(selected_list, settings):
+                per_ip_settings[relay["id"]] = s
+
         ok = fail = 0
         for relay in selected_list:
             sid = relay.get("server_id", "")
@@ -675,11 +695,19 @@ class NodesPage(QWidget):
                 fail += 1
                 continue
             nd = relay_node_data(relay, srv_ip, switch_api_key)
-            if dlg.expires_at:
-                nd["client_expiry"] = dlg.expires_at
-            nd["quota_gb"] = dlg.quota_gb
+            s = per_ip_settings.get(relay["id"])
+            if s is not None:
+                # 单独设置：expiry 空串=不过期，quota_gb 0=不限（不 fallback 到统一值）
+                expires_at = s.get("expiry")
+                quota = s.get("quota_gb") or 0
+            else:
+                expires_at = dlg.expires_at
+                quota = dlg.quota_gb
+            if expires_at:
+                nd["client_expiry"] = expires_at
+            nd["quota_gb"] = quota
             try:
-                api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=dlg.quota_gb)
+                api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=quota)
                 ok += 1
             except ApiError:
                 fail += 1
