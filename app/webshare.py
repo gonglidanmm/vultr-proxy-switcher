@@ -63,6 +63,12 @@ def get_active_key() -> str:
     return (a or {}).get("api_key", "")
 
 
+def default_account_name() -> str:
+    """返回第一个账号的名字（旧 relay 无 ws_account 归属它）；无账号返回「默认账号」。"""
+    accounts = list_accounts()
+    return accounts[0].get("name", "默认账号") if accounts else "默认账号"
+
+
 def _resolve_base() -> tuple[str, dict, bool]:
     """返回 (base_url, extra_headers, use_direct)。
 

@@ -666,6 +666,7 @@ class UsersPage(QWidget):
                 "ip_type": relay.get("ip_type", "dc"),
                 "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "recycled_from_user": username,
+                "ws_account": relay.get("ws_account", ""),
             }
             cands = relay.get("candidate_upstreams") or []
             if cands:
@@ -1531,7 +1532,7 @@ class _UserLinesDialog(SizedDialog):
                 table.setItem(row, col, item)
 
             # 上游账号(3)：该 IP 所属的 webshare 账号
-            acct = QTableWidgetItem(node.get("ws_account") or "默认账号")
+            acct = QTableWidgetItem(node.get("ws_account") or webshare.default_account_name())
             acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             acct.setForeground(Qt.GlobalColor.white)
             acct.setToolTip("该 IP 所属的 webshare 上游账号")

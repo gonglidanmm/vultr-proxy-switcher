@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import api_client, config, ipqs
+from .. import api_client, config, ipqs, webshare
 from ..relay import SOCKS_USER, SS_METHOD, hysteria_port, reality_port, relay_node_data, socks_port
 from ..share import hysteria2_link, socks5_link, ss_link, vless_reality_link
 from .drag_table import DragTableWidget
@@ -44,7 +44,7 @@ _OP_COL = len(_COLS) - 1  # 操作列索引
 _SEL_COL = 0              # 勾选列（checkbox，批量分配用）
 
 # 回收页列（回收时间 + 被回收用户 + 手动回归）
-_RECYCLE_COLS = ["#", "名称", "类型", "回收时间", "被回收用户", "上游出口", "备注", "操作"]
+_RECYCLE_COLS = ["#", "名称", "类型", "回收时间", "被回收用户", "上游出口", "上游账号", "备注", "操作"]
 _RECYCLE_OP_COL = len(_RECYCLE_COLS) - 1
 
 
@@ -542,7 +542,7 @@ class NodesPage(QWidget):
             self._item(table, row, 7, upstream)
 
             # 上游账号（该 IP 来自哪个 webshare 账号）
-            account_item = QTableWidgetItem(r.get("ws_account") or "默认账号")
+            account_item = QTableWidgetItem(r.get("ws_account") or webshare.default_account_name())
             account_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             account_item.setToolTip("该上游 IP 所属的 webshare 账号")
             table.setItem(row, 8, account_item)
@@ -614,6 +614,8 @@ class NodesPage(QWidget):
             self._item(table, row, 3, r.get("recycled_at", ""))
             self._item(table, row, 4, r.get("recycled_from_user", ""))
             self._item(table, row, 5, upstream)
+            # 上游账号(6)：该 IP 所属的 webshare 账号
+            self._item(table, row, 6, r.get("ws_account") or webshare.default_account_name())
             # 备注（可编辑，共用 webshare_notes，key = host:port，回归后 webshare-IP 页可见）
             ip_key = f"{r.get('host','')}:{r.get('port','')}"
             notes = config.get("webshare_notes", {})
@@ -621,7 +623,7 @@ class NodesPage(QWidget):
             note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
             note_item.setToolTip("双击编辑备注（与 webshare-IP 页共用，回归后可见）")
-            table.setItem(row, 6, note_item)
+            table.setItem(row, 7, note_item)
             w = QWidget()
             lay = QHBoxLayout(w)
             lay.setContentsMargins(4, 2, 4, 2)
