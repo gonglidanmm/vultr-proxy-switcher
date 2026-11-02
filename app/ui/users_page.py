@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import api_client, config
+from .. import api_client, config, webshare
 from ..api_client import ApiError
+from ..relay import norm_candidate
 from .drag_table import DragTableWidget
 
 # 全局回显：让 Vultr-IP 页面的操作也能写入用户管理页的日志区
@@ -849,6 +850,330 @@ class _UserDialog(QDialog):
         self.accept()
 
 
+class _ManageIpsDialog(QDialog):
+    """管理某条线路的候选 IP：添加/删除/禁用/设为当前/改配额/改到期。"""
+
+    COLS = ["上游IP", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
+
+    def __init__(self, page, u: dict, line: dict) -> None:
+        super().__init__(page)
+        self._page = page
+        self._u = u
+        self._line = line
+        nd = line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        self._creds = nd.get("_creds", {}) or {}
+        self._cands = [norm_candidate(c) for c in (self._creds.get("candidates") or [])]
+        self._active_idx = int(self._creds.get("active_idx", 0) or 0)
+        self._name = nd.get("name", "") or line.get("resource_id", "")
+        self._quota_spins: list = []
+        self._expiry_edits: list = []
+        self._toggle_btns: list = []
+        self._set_btns: list = []
+
+        self.setWindowTitle(f"管理 IP - {self._name}")
+        self.setMinimumSize(800, 460)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self._head = QLabel("")
+        self._head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._head)
+
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(False)
+        for c, w in enumerate([150, 90, 80, 160, 70, 50, 210]):
+            self.table.setColumnWidth(c, w)
+        layout.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        add_btn = QPushButton("＋ 添加 IP")
+        add_btn.setFixedHeight(32)
+        add_btn.clicked.connect(self._add_ip)
+        btns.addWidget(add_btn)
+        btns.addStretch(1)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        box.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        box.accepted.connect(self._save)
+        box.rejected.connect(self.reject)
+        btns.addWidget(box)
+        layout.addLayout(btns)
+
+        self._build_rows()
+
+    # ---------- 状态判定 ----------
+    def _ip_status(self, c: dict) -> tuple[str, Qt.GlobalColor]:
+        if not c.get("enabled", True):
+            return "已禁用", Qt.GlobalColor.red
+        exp = (c.get("expiry") or "").strip()
+        if exp:
+            try:
+                dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone()
+                if dt < datetime.now().astimezone():
+                    return "已到期", Qt.GlobalColor.red
+            except Exception:
+                pass
+        quota = float(c.get("quota_gb") or 0)
+        used = float(c.get("used_gb") or 0)
+        if quota > 0 and used >= quota:
+            return "已用尽", Qt.GlobalColor.red
+        return "正常", Qt.GlobalColor.lightGray
+
+    # ---------- 表格渲染 ----------
+    def _build_rows(self) -> None:
+        self.table.setRowCount(len(self._cands))
+        self._quota_spins.clear()
+        self._expiry_edits.clear()
+        self._toggle_btns.clear()
+        self._set_btns.clear()
+        for i, c in enumerate(self._cands):
+            self.table.setRowHeight(i, 44)
+            # IP
+            it = QTableWidgetItem(c.get("host", "") or "")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 0, it)
+            # 配额
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(int(c.get("quota_gb") or 0))
+            q.setToolTip("0 = 不限流量")
+            self.table.setCellWidget(i, 1, q)
+            self._quota_spins.append(q)
+            # 已用
+            used_it = QTableWidgetItem(f"{float(c.get('used_gb') or 0):.2f}G")
+            used_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            used_it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 2, used_it)
+            # 到期
+            e = QLineEdit()
+            e.setText((c.get("expiry") or "").strip())
+            e.setPlaceholderText("空=不过期")
+            self.table.setCellWidget(i, 3, e)
+            self._expiry_edits.append(e)
+            # 状态
+            st_txt, st_color = self._ip_status(c)
+            st_it = QTableWidgetItem(st_txt)
+            st_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            st_it.setForeground(st_color)
+            self.table.setItem(i, 4, st_it)
+            # 激活
+            act_it = QTableWidgetItem("●" if i == self._active_idx else "")
+            act_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
+            self.table.setItem(i, 5, act_it)
+            # 操作
+            op_w = QWidget()
+            op_lay = QHBoxLayout(op_w)
+            op_lay.setContentsMargins(0, 0, 0, 0)
+            op_lay.setSpacing(4)
+            set_btn = QPushButton("设为当前")
+            set_btn.setProperty("compact", True)
+            set_btn.setFixedSize(72, 30)
+            set_btn.clicked.connect(lambda _=False, idx=i: self._set_active(idx))
+            op_lay.addWidget(set_btn)
+            self._set_btns.append(set_btn)
+            tog = QPushButton("禁用" if c.get("enabled", True) else "启用")
+            tog.setProperty("compact", True)
+            tog.setFixedSize(52, 30)
+            tog.clicked.connect(lambda _=False, idx=i: self._toggle(idx))
+            op_lay.addWidget(tog)
+            self._toggle_btns.append(tog)
+            del_btn = QPushButton("删除")
+            del_btn.setProperty("compact", True)
+            del_btn.setFixedSize(52, 30)
+            del_btn.clicked.connect(lambda _=False, idx=i: self._remove(idx))
+            op_lay.addWidget(del_btn)
+            self.table.setCellWidget(i, 6, op_w)
+        self._refresh_head()
+
+    def _refresh_head(self) -> None:
+        self._head.setText(
+            f"线路：<b>{self._name}</b>　共 <b>{len(self._cands)}</b> 个 IP，"
+            f"当前激活第 <b style='color:#30d158'>{self._active_idx + 1}</b> 个"
+        )
+
+    def _collect(self) -> None:
+        """把表格里的配额/到期写回 self._cands。"""
+        for i in range(len(self._cands)):
+            if i < len(self._quota_spins):
+                self._cands[i]["quota_gb"] = self._quota_spins[i].value()
+            if i < len(self._expiry_edits):
+                self._cands[i]["expiry"] = self._expiry_edits[i].text().strip()
+
+    def _refresh_after_edit(self) -> None:
+        """编辑后刷新状态列 + 激活列 + 按钮文字（增量，不重建）。"""
+        for i, c in enumerate(self._cands):
+            st_txt, st_color = self._ip_status(c)
+            st_it = self.table.item(i, 4)
+            if st_it:
+                st_it.setText(st_txt)
+                st_it.setForeground(st_color)
+            act_it = self.table.item(i, 5)
+            if act_it:
+                act_it.setText("●" if i == self._active_idx else "")
+                act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
+            if i < len(self._toggle_btns):
+                self._toggle_btns[i].setText("禁用" if c.get("enabled", True) else "启用")
+        self._refresh_head()
+
+    # ---------- 操作 ----------
+    def _set_active(self, idx: int) -> None:
+        self._collect()
+        self._active_idx = idx
+        self._refresh_after_edit()
+
+    def _toggle(self, idx: int) -> None:
+        self._collect()
+        self._cands[idx]["enabled"] = not self._cands[idx].get("enabled", True)
+        self._refresh_after_edit()
+
+    def _remove(self, idx: int) -> None:
+        self._collect()
+        if len(self._cands) <= 1:
+            QMessageBox.warning(self, "无法删除", "至少保留 1 个 IP（删除最后一个请用「回收」）。")
+            return
+        del self._cands[idx]
+        if self._active_idx > idx:
+            self._active_idx -= 1
+        elif self._active_idx >= len(self._cands):
+            self._active_idx = 0
+        self._build_rows()
+
+    def _add_ip(self) -> None:
+        self._collect()
+        api_key = config.get("webshare_api_key", "")
+        if not api_key:
+            QMessageBox.warning(self, "无法添加", "请先在 Webshare-IP 页填写 API 密钥。")
+            return
+        try:
+            lists = webshare.load_lists(api_key)
+        except Exception as e:
+            QMessageBox.warning(self, "拉取失败", str(e))
+            return
+        relays = config.get("relays", []) or []
+        used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
+        cur_hosts = {c.get("host") for c in self._cands}
+        available = []
+        for pool in (lists.get("dc", []), lists.get("res", [])):
+            for p in pool:
+                host = p.get("proxy_address") or "p.webshare.io"
+                key = (host, int(p.get("port", 0) or 0))
+                if key in used_keys and host not in cur_hosts:
+                    continue  # 已中转且不在本线路候选里（属于别的线路）
+                if host in cur_hosts:
+                    continue  # 已在本线路候选里
+                available.append(p)
+        if not available:
+            QMessageBox.information(self, "无可用 IP", "没有可添加的 IP（未中转或未在本线路里的）。")
+            return
+        dlg = _IpPickerDialog(self, available)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        for p in dlg.selected():
+            self._cands.append({
+                "host": p.get("proxy_address") or "p.webshare.io",
+                "port": int(p.get("port", 0) or 0),
+                "user": p.get("username", ""),
+                "password": p.get("password", ""),
+                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True,
+            })
+        self._build_rows()
+
+    # ---------- 保存 ----------
+    def _save(self) -> None:
+        self._collect()
+        # 1. 更新 config.relays 的 candidate_upstreams（源）
+        rid = str(self._line.get("resource_id", ""))
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                r["candidate_upstreams"] = self._cands
+                r["active_upstream_idx"] = self._active_idx
+                break
+        config.set_value("relays", relays)
+        # 2. 更新 D1 node_data（快照）
+        nd = self._line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        creds = nd.get("_creds", {}) or {}
+        creds["candidates"] = self._cands
+        creds["active_idx"] = self._active_idx
+        nd["_creds"] = creds
+        try:
+            api_client.assign(self._u["user_id"], "relay", rid, nd)
+        except ApiError as e:
+            QMessageBox.warning(self, "保存失败", e.message)
+            return
+        self.accept()
+
+
+class _IpPickerDialog(QDialog):
+    """从 webshare IP 列表多选要添加的候选 IP。"""
+
+    def __init__(self, parent, available: list[dict]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("选择要添加的 IP")
+        self.setMinimumSize(520, 440)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        tip = QLabel(f"勾选要添加的 IP（共 {len(available)} 个可用）")
+        layout.addWidget(tip)
+        self.table = QTableWidget(len(available), 2)
+        self.table.setHorizontalHeaderLabels(["", "IP"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 40)
+        for i, p in enumerate(available):
+            host = p.get("proxy_address") or "p.webshare.io"
+            country = p.get("country_code", "")
+            city = p.get("city_name", "")
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, chk)
+            label = f"{host}:{p.get('port', '')}  ({country} {city})"
+            it = QTableWidgetItem(label)
+            it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 1, it)
+        layout.addWidget(self.table, 1)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("添加")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        self._available = available
+
+    def selected(self) -> list[dict]:
+        out = []
+        for i in range(self.table.rowCount()):
+            chk = self.table.item(i, 0)
+            if chk and chk.checkState() == Qt.CheckState.Checked:
+                out.append(self._available[i])
+        return out
+
+
 class _UserLinesDialog(QDialog):
     """用户线路明细弹窗：列出该用户名下所有线路，每条线路可复制节点/回收。"""
 
@@ -893,7 +1218,7 @@ class _UserLinesDialog(QDialog):
             table.setColumnWidth(2, 120)  # 流量
             table.setColumnWidth(3, 110)  # 分配时间
             table.setColumnWidth(4, 120)  # 到期
-            table.setColumnWidth(5, 150)  # 操作（复制节点 + 回收）
+            table.setColumnWidth(5, 220)  # 操作（管理IP + 复制节点 + 回收）
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -940,6 +1265,11 @@ class _UserLinesDialog(QDialog):
             op_lay = QHBoxLayout(op_w)
             op_lay.setContentsMargins(0, 0, 0, 0)
             op_lay.setSpacing(6)
+            manage = QPushButton("管理IP")
+            manage.setProperty("compact", True)
+            manage.setFixedSize(64, 32)
+            manage.clicked.connect(lambda _=False, a=a: self._manage_ips(a))
+            op_lay.addWidget(manage)
             share = QPushButton("复制节点")
             share.setProperty("compact", True)
             share.setFixedSize(84, 32)
@@ -973,6 +1303,14 @@ class _UserLinesDialog(QDialog):
     def _recycle(self, a: dict, node: dict, name: str) -> None:
         self._page._recycle_relay(a, node, name)
         self.accept()
+
+    def _manage_ips(self, a: dict) -> None:
+        if a.get("resource_type") != "relay":
+            QMessageBox.information(self, "提示", "只有中转线路支持管理 IP。")
+            return
+        dlg = _ManageIpsDialog(self._page, self._u, a)
+        dlg.exec()
+        self._page.refresh()
 
     def _save_col_widths(self, *args) -> None:
         config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(6)])
