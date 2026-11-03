@@ -548,6 +548,19 @@ class UsersPage(QWidget):
                 node = {}
         relay_id = str(a.get("resource_id", ""))
         username = a.get("username", "")
+        # 记录流量审计（unassign 删分配前记录，避免流量数据丢失）
+        used_gb = float(a.get("used_gb") or 0)
+        hist_gb = float(a.get("hist_gb") or 0)
+        if used_gb > 0 or hist_gb > 0:
+            try:
+                api_client.record_recycle_flow(
+                    relay_id, username, name,
+                    node.get("ip", "") or node.get("host", ""),
+                    node.get("ws_account", "") or "",
+                    used_gb, hist_gb,
+                )
+            except Exception:
+                pass
         try:
             api_client.unassign(a["user_id"], "relay", relay_id)
         except ApiError as e:

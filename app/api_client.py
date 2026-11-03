@@ -168,6 +168,26 @@ def rename_assignment(resource_id: str, new_name: str) -> int:
     return updated
 
 
+def record_recycle_flow(resource_id: str, username: str, name: str, host: str,
+                        ws_account: str, used_gb: float, hist_gb: float) -> dict:
+    """回收线路时记录流量审计（便于追溯谁用了多少）。"""
+    return _request("POST", "/admin/recycle-flow", {
+        "resource_id": resource_id,
+        "username": username,
+        "name": name,
+        "host": host,
+        "ws_account": ws_account,
+        "used_gb": used_gb,
+        "hist_gb": hist_gb,
+        "reason": "manual",
+    })
+
+
+def list_recycle_flow() -> dict:
+    """查询回收流量审计（记录 + 按用户汇总）。"""
+    return _request("GET", "/admin/recycle-flow")
+
+
 def list_resource_assignments(resource_type: str, resource_id: str) -> dict:
     """查询某个资源（vultr）分配给了哪些用户（含用户名/备注/分配时间）。"""
     from urllib.parse import quote

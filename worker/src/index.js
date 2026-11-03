@@ -1692,6 +1692,42 @@ async function listRecycleLog(env) {
   return json({ recycle: rows.results || [] });
 }
 
+// ---------- 回收流量审计（手动回收时记录，便于追溯"谁用了多少"） ----------
+
+async function recordRecycleFlow(request, env) {
+  const b = await request.json().catch(() => ({}));
+  const rid = (b.resource_id || "").toString().trim();
+  if (!rid) return json({ error: "resource_id 必填" }, 400);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "INSERT INTO recycle_flow_log (resource_id, username, name, host, ws_account, used_gb, hist_gb, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).bind(
+    rid,
+    b.username || "",
+    b.name || "",
+    b.host || "",
+    b.ws_account || "",
+    Number(b.used_gb) || 0,
+    Number(b.hist_gb) || 0,
+    b.reason || "manual",
+    now,
+  ).run();
+  return json({ ok: true });
+}
+
+async function listRecycleFlow(env) {
+  const rows = await env.DB.prepare(
+    "SELECT * FROM recycle_flow_log ORDER BY id DESC LIMIT 500",
+  ).all();
+  const records = rows.results || [];
+  const byUser = {};
+  for (const r of records) {
+    const u = r.username || "?";
+    byUser[u] = (byUser[u] || 0) + (Number(r.used_gb) || 0) + (Number(r.hist_gb) || 0);
+  }
+  return json({ records, by_user: byUser, total: records.length });
+}
+
 export default {
   SwitchRoom, // Durable Object 类（WebSocket 实时推送）
   async fetch(request, env) {
@@ -1838,6 +1874,8 @@ export default {
       if (path === "/admin/users" && method === "GET") return await listUsers(env);
       if (path === "/admin/users" && method === "POST") return await createUser(request, env);
       if (path === "/admin/stats" && method === "GET") return await getStats(env);
+      if (path === "/admin/recycle-flow" && method === "POST") return await recordRecycleFlow(request, env);
+      if (path === "/admin/recycle-flow" && method === "GET") return await listRecycleFlow(env);
 
       const userMatch = path.match(/^\/admin\/users\/(\d+)$/);
       if (userMatch) {
