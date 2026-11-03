@@ -1417,10 +1417,15 @@ class _ManageIpsDialog(SizedDialog):
     def _save(self) -> None:
         self._collect()
         rid = str(self._line.get("resource_id", ""))
-        # 配额/到期已改：之前被禁用（用尽/到期）的候选，续费重置（清零重算 + 重新启用）
+        # 续费重置：保存前是「禁用」的候选（用尽/到期），保存时清零重算 + 重新启用
+        # （不管用户是改配额、改到期还是点启用，只要保存前是禁用，就当作续费清零）
+        old_disabled_hosts = {
+            c.get("host") for c in (self._creds.get("candidates") or [])
+            if c.get("enabled") is False
+        }
         resumed_any = False
         for _i, c in enumerate(self._cands):
-            if c.get("enabled") is False:
+            if c.get("host") in old_disabled_hosts:
                 c["used_gb"] = 0  # 续费重置：封账流量清零
                 if _candidate_renewed(c):  # 到期未过期即可启用
                     c["enabled"] = True
@@ -1460,12 +1465,13 @@ class _ManageIpsDialog(SizedDialog):
         creds = nd.get("_creds", {}) or {}
         creds["candidates"] = self._cands
         creds["active_idx"] = self._active_idx
-        # 同步主 IP 快照（node_data.ip / ws_account / upstream），客户端「当前 IP」跟替换后一致
+        # 同步主 IP 快照（node_data.ip / ws_account / upstream / quota），客户端「当前 IP/配额」跟替换后一致
         if self._cands:
             c0 = self._cands[0]
             nd["ip"] = c0.get("host", "")
             if c0.get("ws_account"):
                 nd["ws_account"] = c0.get("ws_account", "")
+            nd["quota_gb"] = float(c0.get("quota_gb") or 0)
             creds["upstream"] = {
                 "host": c0.get("host", ""),
                 "port": c0.get("port", 0),
