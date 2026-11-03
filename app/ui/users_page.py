@@ -159,6 +159,19 @@ def _per_ip_expiry(value: int, unit: str) -> str:
     return _duration_expiry(value * _UNIT_SECONDS[idx])
 
 
+def _candidate_resumable(c: dict) -> bool:
+    """候选 IP 是否可恢复启用（配额未用尽 且 到期未到）。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    exp = (c.get("expiry") or "").strip()
+    if exp and exp < now:
+        return False
+    q = float(c.get("quota_gb") or 0)
+    used = float(c.get("used_gb") or 0)
+    if q > 0 and used >= q:
+        return False
+    return True
+
+
 def _max_settable_duration(sub_expiry: str) -> str:
     """订阅到期 − 现在 = 最多可设置时长，格式化成人类可读（天/小时/分钟）。"""
     from datetime import timedelta, timezone
@@ -1314,6 +1327,9 @@ class _ManageIpsDialog(SizedDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._cands[idx]["expiry"] = dlg.expires_at
+        # 到期时间更新（未过期）→ 重新启用（之前可能因到期被禁用）
+        if _candidate_resumable(self._cands[idx]):
+            self._cands[idx]["enabled"] = True
         self._build_rows()
         host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
         self._status.setText(
@@ -1384,6 +1400,10 @@ class _ManageIpsDialog(SizedDialog):
     # ---------- 保存 ----------
     def _save(self) -> None:
         self._collect()
+        # 配额/到期已改：可恢复的候选自动重新启用（之前可能因用尽/到期被禁用）
+        for c in self._cands:
+            if c.get("enabled") is False and _candidate_resumable(c):
+                c["enabled"] = True
         # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
         old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
         # 1. 更新 config.relays 的 candidate_upstreams（源）
@@ -1434,9 +1454,11 @@ class _ManageIpsDialog(SizedDialog):
         except ApiError as e:
             QMessageBox.warning(self, "保存失败", e.message)
             return
-        # 只有 IP 变化（替换/添加/删除）才重新部署；改配额/到期/禁用不部署
+        # 重新部署条件：IP 变化 或 候选从禁用恢复（配额/到期改了，之前可能被 /stop 停服务）
         new_keys = {f"{c.get('host')}:{c.get('port')}" for c in self._cands}
-        if new_keys != old_keys:
+        old_disabled = {c.get("host") for c in (self._creds.get("candidates") or []) if c.get("enabled") is False}
+        resumed = any(c.get("host") in old_disabled and c.get("enabled", True) for c in self._cands)
+        if new_keys != old_keys or resumed:
             self._deploy_after_save(rid)
         else:
             self._status.setText('<span style="color:#32d74b;">✅ 已保存（IP 未变，无需重新部署）</span>')
@@ -1919,6 +1941,9 @@ class _UserLinesDialog(SizedDialog):
         nd["client_expiry"] = new_exp
         if cands and act < len(cands):
             cands[act]["expiry"] = new_exp
+            # 到期时间更新（未过期）→ 重新启用该候选（之前可能因到期被禁用）
+            if _candidate_resumable(cands[act]):
+                cands[act]["enabled"] = True
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -1927,6 +1952,8 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["expiry"] = new_exp
+                    if _candidate_resumable(cu[act]):
+                        cu[act]["enabled"] = True
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)
@@ -1935,6 +1962,8 @@ class _UserLinesDialog(SizedDialog):
         except ApiError as e:
             QMessageBox.warning(self, "设置失败", e.message)
             return
+        # 之前可能因到期被停服务，重新部署恢复代理
+        self._redeploy_relay(rid)
         self._page.refresh()
         self.accept()
 
@@ -1954,6 +1983,9 @@ class _UserLinesDialog(SizedDialog):
         new_q = txt
         if cands and act < len(cands):
             cands[act]["quota_gb"] = new_q
+            # 配额恢复（>已用）→ 重新启用该候选（之前可能因用尽被禁用）
+            if _candidate_resumable(cands[act]):
+                cands[act]["enabled"] = True
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -1962,6 +1994,8 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["quota_gb"] = new_q
+                    if _candidate_resumable(cu[act]):
+                        cu[act]["enabled"] = True
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)
@@ -1970,6 +2004,8 @@ class _UserLinesDialog(SizedDialog):
         except ApiError as e:
             QMessageBox.warning(self, "设置失败", e.message)
             return
+        # 之前可能因用尽被停服务，重新部署恢复代理
+        self._redeploy_relay(rid)
         self._page.refresh()
         self.accept()
 
@@ -1981,6 +2017,44 @@ class _UserLinesDialog(SizedDialog):
         dlg.exec()
         self._reload()
         self._page.refresh()
+
+    def _redeploy_relay(self, rid: str) -> None:
+        """改配额/到期恢复后重新部署服务器（之前可能被到期/用尽 /stop 停了）。"""
+        import subprocess
+        from pathlib import Path
+
+        from .workers import CallWorker
+
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == str(rid)), None)
+        if not relay:
+            return
+        sid = relay.get("server_id", "")
+        srv_ip = ""
+        if sid.startswith("manual:"):
+            mid = sid[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    srv_ip = m.get("host", "") or ""
+                    break
+        if not srv_ip:
+            return
+        root = Path(__file__).resolve().parent.parent.parent
+        script = root / "scripts" / "apply_relays.py"
+
+        def _do():
+            r = subprocess.run(
+                ["uv", "run", "python", str(script), sid, srv_ip],
+                capture_output=True, text=True, timeout=900, cwd=str(root),
+            )
+            return r.stdout + r.stderr
+
+        w = CallWorker(_do)
+        if not hasattr(self, "_workers"):
+            self._workers = []
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
 
     def _save_col_widths(self, *args) -> None:
         config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(8)])
