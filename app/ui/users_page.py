@@ -1022,6 +1022,7 @@ class _ManageIpsDialog(SizedDialog):
         self._toggle_btns: list = []
         self._set_btns: list = []
         self._workers: list = []
+        self._renewed_hosts: set = set()  # 本次会话中主动续费的候选（保存时清零分配记录）
 
         self.setWindowTitle(f"管理 IP - {self._name}")
         self.setMinimumSize(800, 460)
@@ -1041,7 +1042,7 @@ class _ManageIpsDialog(SizedDialog):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        persist_col_widths(self.table, "manage_ips_col_widths", [140, 90, 80, 70, 150, 60, 50, 250])
+        persist_col_widths(self.table, "manage_ips_col_widths", [140, 90, 80, 70, 150, 60, 50, 300])
         layout.addWidget(self.table, 1)
 
         # 操作回显（替换/添加/删除的结果提示）
@@ -1165,6 +1166,12 @@ class _ManageIpsDialog(SizedDialog):
             tog.clicked.connect(lambda _=False, idx=i: self._toggle(idx))
             op_lay.addWidget(tog)
             self._toggle_btns.append(tog)
+            renew_btn = QPushButton("续费")
+            renew_btn.setProperty("compact", True)
+            renew_btn.setFixedSize(52, 30)
+            renew_btn.setToolTip("清零已用流量并重新设置配额/到期（不禁用也能主动续费）")
+            renew_btn.clicked.connect(lambda _=False, idx=i: self._renew(idx))
+            op_lay.addWidget(renew_btn)
             replace_btn = QPushButton("替换")
             replace_btn.setProperty("compact", True)
             replace_btn.setFixedSize(52, 30)
@@ -1225,6 +1232,29 @@ class _ManageIpsDialog(SizedDialog):
         state = "禁用" if not c.get("enabled", True) else "启用"
         self._status.setText(
             f'<span style="color:#32d74b;">✅ 已{state} {c.get("host", "")}，点「保存」生效</span>'
+        )
+
+    def _renew(self, idx: int) -> None:
+        """续费：清零重算 + 重新设置配额/到期 + 启用（不禁用也能主动续费）。"""
+        self._collect()
+        c = self._cands[idx]
+        q, ok = QInputDialog.getDouble(
+            self, "续费配额", f"「{c.get('host', '')}」新配额（GB，0=不限）:",
+            float(c.get("quota_gb") or 0), 0, 1_000_000, 2,
+        )
+        if not ok:
+            return
+        dlg = _DurationDialog(self, (c.get("expiry") or "").strip())
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        c["quota_gb"] = q
+        c["expiry"] = dlg.expires_at
+        c["used_gb"] = 0
+        c["enabled"] = True
+        self._renewed_hosts.add(c.get("host", ""))
+        self._refresh_after_edit()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已续费 {c.get("host")}：配额 {q}G、到期已重设、已用清零，点「保存」生效</span>'
         )
 
     def _remove(self, idx: int) -> None:
@@ -1425,7 +1455,8 @@ class _ManageIpsDialog(SizedDialog):
         }
         resumed_any = False
         for _i, c in enumerate(self._cands):
-            if c.get("host") in old_disabled_hosts:
+            # 保存前是禁用，或本次会话主动点了「续费」→ 清零重算 + 重新启用
+            if c.get("host") in old_disabled_hosts or c.get("host") in self._renewed_hosts:
                 c["used_gb"] = 0  # 续费重置：封账流量清零
                 if _candidate_renewed(c):  # 到期未过期即可启用
                     c["enabled"] = True
