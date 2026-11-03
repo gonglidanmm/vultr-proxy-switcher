@@ -1,4 +1,7 @@
-// API 层封装（从旧 main.js 迁移，逻辑不变）
+import { accountDisabledText } from "../utils/clientRules.js";
+
+// API 层封装（从旧 main.js 迁移）
+
 export const API = "https://user.yduas.cc";
 export const TOKEN_KEY = "proxy_client_token";
 export const USER_KEY = "proxy_client_user";
@@ -14,13 +17,14 @@ export async function api(path, method = "GET", body = null, auth = true) {
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const err = new Error(data.error || "请求失败 HTTP " + resp.status);
+    const disabledText = accountDisabledText(resp.status, data);
+    const err = new Error(disabledText || data.error || "请求失败 HTTP " + resp.status);
     err.status = resp.status;
-    // 账号被禁用：清本地登录态并通知 App 登出（正在使用的客户端明确提示"账号已禁用"）
-    if (resp.status === 403 && (data.error || "").includes("禁用")) {
+    // 账号被禁用：清本地登录态并通知 App，登录页显示「账号已禁用」
+    if (disabledText) {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
-      window.dispatchEvent(new CustomEvent("proxy:auth-disabled", { detail: data.error }));
+      window.dispatchEvent(new CustomEvent("proxy:auth-disabled", { detail: disabledText }));
     }
     throw err;
   }

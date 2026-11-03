@@ -12,6 +12,7 @@ const error = ref("");
 
 async function onSubmit() {
   error.value = "";
+  auth.error = "";
   if (!username.value.trim() || !password.value) {
     error.value = "请输入用户名和密码";
     return;
@@ -31,7 +32,7 @@ async function onSubmit() {
       <h1>代理客户端</h1>
       <input v-model="username" type="text" placeholder="用户名" autocomplete="username" />
       <input v-model="password" type="password" placeholder="密码" autocomplete="current-password" />
-      <div v-if="error" class="login-error">{{ error }}</div>
+      <div v-if="error || auth.error" class="login-error">{{ error || auth.error }}</div>
       <button type="submit" :disabled="auth.loading">
         {{ auth.loading ? "登录中…" : "登录" }}
       </button>

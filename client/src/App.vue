@@ -5,6 +5,7 @@ import { useProxyStore } from "./stores/proxy.js";
 import { useNodesStore } from "./stores/nodes.js";
 import { closeWs } from "./api/ws.js";
 import { invokeRust, API } from "./api/index.js";
+import { ACCOUNT_DISABLED_TEXT } from "./utils/clientRules.js";
 import LoginView from "./components/LoginView.vue";
 import NodesView from "./components/NodesView.vue";
 import UserView from "./components/UserView.vue";
@@ -50,14 +51,14 @@ onMounted(async () => {
   setInterval(checkFrontendUpdate, 60000);
   checkFrontendUpdate();
 
-  // 账号被禁用：自动登出并提示（正在使用的客户端收到 403"账号已禁用"）
+  // 账号被禁用：退出已登录界面，登录页保留「账号已禁用」（不要变成空白的未登录页）
   window.addEventListener("proxy:auth-disabled", (e) => {
-    const msg = (e && e.detail) || "账号已被禁用，请联系管理员";
+    const msg = (e && e.detail) || ACCOUNT_DISABLED_TEXT;
     auth.logout();
+    auth.error = msg;
     closeWs();
     useProxyStore().reset();
     useNodesStore().reset();
-    alert(msg);
   });
 });
 
@@ -80,7 +81,7 @@ function logout() {
             <rect width="24" height="24" rx="6" fill="#00c853"/>
             <path d="M13.2 3.6 6.5 13h4.1l-1.3 7.4L16.5 11h-4.3l1-7.4z" fill="#fff"/>
           </svg>
-          <span>Webshare-IP</span>
+          <span>我的节点</span>
         </button>
       </nav>
       <div class="sidebar-footer">
