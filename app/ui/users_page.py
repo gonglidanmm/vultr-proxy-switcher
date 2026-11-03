@@ -2366,17 +2366,15 @@ class _UserDetailDialog(SizedDialog):
         try:
             # 记录重置基准（当前实例出站），compute_bandwidth 从重置点重新算
             # 否则 sync_flow 5 分钟内会用「当前实例出站」覆盖 D1 used_gb，重置失效
-            from ..vultr import VultrAPI
+            from ..vultr import VultrAPI, with_flow_reset_baseline
             api = VultrAPI(config.get("vultr_api_key", ""))
+            cur_bw = {}
             try:
                 cur_bw = api.get_instance_bandwidth(self.resource_id)
-                cur_out = sum(day.get("outgoing_bytes", 0) for day in cur_bw.values()) / 1e9
             except Exception:
-                cur_out = 0.0
+                cur_bw = {}
             def _set_reset(m):
-                m = dict(m or {})
-                m[str(self.resource_id)] = cur_out
-                return m
+                return with_flow_reset_baseline(m, self.resource_id, cur_bw)
             config.mutate("server_flow_reset", _set_reset)
             # 清空本地累计 + D1 used_gb
             def _clear_cum(m):
@@ -2384,7 +2382,7 @@ class _UserDetailDialog(SizedDialog):
                 m[str(self.resource_id)] = 0.0
                 return m
             config.mutate("server_cumulative_used", _clear_cum)
-            api_client.reset_flow(self.resource_id)
+            api_client.reset_vultr_flow(self.resource_id)
             self._echo(f"✅ 已重置节点 {domain} 的流量（已用清零，配额重新给满）")
         except ApiError as e:
             QMessageBox.warning(self, "重置失败", e.message)

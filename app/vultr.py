@@ -475,6 +475,207 @@ def compute_bandwidth(instances: list[dict], plans: list[dict], api) -> dict:
     return result
 
 
+def outbound_baseline_gb(bandwidth_by_day: dict | None) -> float:
+    """当前实例出站流量（GB）。入站不计，和 compute_bandwidth 同一口径。"""
+    total = 0
+    for day in (bandwidth_by_day or {}).values():
+        if isinstance(day, dict):
+            total += int(day.get("outgoing_bytes") or 0)
+    return total / 1e9
+
+
+def with_flow_reset_baseline(flow_reset: dict | None, resource_id: str, bandwidth_by_day: dict | None) -> dict:
+    """返回写入 server_flow_reset 的新映射：本实例的基准 = 当前出站。
+
+    5 分钟同步用「出站 - 基准」当已用。基准等于当前出站时，已用为 0，不会把刚清零的数盖回去。
+    """
+    updated = dict(flow_reset or {})
+    updated[str(resource_id)] = outbound_baseline_gb(bandwidth_by_day)
+    return updated
+
+
+_LOCAL_INSTANCE_KEYS = (
+    "server_configs",
+    "server_domains",
+    "server_notes",
+    "server_names",
+    "server_expiry",
+    "server_cumulative_used",
+    "server_flow_reset",
+)
+
+
+def known_instance_ids(local: dict | None, assignments: list | None) -> set[str]:
+    """本地配置和 D1 分配里已经登记过的实例 id。
+
+    relay 分配的 resource_id 是线路 id，不算这台 Vultr 实例。
+    resource_type 为空的旧分配仍算已登记。
+    """
+    local = local or {}
+    ids: set[str] = set()
+    for key in _LOCAL_INSTANCE_KEYS:
+        mapping = local.get(key) or {}
+        if isinstance(mapping, dict):
+            ids.update(str(item) for item in mapping if item)
+    for server_id in local.get("server_order") or []:
+        if server_id:
+            ids.add(str(server_id))
+    active = local.get("active_upstream_id")
+    if active:
+        ids.add(str(active))
+    for manual in local.get("manual_servers") or []:
+        if not isinstance(manual, dict):
+            continue
+        manual_id = str(manual.get("id") or "")
+        if manual_id:
+            ids.add(manual_id)
+            ids.add("manual:" + manual_id)
+    for relay in local.get("relays") or []:
+        if not isinstance(relay, dict):
+            continue
+        server_id = str(relay.get("server_id") or "")
+        if server_id:
+            ids.add(server_id)
+    for assignment in assignments or []:
+        if not isinstance(assignment, dict):
+            continue
+        resource_id = str(assignment.get("resource_id") or "")
+        if not resource_id:
+            continue
+        resource_type = assignment.get("resource_type")
+        if resource_type in (None, "", "vultr"):
+            ids.add(resource_id)
+    return ids
+
+
+def _looks_like_control(ip: str, label: str) -> bool:
+    """和服务器页控制机判断同一条：CGNAT 100.64/10，或名称里带转发机关键字。"""
+    parts = str(ip or "").split(".")
+    if len(parts) == 4:
+        try:
+            if int(parts[0]) == 100 and 64 <= int(parts[1]) <= 127:
+                return True
+        except ValueError:
+            pass
+    text = str(label or "").lower()
+    return any(token in text for token in ("ipv6", "控制机", "转发机"))
+
+
+def _review_row() -> dict:
+    return {
+        "kind": "",
+        "instance_id": "",
+        "still_billing": False,
+        "can_delete": False,
+        "old_id": "",
+        "new_id": "",
+        "http_status": "",
+        "created_at": "",
+        "label": "",
+        "ip": "",
+        "region": "",
+        "caution": False,
+    }
+
+
+def billing_review_rows(
+    orphan_records,
+    instances,
+    known_ids,
+    *,
+    assignments_ok: bool = True,
+    live_checked: bool = True,
+) -> list[dict]:
+    """给服务器页的只读清单。不删除、不切换。
+
+    delete_failed：D1 里删除失败的旧实例。live_checked 时对照实时列表，
+    old_id 还在才 can_delete。
+    unregistered：实时账户里有，但本地配置和 D1 分配都没有。
+    分配列表没拉到时不列 unregistered，避免把正常机器标成可删。
+    已经作为「仍在计费的旧实例」出现过的 id 不再列第二次。
+    删除失败记录里的 new_id 是替换机，即使本地配置还没迁过去，也不列入未登记。
+    """
+    known = {str(item) for item in (known_ids or set()) if item}
+    by_id: dict[str, dict] = {}
+    live_ids: set[str] = set()
+    if live_checked:
+        for inst in instances or []:
+            if not isinstance(inst, dict):
+                continue
+            instance_id = str(inst.get("id") or "")
+            if not instance_id:
+                continue
+            live_ids.add(instance_id)
+            by_id[instance_id] = inst
+
+    rows: list[dict] = []
+    still_billed: set[str] = set()
+    replacements: set[str] = set()
+    for record in orphan_records or []:
+        if not isinstance(record, dict):
+            continue
+        old_id = str(record.get("old_id") or "")
+        new_id = str(record.get("new_id") or "")
+        if new_id:
+            replacements.add(new_id)
+        if not old_id:
+            continue
+        inst = by_id.get(old_id) or {}
+        still = old_id in live_ids if live_checked else None
+        status = record.get("http_status")
+        row = _review_row()
+        row.update(
+            {
+                "kind": "delete_failed",
+                "instance_id": old_id,
+                "still_billing": still,
+                "can_delete": still is True,
+                "old_id": old_id,
+                "new_id": new_id,
+                "http_status": "" if status is None else status,
+                "created_at": str(record.get("created_at") or ""),
+                "label": str(inst.get("label") or ""),
+                "ip": str(inst.get("main_ip") or ""),
+                "region": str(inst.get("region") or ""),
+                "caution": _looks_like_control(inst.get("main_ip") or "", inst.get("label") or ""),
+            }
+        )
+        rows.append(row)
+        if still is True:
+            still_billed.add(old_id)
+
+    if not (live_checked and assignments_ok):
+        return rows
+
+    for inst in instances or []:
+        if not isinstance(inst, dict):
+            continue
+        instance_id = str(inst.get("id") or "")
+        if (
+            not instance_id
+            or instance_id in known
+            or instance_id in still_billed
+            or instance_id in replacements
+        ):
+            continue
+        row = _review_row()
+        row.update(
+            {
+                "kind": "unregistered",
+                "instance_id": instance_id,
+                "still_billing": True,
+                "can_delete": True,
+                "created_at": str(inst.get("date_created") or ""),
+                "label": str(inst.get("label") or ""),
+                "ip": str(inst.get("main_ip") or ""),
+                "region": str(inst.get("region") or ""),
+                "caution": _looks_like_control(inst.get("main_ip") or "", inst.get("label") or ""),
+            }
+        )
+        rows.append(row)
+    return rows
+
+
 def compute_account_bandwidth(account_bw: dict) -> dict:
     """解析账户级带宽（Vultr 官方口径：账户级，非每实例独立）。
 
