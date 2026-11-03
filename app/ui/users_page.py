@@ -2020,6 +2020,22 @@ class _UserLinesDialog(SizedDialog):
         self._page._recycle_relay(a, node, name)
         self.accept()
 
+    def _reset_detail_or_stop(self, rid: str, candidate: dict) -> bool:
+        """明细里改到期/配额：先重置流量。失败则不启用，调用方不保存、不部署。"""
+        from ..relay_ops import apply_detail_renewal
+
+        enabled = candidate.get("enabled", True)
+        used = candidate.get("used_gb", 0)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            api_client.reset_flow(rid)
+        except ApiError as e:
+            apply_detail_renewal(candidate, False, now, enabled, used)
+            QMessageBox.warning(self, "设置失败", e.message or "重置流量失败")
+            return False
+        apply_detail_renewal(candidate, True, now, enabled, used)
+        return True
+
     def _edit_expiry(self, a: dict, node: dict) -> None:
         """点击到期列：设置该线路的到期时长（独立=线路级，合并=当前激活IP）。"""
         rid = str(a.get("resource_id", ""))
@@ -2035,17 +2051,15 @@ class _UserLinesDialog(SizedDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         new_exp = dlg.expires_at
+        old_client_exp = nd.get("client_expiry")
         nd["client_expiry"] = new_exp
         if cands and act < len(cands):
+            old_exp = cands[act].get("expiry")
             cands[act]["expiry"] = new_exp
-            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可）
-            cands[act]["used_gb"] = 0
-            try:
-                api_client.reset_flow(rid)
-            except Exception:
-                pass
-            if _candidate_renewed(cands[act]):
-                cands[act]["enabled"] = True
+            if not self._reset_detail_or_stop(rid, cands[act]):
+                cands[act]["expiry"] = old_exp
+                nd["client_expiry"] = old_client_exp
+                return
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -2054,9 +2068,13 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["expiry"] = new_exp
-                    cu[act]["used_gb"] = 0
-                    if _candidate_renewed(cu[act]):
-                        cu[act]["enabled"] = True
+                    if cands and act < len(cands):
+                        cu[act]["used_gb"] = cands[act].get("used_gb", 0)
+                        cu[act]["enabled"] = cands[act].get("enabled", True)
+                    else:
+                        cu[act]["used_gb"] = 0
+                        if _candidate_renewed(cu[act]):
+                            cu[act]["enabled"] = True
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)
@@ -2085,15 +2103,11 @@ class _UserLinesDialog(SizedDialog):
             return
         new_q = txt
         if cands and act < len(cands):
+            old_q = cands[act].get("quota_gb")
             cands[act]["quota_gb"] = new_q
-            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可，不管之前已用多少）
-            cands[act]["used_gb"] = 0
-            try:
-                api_client.reset_flow(rid)
-            except Exception:
-                pass
-            if _candidate_renewed(cands[act]):
-                cands[act]["enabled"] = True
+            if not self._reset_detail_or_stop(rid, cands[act]):
+                cands[act]["quota_gb"] = old_q
+                return
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -2102,9 +2116,13 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["quota_gb"] = new_q
-                    cu[act]["used_gb"] = 0
-                    if _candidate_renewed(cu[act]):
-                        cu[act]["enabled"] = True
+                    if cands and act < len(cands):
+                        cu[act]["used_gb"] = cands[act].get("used_gb", 0)
+                        cu[act]["enabled"] = cands[act].get("enabled", True)
+                    else:
+                        cu[act]["used_gb"] = 0
+                        if _candidate_renewed(cu[act]):
+                            cu[act]["enabled"] = True
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)

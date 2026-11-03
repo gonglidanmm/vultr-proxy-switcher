@@ -177,6 +177,22 @@ def hosts_to_reset(candidates, old_disabled_hosts, renewed_hosts, now: str) -> l
     return out
 
 
+def apply_detail_renewal(candidate: dict, reset_ok: bool, now: str, enabled, used_gb) -> bool:
+    """线路明细改到期或配额之后。
+
+    reset 失败：启用和已用回到调用前，返回 False（调用方不保存、不部署）。
+    reset 成功：已用清零；到期未过则启用。返回 True，调用方可以保存并部署。
+    """
+    if not reset_ok:
+        candidate["enabled"] = enabled
+        candidate["used_gb"] = used_gb
+        return False
+    candidate["used_gb"] = 0
+    if candidate_renewable(candidate, now):
+        candidate["enabled"] = True
+    return True
+
+
 def restore_failed_renewal(candidates, original, hosts) -> None:
     """reset_flow 失败：启用和已用回到打开弹窗时的值。配额、到期等编辑不动。"""
     by_host = {c.get("host"): c for c in original or []}
