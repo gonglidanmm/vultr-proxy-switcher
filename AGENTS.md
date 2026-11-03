@@ -2,7 +2,7 @@
 
 Cursor 会从 `.cursor/skills/<name>/SKILL.md` 自动加载本仓库的工程技能。来源、许可证和更新方式见 `.cursor/skills/README.md`。
 
-业务规则和数据模型以 `docs/系统需求与设计文档.md` 为准（功能、业务规则、数据模型、关键决策、已知坑）。代码只说明怎么实现。`GLOSSARY.md` 和 `docs/adr/` 只补充术语和难逆转的取舍，不覆盖这份文档。结束一次改动之前运行 `uv run pytest`（测试在 `tests/`）。
+业务规则和数据模型以 `docs/系统需求与设计文档.md` 为准（功能、业务规则、数据模型、关键决策、已知坑）。代码只说明怎么实现。`GLOSSARY.md` 和 `docs/adr/` 只补充术语和难逆转的取舍，不覆盖这份文档。结束一次改动之前运行 `uv run pytest tests`。不要在仓库根目录裸跑 `uv run pytest`：`scripts/` 里文件名带 test 的脚本会被收进去，`scripts/assign_yong_test.py` 在 import 时直接退出。
 
 ## Agent skills
 
@@ -37,3 +37,9 @@ single-context。文档放在 `docs/`：ADR 在 `docs/adr/`，本段指向的代
 `/ponytail-audit` 没有安装，也不要默认去跑。它和分支 `cursor/architecture-analysis-00ee` 上的 `docs/ARCHITECTURE_ANALYSIS.md` 都是全库审查，那份文档已经覆盖了架构、入口和风险。需要另做一遍时再单独装，属于可选项。
 
 `grill-with-docs` 与 `triage` 还会点名 `grilling`，`tdd` 还会点名 `codebase-design`。这两个技能没有安装。配置已经在 `docs/agents/`，不要去跑未安装的 `setup-matt-pocock-skills`。
+
+## Cursor Cloud specific instructions
+
+- Python 依赖：`uv sync --frozen --extra dev`（含 pytest、ruff、PyInstaller）。`uv` 在 `/usr/local/bin`。Vue 客户端在 `client/`，用 `npm ci`。不要跑 `wrangler deploy`，那会发布线上 Worker。
+- 这里没有物理显示器。启动桌面端用 `xvfb-run -a uv run python -m app.main`。PySide6 需要 `libegl1`、xcb 相关库，以及 `fonts-noto-cjk`（界面是中文）。
+- 本地 SOCKS5 转发和切换的自检：`uv run python scripts/test_localproxy.py`（占用 `127.0.0.1:1080`）。客户端开发服务器：在 `client/` 跑 `npm run dev`，地址 `http://127.0.0.1:1424`。
