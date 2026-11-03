@@ -6,6 +6,7 @@ import { useProxyStore } from "../stores/proxy.js";
 import { api, invokeRust, API } from "../api/index.js";
 import { connectWs, onSwitchMessage } from "../api/ws.js";
 import { protoName, sleep, STAGE_TEXT, compareVersion } from "../utils/index.js";
+import { vultrSwitchLockReason } from "../utils/clientRules.js";
 import RegionModal from "./RegionModal.vue";
 import ShareDialog from "./ShareDialog.vue";
 import QrDialog from "./QrDialog.vue";
@@ -278,6 +279,7 @@ function switchInfo(n) {
   // vultr：显示切换次数（已用/上限）
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
+  // 已用 = limit - switch_remaining。按新公式 remaining = limit - count，不要再减 1。
   const used = Math.max(0, limit - remaining);
   return { text: `${used}/${limit}`, cls: remaining <= 0 ? "cell-danger" : "" };
 }
@@ -349,7 +351,7 @@ function canSwitch(n) {
 }
 
 function onSwitchClick(n) {
-  if (!canSwitch(n) || switching[n.resource_id]?.disabled) return;
+  if (!canSwitch(n) || switching[n.resource_id]?.disabled || isSwitchDisabled(n)) return;
   if (n.resource_type === "relay") {
     openCandidateModal(n);
   } else if (n.resource_type === "vultr") {
@@ -375,8 +377,7 @@ function isSwitchDisabled(n) {
     const cands = n.candidate_ips || [];
     if (cands.length <= 1) return "单线路";
   }
-  if (n.resource_type === "vultr" && n.switch_remaining <= 0) return "次数用完";
-  return "";
+  return vultrSwitchLockReason(n);
 }
 
 function isUpstreamDisabled(n) {
@@ -743,7 +744,7 @@ onMounted(() => {
                 {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : checkText(n) }}
               </span>
             </td>
-            <td :class="switchInfo(n).cls" :title="candidateTip(n)" :style="canSwitch(n) ? 'cursor:pointer' : ''" @click="onSwitchClick(n)">{{ switchInfo(n).text }}</td>
+            <td :class="switchInfo(n).cls" :title="isSwitchDisabled(n) || candidateTip(n)" :style="canSwitch(n) && !isSwitchDisabled(n) ? 'cursor:pointer' : ''" @click="onSwitchClick(n)">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
