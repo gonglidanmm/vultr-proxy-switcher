@@ -1534,7 +1534,8 @@ class _ManageIpsDialog(SizedDialog):
         new_keys = {f"{c.get('host')}:{c.get('port')}" for c in self._cands}
         old_disabled = {c.get("host") for c in (self._creds.get("candidates") or []) if c.get("enabled") is False}
         resumed = any(c.get("host") in old_disabled and c.get("enabled", True) for c in self._cands)
-        if new_keys != old_keys or resumed:
+        renewed = bool(self._renewed_hosts)  # 续费也重新部署：服务可能因用尽/到期被 /stop 停了
+        if new_keys != old_keys or resumed or renewed:
             self._deploy_after_save(rid)
         else:
             self._status.setText('<span style="color:#32d74b;">✅ 已保存（IP 未变，无需重新部署）</span>')
