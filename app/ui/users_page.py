@@ -1603,12 +1603,17 @@ class _IpPickerDialog(SizedDialog):
         self.uni_quota = QSpinBox()
         self.uni_quota.setRange(0, 1000000)
         self.uni_quota.setValue(10)  # 默认 10GB
+        self.uni_quota.valueChanged.connect(lambda v: [s.setValue(v) for s in self._quota_spins])
         uni.addWidget(self.uni_quota)
         uni.addWidget(QLabel("统一时长:"))
         self.uni_unit = QComboBox()
         self.uni_unit.addItems(["按天", "按小时", "按分钟"])
+        self.uni_unit.currentIndexChanged.connect(
+            lambda _: [u.setCurrentText(self.uni_unit.currentText()) for u in self._unit_combos]
+        )
         uni.addWidget(self.uni_unit)
         self.uni_dur = QSpinBox()
+        self.uni_dur.valueChanged.connect(lambda v: [d.setValue(v) for d in self._dur_spins])
         self.uni_dur.setRange(1, 9999)
         self.uni_dur.setValue(1)
         uni.addWidget(self.uni_dur)
@@ -1681,17 +1686,19 @@ class _IpPickerDialog(SizedDialog):
             self.table.setItem(i, 1, it)
             q = QSpinBox()
             q.setRange(0, 1000000)
-            q.setValue(10)  # 默认 10GB
+            q.setValue(self.uni_quota.value() if hasattr(self, "uni_quota") else 10)
             q.setToolTip("0 = 不限流量")
             self.table.setCellWidget(i, 2, q)
             self._quota_spins.append(q)
             u = QComboBox()
             u.addItems(["按天", "按小时", "按分钟"])
+            if hasattr(self, "uni_unit"):
+                u.setCurrentText(self.uni_unit.currentText())
             self.table.setCellWidget(i, 3, u)
             self._unit_combos.append(u)
             d = QSpinBox()
             d.setRange(1, 9999)
-            d.setValue(1)
+            d.setValue(self.uni_dur.value() if hasattr(self, "uni_dur") else 1)
             self.table.setCellWidget(i, 4, d)
             self._dur_spins.append(d)
         self._suppress_picker = False
@@ -2732,20 +2739,26 @@ class _UserPickerDialog(SizedDialog):
         self.duration_spin.setValue(lo)
 
     def _build_per_ip_grid(self, layout) -> None:
-        """多个 IP：每个 IP 一行，独立设置配额(GB) 与到期时长；顶部可一键统一。"""
+        """多个 IP：每个 IP 一行，独立设置配额(GB) 与到期时长；顶部统一值改动即同步到全部。"""
+        self._per_ip_rows: list[tuple] = []
         uni = QHBoxLayout()
         uni.addWidget(QLabel("统一配额(GB,0=不限):"))
         self.uni_quota = QSpinBox()
         self.uni_quota.setRange(0, 1000000)
         self.uni_quota.setValue(10)  # 默认 10GB
+        self.uni_quota.valueChanged.connect(lambda v: [spin.setValue(v) for spin, _, _ in self._per_ip_rows])
         uni.addWidget(self.uni_quota)
         uni.addWidget(QLabel("统一到期:"))
         self.uni_dur = QSpinBox()
         self.uni_dur.setRange(1, 9999)
         self.uni_dur.setValue(1)
+        self.uni_dur.valueChanged.connect(lambda v: [dspin.setValue(v) for _, dspin, _ in self._per_ip_rows])
         uni.addWidget(self.uni_dur)
         self.uni_unit = QComboBox()
         self.uni_unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+        self.uni_unit.currentIndexChanged.connect(
+            lambda _: [unit.setCurrentText(self.uni_unit.currentText()) for _, _, unit in self._per_ip_rows]
+        )
         uni.addWidget(self.uni_unit)
         apply_btn = QPushButton("应用到全部")
         apply_btn.setProperty("compact", True)
@@ -2754,7 +2767,6 @@ class _UserPickerDialog(SizedDialog):
         uni.addStretch(1)
         layout.addLayout(uni)
 
-        self._per_ip_rows: list[tuple] = []
         grid = QGridLayout()
         grid.addWidget(QLabel("上游 IP"), 0, 0)
         grid.addWidget(QLabel("配额(GB)"), 0, 1)
@@ -2763,16 +2775,17 @@ class _UserPickerDialog(SizedDialog):
             grid.addWidget(QLabel(host or ""), i + 1, 0)
             q = QSpinBox()
             q.setRange(0, 1000000)
-            q.setValue(10)  # 默认 10GB
+            q.setValue(self.uni_quota.value())
             q.setToolTip("0 = 不限流量")
             grid.addWidget(q, i + 1, 1)
             drow = QHBoxLayout()
             drow.setContentsMargins(0, 0, 0, 0)
             dspin = QSpinBox()
             dspin.setRange(1, 9999)
-            dspin.setValue(1)
+            dspin.setValue(self.uni_dur.value())
             unit = QComboBox()
             unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+            unit.setCurrentText(self.uni_unit.currentText())
             drow.addWidget(dspin)
             drow.addWidget(unit)
             dw = QWidget()
