@@ -2,6 +2,8 @@
 
 Cursor 会从 `.cursor/skills/<name>/SKILL.md` 自动加载本仓库的工程技能。来源、许可证和更新方式见 `.cursor/skills/README.md`。
 
+业务规则和数据模型以 `docs/系统需求与设计文档.md` 为准（功能、业务规则、数据模型、关键决策、已知坑）。代码只说明怎么实现。`GLOSSARY.md` 和 `docs/adr/` 只补充术语和难逆转的取舍，不覆盖这份文档。结束一次改动之前运行 `uv run pytest`（测试在 `tests/`）。
+
 ## Agent skills
 
 ### Issue tracker
