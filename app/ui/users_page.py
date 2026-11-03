@@ -1536,7 +1536,7 @@ class _IpPickerDialog(SizedDialog):
         uni.addWidget(QLabel("统一配额(GB,0=不限):"))
         self.uni_quota = QSpinBox()
         self.uni_quota.setRange(0, 1000000)
-        self.uni_quota.setValue(0)
+        self.uni_quota.setValue(10)  # 默认 10GB
         uni.addWidget(self.uni_quota)
         uni.addWidget(QLabel("统一时长:"))
         self.uni_unit = QComboBox()
@@ -1615,7 +1615,7 @@ class _IpPickerDialog(SizedDialog):
             self.table.setItem(i, 1, it)
             q = QSpinBox()
             q.setRange(0, 1000000)
-            q.setValue(0)
+            q.setValue(10)  # 默认 10GB
             q.setToolTip("0 = 不限流量")
             self.table.setCellWidget(i, 2, q)
             self._quota_spins.append(q)
@@ -2556,9 +2556,9 @@ class _UserPickerDialog(SizedDialog):
                 quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
                 quota_lbl.setStyleSheet("color:#98989d;")
                 layout.addWidget(quota_lbl)
-                self.quota_edit = QLineEdit()
+                self.quota_edit = QLineEdit("10")  # 默认 10GB（可改；清空 = 不限额）
                 self.quota_edit.setPlaceholderText(
-                    f"如 100，不能大于剩余 {remaining:.1f}G" if plan_total > 0 else "如 100，留空 = 不限额"
+                    f"如 100，不能大于剩余 {remaining:.1f}G；默认 10，清空 = 不限额"
                 )
                 layout.addWidget(self.quota_edit)
         else:
@@ -2604,7 +2604,7 @@ class _UserPickerDialog(SizedDialog):
         uni.addWidget(QLabel("统一配额(GB,0=不限):"))
         self.uni_quota = QSpinBox()
         self.uni_quota.setRange(0, 1000000)
-        self.uni_quota.setValue(0)
+        self.uni_quota.setValue(10)  # 默认 10GB
         uni.addWidget(self.uni_quota)
         uni.addWidget(QLabel("统一到期:"))
         self.uni_dur = QSpinBox()
@@ -2630,7 +2630,7 @@ class _UserPickerDialog(SizedDialog):
             grid.addWidget(QLabel(host or ""), i + 1, 0)
             q = QSpinBox()
             q.setRange(0, 1000000)
-            q.setValue(0)
+            q.setValue(10)  # 默认 10GB
             q.setToolTip("0 = 不限流量")
             grid.addWidget(q, i + 1, 1)
             drow = QHBoxLayout()

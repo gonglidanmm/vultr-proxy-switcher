@@ -1627,7 +1627,7 @@ async function recycleExpiredRelays(env) {
 async function syncCandidateIpStatus(env) {
   const nowKey = bjNow().slice(0, 19);
   const rows = await env.DB.prepare(
-    "SELECT id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
+    "SELECT id, resource_id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
   ).all();
   let changed = 0;
   for (const r of rows.results) {
@@ -1635,12 +1635,15 @@ async function syncCandidateIpStatus(env) {
     try { nd = JSON.parse(r.node_data || "{}"); } catch (_) {}
     const creds = (nd._creds && typeof nd._creds === "object") ? nd._creds : {};
     const cands = Array.isArray(creds.candidates) ? creds.candidates : [];
+    if (!cands.length) continue;
     const active = Number(creds.active_idx) || 0;
     const relayUsed = Number(r.used_gb) || 0;
     let dirty = false;
+    let allDisabled = true;  // 所有候选是否都已禁用（决定要不要停服务器服务）
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i];
-      if (!c || c.enabled === false) continue;  // 已禁用跳过
+      if (!c) continue;
+      if (c.enabled === false) continue;  // 已禁用（算入 allDisabled）
       const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 19);
       const expired = !!expKey && expKey < nowKey;
       // 用尽判断：当前激活 IP 加实时流量，非激活 IP 用封账值
@@ -1651,6 +1654,8 @@ async function syncCandidateIpStatus(env) {
       if (expired || exhausted) {
         c.enabled = false;  // 标红禁用，不回收
         dirty = true;
+      } else {
+        allDisabled = false;  // 还有可用候选
       }
     }
     if (dirty) {
@@ -1659,6 +1664,24 @@ async function syncCandidateIpStatus(env) {
       await env.DB.prepare("UPDATE assignments SET node_data = ? WHERE id = ?")
         .bind(JSON.stringify(nd), r.id).run();
       changed++;
+    }
+    // 所有候选都禁用了 → 停服务器上的 relay 服务（真正断开代理；只标 enabled=false 软路由仍能连）
+    if (allDisabled) {
+      const sw = (nd._creds && nd._creds.switch) || {};
+      const sip = sw.server_ip || "";
+      const apikey = sw.api_key || "";
+      if (sip) {
+        try {
+          const resp = await fetch(`http://${sip}:8080/stop`, {
+            method: "POST",
+            headers: { "X-Api-Key": apikey, "Content-Type": "application/json" },
+            body: JSON.stringify({ relay_id: r.resource_id }),
+          });
+          if (resp.ok) console.log(`[candidate-ip] relay ${r.resource_id} 全部候选禁用，已停服务`);
+        } catch (e) {
+          console.error("[candidate-ip] 停服务失败:", r.resource_id, e && e.message ? e.message : e);
+        }
+      }
     }
   }
   if (changed) console.log(`[candidate-ip] ${changed} 条线路候选 IP 标红禁用（到期/用尽）`);
