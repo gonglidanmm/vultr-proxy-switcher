@@ -1,488 +1,232 @@
-# vultr-proxy-switcher 架构分析
+# 架构分析（对照 origin/main `07d039d`）
 
-分析范围是当前仓库的实际代码。仓库里没有 `docs/` 下的需求文档（本文件除外）、没有 `tests/`、没有 `app/relay_ops.py`。下文的「需求对照」因此以 `README.md`、代码注释、以及主人描述的目标布局为准，不臆造一份不存在的规格书。
+上一版报告基于旧 `main`（`b344564`）。主人随后推送了 90 个提交，HEAD 现为 `07d039d`（新增 `docs/系统需求与设计文档.md`）。本文件只记录相对上一版的变化、需求对照、工作流和第一波任务。旧报告里「没有 `relay_ops.py` / 没有需求文档 / cron 会自动回收 relay」已全部过时。
 
-主人描述的体量与仓库现状有偏差，以实测为准：
+分析时跑过 `python3 -m pytest tests/test_relay_ops.py`：10 passed。未改应用代码。
 
-| 文件 | 主人印象 | 实测 |
-| --- | --- | --- |
-| `app/ui/users_page.py` | 132KB | 65.2KB / 1494 行 |
-| `app/ui/webshare_page.py` | 86KB | 71.0KB / 1596 行 |
-| `app/ui/nodes_page.py` | 52KB | 47.9KB / 1073 行 |
-| `app/ui/servers_page.py` | 127KB | 123.5KB / 2839 行（最大的 UI 文件） |
-| `worker/src/index.js` | 90KB | 78.6KB / 1757 行 |
-| `app/relay_ops.py`、`tests/test_relay_ops.py`、`docs/` 需求文档 | 已存在 | 不存在 |
-
-另外还有主人描述里没点名、但已经是运行路径的部分：Tauri/Rust 壳、`worker/assets/` 里提交的前端构建产物、`scripts/switch_server.py`（部署到 VPS 上的控制面）、以及一批一次性修复脚本。
+权威需求是 `docs/系统需求与设计文档.md`。和代码不一致时，以该文档的业务规则为准，下面标出实现缺口。
 
 ---
 
-## 1. 总体架构
+## 1. 上一版 15 条缺陷与硬编码口令
 
-系统是四层，外加三家云 API。
+结论先说：产品规则上修好的是「到期/用尽自动回收」和「relay 切换不限次数、替换走管理 IP 弹窗」。安全口令、无认证 `node-ready`、Vultr 孤儿实例、schema 漂移都还在。另外出现一条新的路由覆盖：`POST /admin/reset-flow` 被写了两次，Vultr 重置流量会打到只认 relay 的处理函数。
 
-1. **管理桌面（PySide6，`app/`）** 跑在主人 Mac 上。它买/删 Vultr 机器、拉 Webshare 代理列表、把 Webshare IP 包成中转、给客户分配节点、同步 Vultr 流量。本地状态在 `~/.vultr-proxy-switcher/config.json`。Worker 地址和管理员 token 不在这份 JSON 里，而在同目录的 `worker_url.txt` 和 `worker_admin_token.txt`。
-2. **客户客户端（Vue 3 + Tauri 2）**。窗口直接加载线上 `https://user.yduas.cc/`（`tauri.conf.json` 的 `url` / `frontendDist`），前端热更新不靠重装安装包。本地代理、测速、系统代理走 Rust command，sidecar 是 sing-box 和 xray。
-3. **Cloudflare Worker `vultr-proxy-users`** 是唯一的线上控制面：用户/分配/会话在 D1，切换进度用 Durable Object `SwitchRoom` 做 WebSocket，cron 每分钟收尾卡住的切换、拉中转流量、回收到期或用尽的 relay。
-4. **VPS** 有两种角色，不要混：
-   - **Vultr 出口节点**：cloud-init 装 gost（SOCKS5 + Shadowsocks）、xray（VLESS+Reality）、hysteria2。客户直连这台机器，出口就是这台机器的 IP。
-   - **前置中转（relay）**：一台长期在线的 Vultr（或手工服务器）上，每个 relay 两个 systemd 服务：`gost-relay-<id>`（SS + SOCKS5 入站）和 `sing-box-relay-<id>`（Reality + Hysteria2 入站），上游是 Webshare SOCKS5。同机还跑 `scripts/switch_server.py`，监听 `0.0.0.0:8080`，提供 `/switch`、`/stop`、`/traffic`。
-
-外部依赖：Vultr API v2（建机/销毁/带宽）、Webshare API v2（列表/替换 IP/流量）、Cloudflare DNS API（A 记录，TTL 60，不走橙云）、Let's Encrypt（acme.sh）、IPQualityScore（住宅/机房 IP 打分）。Worker 可以用 `CONTROL_URL` + `CONTROL_SECRET` 把 Vultr 调用转到一台控制机；Cloudflare DNS 在 Worker 里是直连 `api.cloudflare.com`。
-
-```mermaid
-flowchart LR
-  subgraph admin [管理桌面 PySide6]
-    SP[servers_page]
-    WP[webshare_page]
-    NP[nodes_page]
-    UP[users_page]
-    CFG["config.json + worker_url/token 文件"]
-  end
-
-  subgraph customer [客户客户端 Vue+Tauri]
-    NV[NodesView]
-    RUST[Rust: sing-box/xray 本地代理]
-  end
-
-  subgraph cf [Cloudflare]
-    WK[Worker index.js]
-    D1[(D1)]
-    DO[SwitchRoom DO]
-  end
-
-  subgraph vps [VPS]
-    GOST[gost / xray / hysteria]
-    RELAY[gost-relay + sing-box-relay]
-    SW["switch_server.py :8080"]
-  end
-
-  VULTR[Vultr API]
-  WSAPI[Webshare API]
-  CFAPI[Cloudflare DNS]
-
-  SP --> VULTR
-  SP --> CFAPI
-  WP --> WK
-  WK --> WSAPI
-  SP --> WK
-  UP --> WK
-  NP --> WK
-  WP -->|SSH apply_relays| RELAY
-  NV -->|HTTPS 用户 token| WK
-  NV -->|WSS /ws| DO
-  RUST --> GOST
-  RUST --> RELAY
-  WK --> D1
-  WK --> DO
-  WK --> VULTR
-  WK --> CFAPI
-  WK -->|HTTP :8080| SW
-  SW --> RELAY
-  GOST -->|客户流量| Internet
-  RELAY -->|SOCKS5 上游| WebshareExit[Webshare 出口 IP]
-```
-
-### 1.1 用户分配
-
-1. 用户页 `create_user` → `POST /admin/users`。密码在 Worker 里 PBKDF2-SHA256（10000 次、16 字节盐），存 `salt$hash`。
-2. 服务器页或中转页打开 `assign_dialog`（定义在 `users_page.py` 末尾），组一份 `node_data` JSON，调用 `POST /admin/assignments`。
-3. `resource_type` 只允许 `vultr` 或 `relay`。relay 有部分唯一索引 `idx_relay_exclusive`：一个 relay id 只能分给一个用户。vultr 实例可以分给多个用户，切换时只更新查到的第一行（见第 4 节）。
-4. 客户 `POST /login` 拿 32 字节 token，写入 `sessions`（30 天）。`GET /me/nodes` 返回快照，删掉 `_creds`，并附上剩余切换次数、已用流量、是否到期、是否用尽。
-
-### 1.2 节点切换
-
-**Vultr（异步，分钟级）**
-
-1. 客户 `POST /me/switch`，body `{resource_id, region?}`。管理端走 `POST /admin/switch`，可以额外带 `plan`、`domain`、`creds`。
-2. Worker 读旧实例，同国家里换一个 region（客户指定的 region 必须在套餐 locations 里），用 `gost.js` 的 `buildGostUserData` 生成 cloud-init（`os_id` 写死 1743），先创建新实例，再抓旧实例出站字节，再删旧实例。删失败只打日志，不回滚，避免重试造成更多孤儿机。
-3. 写入 `switch_requests`，状态 `pending` / stage `booting`。客户切换的 `assignment_id` 是真实行；管理端切换写 `assignment_id=0, user_id=0, actor_type='admin'`。
-4. 新机 cloud-init 结束时请求 `GET /admin/node-ready?new_id=`，把 stage 改成 `installed`。这个接口没有认证。
-5. 客户轮询 `GET /me/switch/status`（管理端轮询 `/admin/switch/status`）。处理函数拿到 IP 后立刻改 Cloudflare A 记录，然后要么等 `installed`，要么创建超过 5 分钟就放行。用 `status` 从 `pending` 抢到 `processing` 防止并发重复加切换次数。完成后改 `assignments.resource_id` 为新实例 id，并给该用户的 SwitchRoom 推一条 WebSocket。
-6. 超过 10 分钟仍 pending/processing 的，由 cron `sweepPending` 再跑一遍同样的收尾。客户端自己的超时是约 6 分钟，超时后靠 cron 补。
-7. 桌面端在刷新服务器列表时读 `GET /admin/switch-flow`，把 `server_domains` / `server_configs` / 备注 / 名称 / 到期从旧实例 id 迁到新实例 id。
-
-**Relay（同步，秒级）**
-
-1. 同一条 `POST /me/switch`。`node_data._creds.candidates` 不足 2 个直接 400。
-2. Worker 对 `http://<server_ip>:8080/switch` 发 POST（头 `X-Api-Key`），body 是下一个候选上游。
-3. VPS 上的 `switch_server.py` 改 `gost-relay-<id>.service` 的 `-F`，并改 `sing-box/relay-<id>.json` 的 outbound，然后两个服务都重启。入站密码和端口不变。
-4. Worker 把 `active_idx`、当前 `upstream`、展示用 `ip` 写回 `node_data`，切换次数 +1，直接返回 `{status:"done", new_ip}`。不走 `switch_requests`。
-
-### 1.3 流量同步
-
-两条口径，不要加在一起理解错：
-
-- **Vultr**：桌面 `compute_bandwidth` 大约每 5 分钟拉每台实例的出站字节，减去 `server_flow_reset[instance_id]` 基准，`POST /admin/sync-flow` 写入 `assignments.used_gb`。客户看到的已用 = 该 assignment 上所有 `status='done'` 的 `switch_requests.old_used_gb` 之和 + `used_gb`。注释写明不再用 `server_cumulative_used` 做累加，避免重复计算。
-- **Relay**：cron `syncRelayTraffic` 按前置机分组请求 `GET /traffic`。VPS 用 iptables 链 `RELAY_TRAFFIC` 按四个端口记账（只计数，规则末尾 RETURN）。Worker 把原始计数存在 `_creds.traffic_raw`：第一次只记基线，之后记增量；计数变小（重启清零）则把当前值当增量。单位换成 GB 后加到 `used_gb`。
-
-重置流量：`POST /admin/reset-flow` 把该 `resource_id` 的 `used_gb` 置 0。桌面同时把当前出站写入 `server_flow_reset`，否则 5 分钟内同步会把重置盖回去。它不清 `switch_requests.old_used_gb`，所以客户侧「历史 + 当前」不一定归零。
-
-### 1.4 停用 / 回收决策
-
-没有单独的决策模块，规则散落在三处，而且不一致：
-
-| 条件 | 客户 UI | Worker `/me/switch` | cron |
+| # | 上一版 | 现在 | 位置 |
 | --- | --- | --- | --- |
-| `users.status=disabled` | 登录失败 | `requireUser` 拒绝 | 无 |
-| 到期 | 按钮显示「已到期」 | 用日期字符串和「今天」比 | relay 用「现在」的日期时间比 `client_expiry` |
-| 流量用尽 | 按钮显示「流量用尽」 | **不检查** | relay：`quota_gb>0 且 used_gb>=quota` 则停服务并删分配 |
-| 当日次数用完 | `switch_remaining<=0` 就禁用 | `count>=limit` 才拒绝 | 无 |
+| 1 | `switch_remaining = limit - 1 - count`，客户端比服务端早锁一次 | **Vultr 仍在；relay 已改** | 下发公式仍是 `worker/src/index.js:337`，切换响应 `remaining` 仍是 `limit - count - 1`（`:692`）。服务端只对非 relay 做 `count >= limit`（`:509`）。客户端只在 `resource_type === "vultr"` 时用 `switch_remaining <= 0` 锁按钮（`client/src/components/NodesView.vue:378`） |
+| 2 | 管理端切换把 `old_used_gb` 记在 `assignment_id=0`，客户按 assignment 求和加不进去 | **仍在** | `worker/src/index.js:1025`。用户切换仍写真实 `row.id`（`:689`） |
+| 3 | `reset_flow` 只清 `used_gb`，不清历史 | **relay 已改，Vultr 被路由弄坏** | 新函数 `resetRelayFlow` 清 `used_gb` 并删除该 assignment 已完成的 `switch_requests`（`:1736-1748`）。路由在 `:1899` 就 return 了它；`:1920` 的旧 `resetFlow`（`:1397-1406`，只清 `used_gb`）是死代码。`app/api_client.py` 也有两个 `reset_flow`（`:191` 与 `:247`），后者覆盖前者，但都打同一个 URL。Vultr 详情里的重置（`app/ui/users_page.py:2387`）因此会得到「分配不存在」 |
+| 4 | `/me/switch` 不看流量配额 | **relay 已看候选；Vultr 仍不看** | relay 的 `isUsable`（`worker/src/index.js:526-533`）拒绝禁用、到期、`used_gb >= quota_gb`。Vultr 分支（`:601` 之后）没有配额判断 |
+| 5 | 到期比较粒度不一致 | **部分改善，切换入口仍用日期** | `/me/nodes` 用 `bjNow` 比 `effExpiry`（`:329`）。`syncCandidateIpStatus` 用到秒（`:1647-1651`）。`switchResource` 在区分 relay 之前用 `effectiveExpiry < bjToday()`（`:504-505`），日期字符串和带时分秒的到期比会偏一天内 |
+| 6 | 一台 Vultr 分给多人时只更新第一行 assignment | **仍在（管理端）** | `processAdminSwitch` 使用 `.first()`（`:1074-1076`）。用户切换按 `assignment_id` 更新自己的行（`:849`） |
+| 7 | `GET /admin/node-ready` 无认证 | **仍在** | `worker/src/index.js:1860-1864`。cloud-init 仍无 token 调用它（`worker/src/gost.js:280`） |
+| 8 | 证书 token 普通字符串比较 | **仍在** | `certSave` 使用 `token !== expected`（`worker/src/index.js:194`）。管理员 token 仍是 `timingSafeEqual`（`:173`） |
+| 9 | `createReplacement` / `checkNodeHealthy` 无调用方 | **仍在** | 定义在 `:736`、`:750`，全仓库无调用。客户端「不通再切」仍是再发一次完整销毁重建 |
+| 10 | cron 注释写 10 分钟，配置是每分钟 | **注释仍错；行为已换** | 注释仍在 `:1938`。`scheduled` 已不再调用 `recycleExpiredRelays`（`:1955-1956`），改为 `syncCandidateIpStatus`（`:1951`）。死函数本体还在 `:1581-1624`，一旦重新挂上 cron 会按旧规则删分配 |
+| 11 | `schema.sql` 落后于迁移 | **仍在，且又多一张表** | `worker/schema.sql` 仍只有 users/assignments/sessions/certificates。`switch_requests`、`recycle_log`、新的 `recycle_flow_log`（`worker/migrations/013_recycle_flow_log.sql`）都不在全量 schema 里。`001`/`002` 文件名仍然重复 |
+| 12 | Webshare 替换 IP 不改 `relays[]` 和 D1 | **管理 IP 弹窗已改；列表上的替换按钮仍只刷新** | 跨账号选择在 `app/relay_ops.py`。保存时写 `config.relays` 并 `assign` 回 D1（`app/ui/users_page.py:1489-1544`）。`app/ui/webshare_page.py:1377` 的列表替换仍只调 `replace_proxy` 再刷新列表 |
+| 13 | 脚本把 `sys.path` 写死成本机绝对路径 | **测试文件已改；旧脚本仍在，还多一个** | `tests/test_relay_ops.py:9` 用仓库相对路径。`scripts/daily_check.py:14`、`scripts/e2e_assign_test.py:7`、新的 `scripts/assign_yong_test.py:7` 仍是本机绝对路径 |
+| 14 | Tauri `csp: null`，远程页可调本地代理 | **仍在** | `client/src-tauri/tauri.conf.json:27`。capability 仍允许 `https://user.yduas.cc` 调 Rust 命令 |
+| 15 | 服务端 Xray v26.3.27，客户 sidecar CI 是 v26.10.21 | **仍在** | `worker/src/gost.js:77-81`；`.github/workflows/build-macos.yml:47`、`build-windows.yml:50` |
 
-Relay 回收动作：`POST :8080/stop`（`systemctl disable --now` gost 和 sing-box 两个 unit）→ 写 `recycle_log` → `DELETE` 该 assignment。删分配后唯一索引释放，IP 可以再分。Vultr 用尽或到期不会自动关机或销毁，只影响客户端按钮；服务器页另有按 `server_expiry` 的本地自动销毁。
+硬编码口令（只报位置，值未变，文档第 9 节写「一律不写入仓库」但代码里还在）：
 
-手工回收在中转页和用户页里再写了一遍 SSH `systemctl disable`，和 Worker 的 HTTP `/stop` 是两条路。
+- `app/ipqs.py:10` `DEFAULT_KEY`，`:19` 在 config 没有 key 时使用。
+- `app/config.py:24` `DEFAULTS["proxy_pass"]` 不是空字符串（同段还有默认 `proxy_user`）。
+- `scripts/apply_relays.py:42` `cf_account_id` 的默认参数仍是写死的账号 id。
+- `scripts/setup_kk_wifi.sh:7`、`setup_kk_wifi_v2.sh:7`、`setup_kk_wifi_40.sh:7`、`setup_yy_wifi.sh:6` 的 `PASSWD`。
+- `scripts/e2e_assign_test.py` 仍写死服务器地址和测试用户 id。
 
-### 1.5 中转部署
+上一版还指出、本轮已改变的行为（不算进上面 15 条，但协调者不要再按旧报告排期）：
 
-1. Webshare 页勾选 IP，选入口域名。多个 IP 可以合成一条线路（一个 relay、N 个 `candidate_upstreams`）或 N 条独立线路。
-2. 端口从 `relay_port_high_water` 单调递增，删除不复用。SS 端口、SOCKS5 = SS+10000、Reality = SS+8000、Hysteria2 = SS+12000。这三处偏移在 `app/relay.py` 和 `scripts/switch_server.py` 各写一份，必须保持一致。
-3. 写入 `config.relays`，Cloudflare 把入口域名 A 记录指到前置机，然后 `scripts/apply_relays.py` SSH：清理多余 unit、签 `*.yduas.cc` 证书、下发 gost unit 和 sing-box JSON。
-4. `apply_relays.py` **不会**安装 `switch_server.py`。控制接口要另外 scp 到 `/usr/local/bin/switch_server.py`，密钥放 `/etc/switch_api_key`。Worker 能否切 relay，取决于这一步有没有做。
-
-### 1.6 跨账号替换
-
-仓库里没有跨账号替换模块。`relay_ops.py` 和它的 TDD 测试都不在树里。现有最接近的三件事：
-
-- **Webshare 同账号换 IP**：`webshare.replace_proxy` → `POST /proxy/replace/`，再轮询 replacement id。成功后只刷新代理列表，不改已经生成的 `relays[]` 上游，也不改 D1 里的 `node_data`。
-- **Vultr 同 API key 换实例**：销毁重建，不是换账号。桌面和 Worker 都只用一把 Vultr key（桌面在 config，Worker 在 secret `VULTR_API_KEY`）。
-- **实例 id 迁移**：`ServersPage._migrate_server_config` 和 `scripts/migrate_stale_config.py` 按 `switch_requests` 的 old→new 链，把本地 config 的 key 从旧 UUID 搬到新 UUID。这是切换后的配置修复，不是跨账号。
-
-如果后续要做「换一把 Webshare/Vultr 账号再替换资源」，需要新模块，不能假设 `relay_ops` 已经存在。
+- 到期/用尽不再自动删分配。cron 只把候选 `enabled=false`，全部禁用后 `POST :8080/stop`（`worker/src/index.js:1672-1688`）。这符合需求 §4.4。
+- relay 切换会把当前 `used_gb` 封进旧候选，并把分配行 `used_gb` 置 0（`:583-598`）。
+- `apply_relays.py:72-171` 会安装 `switch_server.py`。skip 条件加上了 `systemctl is-active`（`:189-191`），被 `/stop` 停掉的服务会重新拉起。
+- 设置页可以维护 `webshare_accounts`（`app/config.py:64`，`app/ui/settings_page.py:287-305`）。
+- 用户页新增 `_resolve_server_conn`（`app/ui/users_page.py:566`），回收停服务时按 `server_id` 找密码。
+- 新增 `app/ui/persist.py`（`SizedDialog`），四个大页面都继承它。
+- 体量：`users_page.py` 2963 行，`webshare_page.py` 1896，`nodes_page.py` 1146，`servers_page.py` 2859，`worker/src/index.js` 1958，`settings_page.py` 436。
 
 ---
 
-## 2. 分模块
+## 2. 需求文档 vs 实现
 
-### 2.1 桌面 `app/`
+### 已对齐
 
-| 模块 | 职责 | 关键入口 | 外部依赖 | 耦合 |
-| --- | --- | --- | --- | --- |
-| `main.py` | 入口，最大化窗口，退出时停本地代理 | `python -m app.main` | PySide6 | `MainWindow` |
-| `config.py` | JSON 读写，带线程锁；`mutate` 才是锁内读改写 | `get/set_value/update/mutate` | 本机文件系统 | 几乎所有页面 |
-| `api_client.py` | 管理端调 Worker | 见下表 | urllib，强制不走系统代理 | UI 与 Worker 的唯一正式客户端 |
-| `vultr.py` | 区域表、cloud-init、实例 CRUD、账单和带宽 | `VultrAPI`、`build_gost_user_data`、`compute_bandwidth` | `api.vultr.com` | 与 `worker/src/gost.js`、`region.js` 重复 |
-| `webshare.py` | 套餐、代理列表、替换、订阅流量 | `load_lists`、`replace_proxy` | Webshare；大陆网络走 Worker `/ws-proxy` | 密钥来自 config |
-| `cloudflare.py` / `domain.py` | zone、A 记录、子域名计数、SSH 签证书、热更新远端配置 | `sync_domain`、`apply_server_config` | CF API、paramiko | 服务器页、Webshare 入口域名 |
-| `relay.py` | 端口、unit、sing-box JSON、`relay_node_data` | 纯函数，适合以后抽测试 | 无网络 | 被 apply_relays、中转页、用户分配使用 |
-| `gencreds.py` | 每台机器独立账号；Reality 密钥调用本机 `bin/xray x25519` | `generate_credentials` | 本地 xray 二进制 | `server_configs` |
-| `share.py` | socks/ss/vless/hysteria2 分享链接 | 与 Worker `buildLinks` 必须一致，目前并不完全一致 | 无 | 分配快照里的 `links` |
-| `localproxy.py` / `ssclient.py` / `proto_client.py` / `sysproxy.py` | 管理端自己用的本地转发：回环 SOCKS5，Reality/Hysteria 起子进程，改系统代理 | `ProxyController` | xray/hysteria 二进制 | 只服务服务器页，客户客户端不用它 |
-| `check.py` / `e2e.py` | TCP/UDP/出口 IP/四协议探测 | 脚本和服务器页检测 | 本机网络 | |
-| `ipqs.py` | IP 质量分，本地按北京时间计每日额度 | `check_ip` | IPQS HTTP API | Webshare 页和中转页 |
-| `ui/main_window.py` | 五个导航：Vultr、Webshare、中转、用户、设置 | 110 行 | | 页面之间不共享状态对象，只共享 config 和 Worker |
-| `ui/servers_page.py` | 实例表、购买、手工机、切换 IP、本机代理、分配、流量同步、到期销毁 | `ServersPage` 及 6 个对话框 | Vultr + Worker + CF + SSH | 最大文件，对话框没有拆出去 |
-| `ui/webshare_page.py` | 机房/住宅表、替换 IP、生成 relay、IPQS | `WebsharePage._generate_relays` | Webshare + SSH 部署 | 直接写 `relays` |
-| `ui/nodes_page.py` | 中转列表、分享、删除、回收、回归 | `NodesPage` | Worker recycle-log、SSH | 和用户页重复停服务逻辑 |
-| `ui/users_page.py` | 用户 CRUD、分配弹窗、重置次数/流量、手工停 relay | `assign_dialog` | Worker | 分配契约集中在这里，但服务器页/中转页也组 `node_data` |
-| `ui/settings_page.py` | Vultr key、Webshare key、本机端口、域名和 CF token | | | 不编辑 Worker secret |
-| `ui/workers.py` | `CallWorker` / `ProgressWorker` 把阻塞调用丢到 QThread | | | 各页自己持有 worker 列表 |
+- 多 Webshare 账号，候选 IP 自带 `ws_account`（ADR-001）。替换账号优先级在 `relay_ops.resolve_replace_account`，测试覆盖了 IP 级、host 反查、线路级、未知账号、全空。
+- 独立线路 / 合并线路、管理 IP 弹窗（添加、删除、禁用、设为当前、改配额、改到期、续费、跨账号替换）。保存时把激活候选的 `quota_gb` 和 `client_expiry` 写回分配（`users_page.py:1532-1544`）。
+- 改配额/到期视为续费：清候选封账、`reset_flow`、未过期则 `enabled=true`，并在恢复或续费时重新部署（`:1474-1554`）。符合 §4.5、ADR-003、ADR-006。
+- 手动回收记 `recycle_flow_log`（migration 013，`recordRecycleFlow`，`api_client.record_recycle_flow`）。
+- 客户端展示 `eff_expiry`、生效配额/已用、候选禁用（`NodesView.vue` 的 `isSwitchDisabled`、`candDisabled`）。relay 单线路不能切，次数限制只加在 Vultr 上。
+- 替换端点改走 Webshare v3（`app/webshare.py:18`、`:263` 附近的注释）。
+- 前端发布步骤写在需求 §2.1，与 `tauri.conf.json` 远程 URL、`/build-stamp` 一致。
+- `pytest tests/test_relay_ops.py` 10 项通过。
 
-`config.py` 文件头写「只存非敏感字段」，和 `DEFAULTS` 不符：API key、root 密码、Reality 私钥、代理密码都在这份 JSON 里。
+### 部分对齐
 
-**`config.json` 键（从 `DEFAULTS` 和实际 `config.get` 合并，运行时文件不在本仓库）**
+- §4.1 三处配额。管理 IP 保存会写分配记录、`node_data.quota_gb` 和 `candidates[].quota_gb`。Worker 判定在候选配额为 0 时回退分配记录（`index.js:1656`）。Webshare 页「列表上直接替换」不走这条保存，三处会再次分裂。
+- §4.2 到期。合并线路读候选 `expiry`，空则回退 `client_expiry`，这条在 `syncCandidateIpStatus` 里有。`switchResource` 开头仍用线路级字段和「今天」的日期比，和「精确到秒」不一致。
+- §4.3 流量 = `used_gb + hist_gb`。`/me/nodes` 和 `listAllAssignments` 都算了 `hist_gb`（`:278`、`:1450`）。管理端 Vultr 切换的历史行 `assignment_id` 仍是 0，这段出站进不了和。relay 封账在候选 `used_gb` 上，不进 `switch_requests`，和文档「hist_gb = 切换时封账的 old_used_gb」不是同一条账。
+- §4.4 全部禁用后停服务。会发 `/stop`，但 `switch_server.py:254` 即使内部失败也回 HTTP 200，Worker `:1679` 只看 `resp.ok`。停失败时代理继续计费，日志像成功。全部已禁用的线路每分钟都会再打一次 `/stop`。
+- §4.7 替换「同国家、排除自己」。`available_pool` 按 host 排除当前候选（`relay_ops.py:67-68`），国家过滤在 UI 层，不在这个纯函数里。
+- §3.3 服务器。Vultr 购买、手工机、切换、DNS 仍在 `servers_page.py`。需求点名的 inter-la-01 / zenix-e01 只出现在文档和 `apply_relays` 的示例命令里，不是代码里的类型。
+- 架构图写「一切切换都经控制机 IPv6」。代码里 Vultr 可选 `CONTROL_URL`（`index.js` 的 `apiBase`），Cloudflare DNS 在 Worker 内直连（`:695` 附近），relay 切换是 Worker 直连 `http://服务器:8080`。
 
-Vultr 与本机代理：`vultr_api_key`、`label`、`regions`、`plans`、`proxy_user`、`proxy_pass`、`proxy_port`、`local_port`、`manual_servers`、`active_upstream_id`、`active_upstream_cache`、`active_proto`。
+### 缺失或与文档相反
 
-域名与证书：`domain_name`、`cf_token`、`zone_id`、`cf_account_id`（仅脚本读取，不在 DEFAULTS）、`server_domains`、`domain_counter`。
+- §3.4「订阅」。客户端没有订阅 URL 端点；只有节点列表、复制链接、二维码。
+- §8 写迁移 `001~013` 可由 schema 重建。`schema.sql` 不含 013，也不能单独建出 `switch_requests`。
+- 文档第 9 节要求凭据不进仓库。第 1 节列出的口令位置都还在。
+- Vultr 用尽/到期不会停机，也不会禁止 `/me/switch`。文档的自动禁用主要描述 relay。
+- `recycleExpiredRelays` 仍留在源码里。文档说已删除。
 
-每机状态：`server_configs`、`server_expiry`、`server_notes`、`server_names`、`server_cumulative_used`、`server_flow_reset`、`server_order`、`stale_assign_since`。
+### 新发现
 
-协议默认值：`ss_password`、`ss_port`、`root_password`、`reality_uuid`、`reality_public_key`、`reality_private_key`、`reality_short_id`、`reality_sni`、`reality_port`、`hysteria_password`、`hysteria_port`、`hysteria_mport`。
+1. **P0 路由覆盖。** `POST /admin/reset-flow` 注册两次（`index.js:1899` 和 `:1920`）。先注册的 `resetRelayFlow` 只更新 `resource_type='relay'`。Vultr 重置（`users_page.py:2387`）失败。relay 续费处用 `except Exception: pass` 吞掉失败（`:1482-1486`），界面仍把候选标成启用并可能重新部署，历史流量还在，客户看起来「续费了但仍用尽」。
+2. **P0 停服务假成功。** 见上，`switch_server.py:254` + `index.js:1679`。手动回收走 SSH 并检查 `is-active`（`users_page.py:625` 一带）；cron 这条自动停用没有同等校验。
+3. **P0 Vultr 孤儿实例。** 创建成功、删除失败只 `console.error`（`index.js:681-686`）。没有对账任务。删除失败后客户端重试会再创建一台。
+4. **主 IP 与激活 IP 可能不是同一个。** 保存时 `config.relays` 的 host 取 `candidates[0]`（`users_page.py:1496-1501`），配额和到期取 `active_idx`（`:1535-1537`）。激活索引不是 0 时，部署用的上游和客户端「当前 IP」会不一致。
+5. **测试注释和断言相反。** `tests/test_relay_ops.py:74-83` 的 docstring 写「当前线路自己的 IP 也允许」，断言是 `len(out) == 0`。函数在 `:67` 无条件排除 `cur_hosts`。测试是绿的，注释会误导下一个改 `available_pool` 的人。
+6. **`api_client.py` 重复定义 `reset_flow`。** `:191` 是死代码。`list_recycle_log` 的 docstring（`:209`）仍写「自动回收后记录」，和 ADR-002 相反。
 
-中转：`relays`、`relay_port_high_water`、`relay_password_pool`、`recycled_relays`、`returned_ips`、`switch_api_key`、`nodes_order`、`nodes_col_widths`。
+---
 
-Webshare：`webshare_api_key`、`webshare_plans`、`webshare_subscription`、`webshare_notes`、`webshare_scores`、`webshare_dc_col_widths`、`webshare_res_col_widths`、`webshare_dc_order`、`webshare_res_order`。
+## 3. 工作流（相对上一版）
 
-其它：`ipqs_key`、`ipqs_daily_limit`、`ipqs_usage`、表格列宽和 `user_order`。
+四个编码代理的边界不变。文件所有权有三处要改。
 
-`relays[]` 元素字段：`id`、`server_id`、`name`、`host`、`port`、`user`、`password`、`relay_port`、`relay_password`、`ip_type`（`dc`/`res`）、`entry_domain`、Reality 四件套、`hysteria_password`、可选 `candidate_upstreams`、`active_upstream_idx`。
-
-**`node_data` 快照（D1 `assignments.node_data`，客户可见字段 + 仅管理端的 `_creds`）**
-
-客户协议：`host`、`domain`、`ip`、`name`、`location`、`region`、`ip_type`、`socks5`、`ss`、`reality`、`hysteria2`、`links`、`expiry`、`client_expiry`、`quota_gb`（展示以列 `assignments.quota_gb` 为准）、`last_check_at`、`last_check_status`。
-
-`_creds`（`/me/nodes` 会删掉）：Vultr 是整份代理凭据；relay 是 `{relay_id, server_id, switch:{server_ip, port:8080, api_key}, upstream, candidates, active_idx, traffic_raw}`。注释指向一份仓库里不存在的 `relay-assignment-d1-model.md`。
-
-### 2.2 Worker
-
-`worker/src/index.js` 单文件路由，没有 router 库。`gost.js` 生成 cloud-init，`region.js` 是区域表，`switch-room.js` 是 DO。
-
-环境变量 / secret（不在仓库里）：`ADMIN_TOKEN`、`VULTR_API_KEY`、`CF_TOKEN`、`CF_ZONE_ID`、`CERT_TOKEN`、`GLOBAL_CREDS`、`CONTROL_URL`、`CONTROL_SECRET`。D1 binding 名 `DB`。DO binding 名 `SWITCH_ROOM`。
-
-**客户接口**（`Authorization: Bearer <session>`，登录除外）
-
-| 方法 | 路径 | 作用 |
+| 工作流 | 独占 | 本轮调整 |
 | --- | --- | --- |
-| POST | `/login` | 发 token |
-| GET | `/me/nodes` | 节点列表 |
-| POST | `/me/switch` | Vultr 异步切换或 relay 同步切换 |
-| GET | `/me/switch/status` | 推进 pending，返回 items |
-| POST | `/me/account` | 改密码（不能改用户名） |
-| POST | `/me/note` | 备注 |
-| POST | `/me/name` | 写 `node_data.name` |
-| POST | `/me/check` | 写检测结果 |
-| POST | `/me/reorder` | `sort_order` |
-| GET | `/ws?token=` | 升级到该用户的 SwitchRoom |
+| A 控制面 | `worker/**`、`scripts/switch_server.py`、`app/api_client.py` | 新增路由 ` /admin/recycle-flow`、`resetRelayFlow`。A 负责拆开重复的 `reset-flow`，并让 `schema.sql` 含 013 |
+| B Vultr 管理端 | `servers_page.py`、`vultr.py`、`domain.py`、`cloudflare.py`、`gencreds.py`、本地代理一组、`main_window.py` | `settings_page.py` 不再整份归 B。Vultr/CF/本机端口仍归 B；其中的 Webshare 账号表（`_collect_ws_accounts` 一带）归 C。两边不要同时重排这个文件 |
+| C Webshare + relay + 用户 | `webshare_page.py`、`nodes_page.py`、`users_page.py`、`webshare.py`、`relay.py`、`share.py`、`ipqs.py`、`apply_relays.py` | **加上 `app/relay_ops.py` 和 `tests/test_relay_ops.py`。** 纯函数和测试必须同一次提交。设置页里的账号表也归 C |
+| D 客户客户端 | `client/**` | 构建产物仍交给 A 放进 `worker/assets` 再 deploy。D 不提交 `worker/assets` |
 
-**公开接口**
+`app/ui/persist.py` 被 B 和 C 的对话框一起用。协调者拥有这个文件的行为（恢复/保存尺寸）。代理只新增 `_size_key`，不改基类算法。
 
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| GET | `/`、`/app`、`/index.html`、`/main.js`、`/style.css` | 托管构建后的前端 |
-| GET | `/version` | 客户端版本、下载镜像、说明 |
-| GET | `/build-stamp` | 前端热更新戳 |
-| POST | `/admin/cert-save` | `X-Cert-Token`，缓存证书 |
-| GET | `/admin/node-ready?new_id=` | **无认证**，把 stage 标成 installed |
+不要把 `relay_ops.py` 分给 A。它不碰网络和 D1，测试桩是 `key_for_host_fn`。A 若改切换封账，只改 Worker，不改账号选择。
 
-**管理接口**（`X-Admin-Token`，与 `ADMIN_TOKEN` 做定长比较）
+软路由脚本和 `rebuild_*` / `assign_yong_test.py` 继续冻结。
 
-`GET/POST /admin/users`，`GET/PUT/DELETE /admin/users/:id`，`GET /admin/stats`，`POST/DELETE /admin/assignments`，`POST /admin/switch`，`GET /admin/switch/status`，`GET /admin/all-assignments`，`POST /admin/sync-flow`，`POST /admin/reset-flow`，`GET /admin/switch-flow`，`GET /admin/resource-assignments`，`GET /admin/recycle-log`，以及 `GET /ws-proxy/*` 反代到 `https://proxy.webshare.io/api/v2`（调用方自己带 Webshare `Authorization`，Worker 不保存这把 key）。
+横切契约在上一版 10 条上加两条：
 
-**WebSocket 消息**：DO 只是把 Worker POST 的 JSON 原文广播。实际发出的负载是 `{resource_id, stage, status, new_ip?, note?}`，而且只在用户切换进入 done/failed 时发。中间阶段不推，客户端仍靠 15 秒轮询。管理端切换不调用 `notifySwitch`。客户端用点击时的旧 `resource_id` 对上 `old_id`。
-
-**D1 表**
-
-- `users`：`username` 唯一，`password_hash`，`status`，`expires_at`，`note`，以及迁移加上的 `switch_limit/count/date`。登录不再用用户级 `expires_at` 拒绝，到期改看每台 `client_expiry`。
-- `assignments`：`(user_id, resource_type, resource_id)` 唯一；relay 另有部分唯一索引。列含 `node_data`、`switch_*`、`quota_gb`、`used_gb`、`note`、`sort_order`。
-- `sessions`：token 主键，30 天。
-- `certificates`：按域名缓存 fullchain 和私钥，过期不复用。
-- `switch_requests`：异步切换。列从多次 ALTER 叠成：`actor_type`、`domain`、`old_used_gb`、`new_bandwidth`、`retry_count`、`stage`。
-- `recycle_log`：relay 自动回收。
-
-`schema.sql` 只覆盖 users/assignments/sessions/certificates 的一部分列，**没有** `switch_requests`、`recycle_log`，也没有 users 的 switch 列。`migrations/` 是手工 `wrangler d1 execute --file`，不是 wrangler 的有序迁移目录：`001` 和 `002` 各有两个文件。新库不能只跑 `schema.sql`。
-
-`checkTcpAlive`、`checkNodeHealthy`、`createReplacement` 三个函数没有任何调用方。`retry_count` 只有死代码会加。客户端「不通再切两次」是再发一次完整的销毁重建，不是走这段重建逻辑。
-
-### 2.3 客户客户端 `client/`
-
-- `src/api/index.js`：`API` 写死 `https://user.yduas.cc`。
-- `src/api/ws.js`：token 放 query，断线 5 秒重连。
-- `stores/auth.js`：token 和 user 进 localStorage。
-- `stores/nodes.js`：`/me/nodes`，60 秒静默刷新；到期取所有节点里最晚的一天。
-- `stores/proxy.js`：本地 mixed 入站端口 7890（测速另起一段 20000 以上的随机端口）。组 sing-box 和 xray JSON。管理端本地端口默认 1080，两套本地代理互不相干。
-- `NodesView.vue`（672 行）：切换、批量切、测速、拖拽排序、列宽、分享、二维码。这是客户侧核心，不是主人印象里的「唯一大文件」——管理端四个页面都比它大。
-- `App.vue`：侧边栏唯一业务项文案是「Webshare-IP」，内部 id 却是 `vultr`，实际列表包含 vultr 和 relay。
-- `src-tauri/src/main.rs`：TCP/UDP 探测、直连公共 DNS 解析（避开 fake-ip）、系统代理、起停 sing-box/xray、多端口测速、打开下载链接。
-- `legacy-src/main.js`：Vue 重构前的单文件前端，逻辑仍留在树里，容易让人改错地方。
-- 线上真正跑的 JS 是 `worker/assets/main.js`（140KB，已压缩）和 `style.css`。`vite build` 输出到 `client/dist`，`bump-stamp.mjs` 给 html 加 `?v=`。仓库里没有把 `dist` 拷进 `worker/assets` 的脚本，这一步是手工的。
-
-### 2.4 VPS 控制脚本 `scripts/switch_server.py`
-
-标准库 `ThreadingHTTPServer`，无第三方依赖。`/switch` 要求 gost 和 sing-box 都成功才算 ok。`/traffic` 先按当前 unit 补 iptables 规则再读计数。`/stop` 幂等。监听公网 8080，认证是头里的 key 和文件内容做普通字符串相等比较。
-
-### 2.5 其它脚本
-
-产品路径：`apply_relays.py`、`daily_check.py`（配置漂移、DNS、443）、`migrate_stale_config.py`、`test_localproxy.py`、`verify_protocols.py`、`e2e_assign_test.py`（会写 SQL 文件去插 D1，不是 pytest）。
-
-一次性运维，硬编码了某台机器或某个标签：`fix_to_us.py`、`rebuild_siyan04.py`、`rebuild_yduas4980us01.py`、`recreate_with_ss.py`、`restore_siyan06.py`、`rotate_with_check.py`、`analyze_config_loss.py`。
-
-软路由 / WiFi，和代理产品无导入关系：`fix_tailscale.sh`、`install_tailscale.sh`、`fix_yy_boot.sh`、`fix_yy_bridge.sh`、`setup_kk_wifi.sh`、`setup_kk_wifi_v2.sh`、`setup_kk_wifi_40.sh`、`setup_yy_wifi.sh`。
-
-图标：`make_icon.py`、`make_nav_icons.py`。截图：`screenshot.py`。
+11. `webshare_accounts` 的元素形状 `{name, api_key}`，以及候选上的 `ws_account` / `quota_gb` / `expiry` / `enabled` / `used_gb`。C 写，A 读。
+12. `POST /admin/reset-flow` 与 `POST /admin/recycle-flow` 的 body。只有 A 改路径；C 的续费和回收是调用方。
 
 ---
 
-## 3. 技术栈、命令、测试
+## 4. 第一波任务
 
-**栈**
+同一工作流内按编号顺序做。P0 是安全或会继续烧钱（孤儿实例、停了服务仍在转发、续费清零失败）。
 
-- 管理端：Python `>=3.11`，uv + hatchling，PySide6，requests，PySocks，paramiko，qrcode。可选 pytest、ruff、pyinstaller。PyPI 源写的是阿里云镜像。版本号 `app/__init__.py` 为 `0.1.0`。
-- Worker：JavaScript，Wrangler，`compatibility_date` 2026-10-01，D1，Durable Object SQLite 类，cron `* * * * *`。
-- 客户前端：Vue 3.4、Pinia 2、Vite 5、qrcode。包版本 `0.1.3`。
-- 壳：Tauri 2、Rust stable。macOS arm64 和 Windows x64。sidecar：sing-box 1.14.2、Xray 版本在 CI 里写的是 v26.10.21；cloud-init 里的服务端 Xray 注释要求固定 v26.3.27（更高版本会拒绝 sing-box 客户端）。这是一个真实的版本策略分裂。
-- VPS：Ubuntu（`os_id` 1743，注释说这是 22.04；同文件注释又说 24.04 是 2284，但代码仍用 1743）、gost 2.12.0、sing-box、hysteria、systemd、ufw、iptables。
+### A 控制面
 
-**命令**
+**A1（P0）拆开重置流量路由。**  
+目标：relay 续费继续清 `used_gb` 和该 assignment 的 done `switch_requests`；Vultr 重置走只清 `used_gb` 的旧语义（或单独路径），不再 404。  
+文件：`worker/src/index.js`（`:1397`、`:1736`、`:1899`、`:1920`），`app/api_client.py`（删掉 `:191` 的重复定义，或改成两个函数名）。  
+验收：对 relay id，`used_gb` 为 0 且该 id 的 done `switch_requests` 被删；对 vultr 实例 id，返回成功且只动 `used_gb`，不误删别的切换史。`users_page.py:2387` 不再弹出「分配不存在」。  
+依赖：无。C 的续费在 A1 合并前不要改重置 URL。
 
-```bash
-# 管理端
-uv sync
-uv run python -m app.main
+**A2（P0）停服务以 JSON `ok` 为准，失败要看得见。**  
+目标：cron 在全部候选禁用后真正停掉 gost 和 sing-box；失败不要当成成功。  
+文件：`scripts/switch_server.py:251-254`（失败用非 200 或 Worker 读 `ok`），`worker/src/index.js:1672-1688`。  
+验收：unit 不存在时接口仍成功（幂等）；`systemctl` 真失败时 Worker 日志不是「已停服务」，且下一分钟会重试。不在这里重新启用 `recycleExpiredRelays`。  
+依赖：无。可与 A1 并行，只是同一文件，建议 A 一个人顺序做。
 
-# 客户前端开发（浏览器，没有 Rust 命令）
-cd client && npm install && npm run dev    # 127.0.0.1:1424
+**A3（P0）Vultr 删除失败要留下可查询记录，避免静默孤儿。**  
+目标：创建成功且 DELETE 非 404 失败时，把 `old_id`、`new_id`、HTTP 状态写入 D1 或至少一条可被管理端拉到的列表，而不是只有 `console.error`。  
+文件：`worker/src/index.js:681-686` 和 `:953` 附近的管理端同样路径；可加一张小表或复用 `switch_requests` 的一列。  
+验收：模拟删除 500 后，管理端能看到「旧实例可能仍在计费」；不在删除失败时自动再创建。  
+依赖：B 只做展示，等 A 给出字段。
 
-# 客户桌面
-cd client && npm run tauri:dev
-cd client && npm run tauri:build           # CI 用 tauri-action，tag mac-v__VERSION__ / win-v__VERSION__
+**A4（P0）给 `node-ready` 加与证书相同的共享密钥。**  
+目标：不知道 `new_id` 的人不能把 stage 改成 `installed`。  
+文件：`worker/src/index.js:1860`，`worker/src/gost.js:280`。cloud-init 已有 `CERT_TOKEN` 时可以复用请求头，避免新 secret。  
+验收：无头的 GET 返回 401；带正确头且 `new_id` 匹配 pending 行时 stage 变为 `installed`。  
+依赖：无。已部署的旧 cloud-init 在密钥上线后会 401，5 分钟超时仍会放行（`:832` 一带），要在任务说明里写上这个窗口。
 
-# 前端构建戳（产物在 client/dist，还要手工同步到 worker/assets 再部署）
-cd client && npm run build
+**A5 管理端切换的 `old_used_gb` 记到真实 assignment。**  
+目标：修第 2 条。有分配时 `assignment_id` 用该行 id；多人共享时更新所有匹配行或明确只支持一行并在接口里拒绝第二行。  
+文件：`worker/src/index.js:1025`、`:1074`。  
+验收：管理端切换完成后，`/me/nodes` 的 `hist_gb` 包含这次销毁前的出站。  
+依赖：A3 的记录格式若共用 `switch_requests`，先做 A3。
 
-# Worker
-# 在 worker/ 目录，secrets 需事先 wrangler secret put
-npx wrangler deploy
-npx wrangler d1 execute vultr-proxy-users --remote --file=schema.sql
-# 增量变更是 migrations/*.sql，按注释逐个 --file 执行，不要假设文件名顺序可重放
+**A6 补全 `schema.sql`，删掉或隔离 `recycleExpiredRelays`。**  
+目标：新库执行 schema 后含 `switch_requests`、`recycle_log`、`recycle_flow_log` 和 users 的 switch 列。死函数不再位于会被误挂回 cron 的位置。  
+文件：`worker/schema.sql`，`worker/src/index.js:1581`。  
+验收：对照 migrations 001–013 列清单一致；`scheduled` 里仍然只有 sweep、syncRelayTraffic、syncCandidateIpStatus。  
+依赖：无。
 
-# 中转下发（读本机 config.json）
-uv run python scripts/apply_relays.py [server_id server_ip]
+### B Vultr 管理端
 
-# 本地代理冒烟（README 里唯一写了的测试）
-uv run python scripts/test_localproxy.py
-```
+**B1（P0）重置流量在 A1 之后改调用正确的函数。**  
+目标：Vultr 详情「重置流量」命中只处理 vultr 的接口，并继续写 `server_flow_reset`，避免 5 分钟内被同步盖回。  
+文件：`app/ui/users_page.py:2337-2387`（这段在用户页，但是 Vultr 语义；C 不要改这一函数，由 B 改调用，或 A 在 `api_client` 提供 `reset_vultr_flow` 后 B 改这一处）。若坚持文件所有权，A 在 `api_client.py` 增加函数，B 只改 `:2387` 这一行——该行在 C 的文件里，**这一行指定给 B，C 本波不要动 `_reset_flow`**。  
+验收：重置后 D1 `used_gb` 为 0，下一次带宽同步不会立刻写回重置前的数。  
+依赖：A1。
 
-CI 只有 `.github/workflows/build-macos.yml` 和 `build-windows.yml`：push 到 `main` 且改了 `client/**` 时打安装包并发布 release。没有 Worker 部署流水线，没有 Python 测试流水线。
+**B2 管理端能看见 A3 的孤儿实例。**  
+目标：服务器页刷新时列出「删除失败仍可能计费」的旧 id。  
+文件：`app/ui/servers_page.py` 的刷新/日志。  
+验收：A3 的记录出现在界面上，并带旧 id，不自动再点一次切换。  
+依赖：A3。
 
-**测试现状**
+**B3 不要改 `settings_page.py` 的账号表。**  
+本波 B 无设置页任务。若要改 Vultr key 区域，只动该区域，避开 `_collect_ws_accounts`。
 
-- `pyproject.toml` 声明了 pytest，仓库里没有 `test_*.py`，也没有 `pytest.ini`。
-- `scripts/test_localproxy.py` 是可执行冒烟脚本，不进 pytest。
-- `scripts/e2e_assign_test.py` 依赖开发者本机绝对路径和一份真实 config，会生成往 D1 插数据的 SQL。
-- Worker、Vue、Rust 都没有测试。
-- 主人提到的 `tests/test_relay_ops.py` 不存在，所以「中转纯函数已有 TDD」这个前提目前不成立。`app/relay.py` 的端口和 unit 生成是最适合先补测试的纯函数。
+### C Webshare + relay + 用户
 
----
+**C1（P0）续费清零失败不得启用并部署。**  
+目标：`reset_flow` 失败时不把 `enabled` 改回 true，不调用 `_deploy_after_save`，界面显示错误。  
+文件：`app/ui/users_page.py:1474-1554`。  
+验收：接口 404/500 时候选保持禁用，状态栏是失败而不是「已保存」。接口成功时行为与现在相同（清零、启用、IP 变化或续费才部署）。  
+依赖：A1。C1 在 A1 合并后做；A1 未合并前 C 不要改 URL。
 
-## 4. 需求对照、缺陷、风险、技术债
+**C2 保存时主上游用激活候选，而不是 `candidates[0]`。**  
+目标：`active_idx != 0` 时，`relays[].host`、部署上游、`node_data.ip` 与激活 IP 一致。  
+文件：`app/ui/users_page.py:1496-1530`。  
+验收：激活第 2 个候选后保存，config 与 D1 的 host/ip 都是第 2 个；`relay_ops` 测试仍 10 通过。  
+依赖：无。不要和 C1 改同一函数时互相覆盖，建议同一人先 C2 再 C1，或合成一个提交。
 
-### 4.1 对照
+**C3 列表上的「替换 IP」要么走 `relay_ops` 并回写已生成线路，要么按钮标明「只换账号池、不改已分配线路」。**  
+目标：消除第 12 条的半截行为。  
+文件：`app/ui/webshare_page.py` 替换成功回调，必要时调用与管理 IP 相同的回写。  
+验收：替换一个已经生成 relay 的 IP 后，`relays[]` 和已分配 `node_data` 的 host 变为新 IP，或 UI 明确写「已分配线路请用管理 IP」。  
+依赖：无。不改 `relay_ops` 的函数签名；缺能力就加函数并加测试。
 
-README 仍停留在「本地 127.0.0.1:1080 + Vultr gost」的第一版，没有用户、Worker、中转、客户客户端。以代码自身的完成度为准：
+**C4 修正 `available_pool` 测试注释，补上「国家不在此函数过滤」的测试。**  
+目标：注释和断言一致。  
+文件：`tests/test_relay_ops.py:74`。  
+验收：`pytest tests/test_relay_ops.py` 全绿；docstring 不再写「也允许」。  
+依赖：无。可与 C2 并行（不同文件）。
 
-**已经接通**
+**C5 账号表只在设置页维护，生成中转时用选中的 `webshare_accounts` 项。**  
+目标：确认下拉框与 `key_for_host` 使用同一列表。本波只修发现的不一致，不重做 UI。  
+文件：`app/ui/settings_page.py` 的账号表、`app/webshare.py` 的账号解析。  
+验收：两个账号时，管理 IP 替换下拉能选到第二个账号的 key；`resolve_replace_account` 测试仍绿。  
+依赖：无。B 本波不改这些行。
 
-- Vultr 购买、手工机、关机/开机、删除、同国家换 IP、DNS、每机凭据、四协议 cloud-init。
-- 管理端四页导航、用户 CRUD、分配/取消、relay 独占、分享链接和二维码。
-- 客户登录、节点列表、备注、改名、排序、改密码、版本检查、前端热更新刷新。
-- Vultr 异步切换 + WebSocket 终态 + 轮询 + cron 收尾。
-- Relay 候选轮换、VPS `/switch` `/stop` `/traffic`、cron 流量增量、到期/用尽回收和回收日志。
-- Webshare 列表（含 Worker 反代）、订阅流量、同账号替换 IP、合并成一条线路。
-- 桌面把自己的流量同步进 D1；切换后按 old→new 链迁移本地 config。
-- macOS/Windows 客户安装包流水线。
+### D 客户客户端
 
-**做了一半**
+**D1 Vultr 剩余次数与服务端 `count >= limit` 一致。**  
+目标：在 A 未改 `:337` 之前，客户端不要用 `limit - 1 - count` 提前锁死。可以显示服务端给的 `switch_remaining`，但禁用条件改为「服务端 429」或自己用 `switch_limit` 与已用次数计算 `count >= limit`。  
+文件：`client/src/components/NodesView.vue:368-378`。若下发字段本身少 1，D 应改用 `switch_limit` 与节点上的已用次数；若节点对象没有已用次数，**依赖 A 在 `/me/nodes` 增加 `switch_count` 或把 `:337` 改成 `limit - count`**。把改公式放进 A 的 A1 之后一个小任务 A1b 更干净：A 改 `:337` 和 `:692`，D 只确认按钮与 429 一致。  
+验收：limit=5、当天 0 次时按钮可点；成功 5 次后按钮禁用且接口 429；relay 仍不受次数限制。  
+依赖：A 改 `:337`（记为 A1b，无其他依赖）。
 
-- 流量配额：字段、同步、客户端禁用、relay cron 回收都有；Vultr 用尽不会停机；`/me/switch` 不看配额；重置不清历史 `old_used_gb`；管理端切换的 `old_used_gb` 挂在 `assignment_id=0` 上，客户查询按 assignment id 求和时加不进去。
-- 切换次数：服务端按 `count>=limit` 拒绝，列表下发的 `switch_remaining` 是 `limit - 1 - count`。limit=5、count=0 时界面显示还剩 4，并在还允许再切一次时就把按钮禁用。
-- 到期：`/me/nodes` 和 cron 用北京时间的日期时间；`/me/switch` 用日期和「今天」的字符串比较。同一天内是否算到期，三处答案不同。`client_expiry` 若带时分秒，和纯日期比大小会偏。
-- 健康检查：cloud-init 回写、客户端测速、自动再切两次都有；Worker 里的端口探测和自动重建函数是死代码。stage 文案（creating/testing/retrying）在客户端有，服务端几乎只写 booting/installing/done/failed。
-- 证书：Vultr 节点把证书存 D1 复用；中转 Hysteria2 用 acme.sh 签通配符，缓存在服务器上。两套流程。
-- 区域表：`vultr.py`、`worker/src/region.js`、`client/src/utils/index.js` 三份。客户端 `REGION_NAMES` 仍有 `hnl`，Worker 注释说已删除。
-- Reality SNI 默认值：`config.py` / `gencreds.py` 是 `www.cloudflare.com`，`vultr.py` 的 cloud-init 和 `gost.js` 默认 `www.microsoft.com`。
-- 分享链接：Python `share.py` 的 SOCKS 用 `socks://`，Worker `buildLinks` 用 `socks5://`。注释写明部分客户端认不出 `socks5://` 里的认证。Worker 只在 `links` 为空时补，所以旧快照会一直缺或一直错。
-- 文档和测试：功能在代码里，规格和回归都不在仓库里。
-- `switch_server.py` 与 `apply_relays.py` 分离，部署中转不等于部署控制接口。
+**D2 账号禁用文案保持「账号已禁用」。**  
+目标：确认 `user.disabled` 路径（`index.js:1810` 等）在客户端显示需求里的那句，而不是「未登录」。本波只查 `LoginView` / `NodesView` 的错误展示，不改协议。  
+文件：`client/src/components/LoginView.vue`、`NodesView.vue` 的请求错误。  
+验收：`status=disabled` 时界面含「账号已禁用」。  
+依赖：无。
 
-**没有**
+**D3 不改 CSP 的本波不做功能。** 第 14 条留给单独的安全任务，不塞进第一波功能，避免和热更新模型缠在一起。若要做，单独立项：收紧 capability 的远程 URL 权限，而不是在 D1 里顺手改。
 
-- `docs/` 里的需求、架构、数据契约（`relay.py` 注释引用的模型文档也不在）。
-- `relay_ops.py` 和任何 pytest。
-- 多 Vultr 账号、多 Webshare 账号、跨账号替换。
-- Worker/Python 的 CI。
-- 把前端构建产物发布到 Worker 的自动化。
-- Vultr 流量用尽后的服务端强制停用。
-- 全仓库 `TODO`/`FIXME`/`HACK`：搜索不到。欠账写在注释和死代码里，不在标记里。
+### 建议的合并顺序
 
-### 4.2 明显缺陷
-
-1. `switch_remaining` 少算 1 次，客户端比服务端更早锁按钮。
-2. 管理端切换不把 `old_used_gb` 记到真实 assignment 上，切换后的流量继承会丢这段。
-3. `reset_flow` 只清 `used_gb`，客户仍把历史 `old_used_gb` 加回去。
-4. `/me/switch` 不拒绝已用尽流量。配额对 Vultr 只是客户端提示；relay 最多延迟到下一分钟 cron。
-5. 到期比较的粒度在切换、列表、回收三处不一致。
-6. 一台 Vultr 分给多个用户时，切换只 `SELECT` 第一行 assignment 来改 `resource_id`，其他用户仍指向已删除的实例。
-7. `GET /admin/node-ready` 无认证。知道或猜到 `new_id` 就能把安装等待提前结束。
-8. `certSave` 用普通 `!==` 比 token，不是定时安全比较。
-9. 死代码 `createReplacement` 使「卡死自动重建、最多 2 次」的注释成为假文档。客户端重试会再销毁再创建，放大孤儿实例（删除旧机失败时注释已经承认这个风险）。
-10. cron 注释写「每 10 分钟」，`wrangler.toml` 是每分钟。
-11. `schema.sql` 与线上迁移漂移，按 schema 建新库会缺表缺列。
-12. Webshare「替换 IP」不更新 `relays[]` 和 D1，已分配客户的上游仍是旧 IP，直到有人重新生成或手工改。
-13. `apply_relays.py` 和 `daily_check.py`、`e2e_assign_test.py` 把 `sys.path` 或工作方式绑在开发者本机绝对路径上，换机器不能直接跑。
-14. 客户壳 CSP 是 `null`，窗口加载远程页面，且该源被写进 Tauri capability 的 `remote.urls`，可以调用本地起代理、改系统代理。Worker 前端一旦被改，等于远程代码能驱动本机代理。
-15. 服务端 Xray 钉在 v26.3.27，客户 sidecar CI 下载的是更新的 Xray。注释说明新 Xray 会拒绝 sing-box。测速用 xray、日常代理用 sing-box，行为可能不一致。
-
-### 4.3 风险
-
-- 切换先创建后删除，删除失败就留下仍在计费的旧实例。没有对账任务把「Vultr 上有、config 和 D1 都没有」的实例列出来，只有 `daily_check.py` 的反向检查（config 指向已销毁 id）。
-- `switch_server.py` 明文 HTTP、监听 `0.0.0.0`。API key 写在 D1 的 `_creds` 里，管理端 `listUsers` 会把整份 `node_data`（含 `_creds`）返回给持有管理员 token 的人。
-- D1 里还有 Reality 私钥、证书私钥、Webshare 上游密码。这是设计如此（切换要重建 cloud-init），不是误提交，但备份和 `all-assignments` 的暴露面很大。
-- CORS 是 `*`。token 在客户 localStorage，WebSocket token 在 URL 上。
-- PBKDF2 只有 10000 次。
-- `config.json` 整文件读改写。`mutate` 是安全的；`get` 然后 `set_value` 的路径（子域名计数就是两次独立 `set_value`）在并发点击时会丢更新。
-- iptables 计数解析依赖 `iptables -L -v -x -n` 的列位置，规则格式一变，流量就是错的。停掉的 relay 不再出现在 unit 列表里，计数也停止。
-- 软路由脚本和产品脚本放在同一个 `scripts/`，并行改产品时容易误跑。
-
-### 4.4 技术债
-
-- 四个巨型 UI 文件把网络、SSH、表格、对话框写在一起。`NodeShareDialog` 在服务器页和中转页各有一份。停 relay 的 SSH 命令在中转页、用户页、Webshare 页各写一遍。
-- cloud-init、区域表、分享链接、端口偏移各有两份或三份实现。
-- `worker/assets/main.js` 是生成物，和 `client/src` 会分叉；`legacy-src/` 增加第三份。
-- 版本号三处：Python `0.1.0`，客户和 Worker `CLIENT_VERSION` `0.1.3`。
-- 没有自动化测试，回归靠 `daily_check.py` 和手工脚本。
-- README 会误导新人和新的编码代理。
-
-### 4.5 硬编码密钥与口令（只报位置，不记录值）
-
-这些值已经在 git 历史里，应视为已泄露并轮换，不要把值抄进工单或聊天：
-
-- `app/ipqs.py` 模块级 `DEFAULT_KEY`。`ipqs_key()` 在 config 没有 `ipqs_key` 时使用它。
-- `app/config.py` 的 `DEFAULTS`：`proxy_user` 与 `proxy_pass` 不是空字符串。
-- `scripts/apply_relays.py` 里 `config.get("cf_account_id", ...)` 的默认参数是一个账号 id。
-- `scripts/setup_kk_wifi.sh`、`scripts/setup_kk_wifi_v2.sh`、`scripts/setup_kk_wifi_40.sh`、`scripts/setup_yy_wifi.sh` 顶部 `PASSWD` 常量。
-- 另外：`scripts/daily_check.py`、`scripts/e2e_assign_test.py` 写死了本机绝对路径；`e2e_assign_test.py` 还写死了某台服务器地址和测试用户 id。`worker/wrangler.toml` 有 D1 `database_id`（标识符，不是口令）。Worker 的真正密钥如果只放在 Wrangler secret 里，则不在仓库中，这次没有读到 secret 存储。
-
----
-
-## 5. 并行工作流建议
-
-### 5.1 用几个代理
-
-**4 个编码代理同时改代码，再加 1 个只读契约负责人（协调者本人，不和别人改同一批文件）。**
-
-不要上到 6 个以上。冲突不来自「页面文件名不同」，而来自同一份 JSON 契约被多处手写：`node_data`、`config.json` 的键、`relays[]`、端口偏移、区域表、分享链接、Worker 路由。每多一个代理，这些契约就会被再复制一次。
-
-也不要先只开 2 个。四个大块的主文件几乎不相交：Worker、`servers_page.py`、Webshare+中转+用户、客户客户端。2 个代理会把本可以并行的 123KB 服务器页和 78KB Worker 串行化。
-
-第 5 个「专门抽 `relay_ops.py` 并补测试」的代理不要和下面的 C 同时开工。抽取会改 `relay.py`、Webshare 页和用户页，和 C 的文件所有权重叠。顺序应是：契约负责人先写一页契约（可以就加在本文档后面），C 按契约改；或者等 C 这轮合并后再抽纯函数。
-
-一次性脚本（`rebuild_*`、`fix_*`、`setup_*wifi`）不要分给功能代理。它们硬编码了具体实例和路由器，和产品改动没有稳定接口。冻结即可。
-
-### 5.2 四个工作流
-
-**A. 控制面（Worker + VPS 控制接口 + 管理端 HTTP 客户端）**
-
-- 独占：`worker/**`（含 `worker/assets` 的发布权）、`scripts/switch_server.py`、`app/api_client.py`。
-- 对外接口：第 2 节的路由表、D1 列、WebSocket 负载、`node-ready` / `cert-save`、`:8080` 的三个路径。
-- 典型任务：修剩余次数、流量历史和重置、切换时更新全部相关 assignment、给 `/me/switch` 加上配额判断、统一到期比较、给 `node-ready` 加认证、删或接上死代码、把 `schema.sql` 补成可重建的全量、cron 注释与真实调度对齐。
-- 不要改 PySide 页面和 Vue。
-
-**B. Vultr 管理端**
-
-- 独占：`app/ui/servers_page.py`、`app/vultr.py`、`app/domain.py`、`app/cloudflare.py`、`app/gencreds.py`、`app/localproxy.py`、`app/ssclient.py`、`app/proto_client.py`、`app/sysproxy.py`、`app/proxy_worker.py`、`app/ui/proxy_controller.py`、`app/check.py`、`app/e2e.py`、`app/ui/settings_page.py`、`app/ui/main_window.py`。
-- 调用 A 的 `api_client`，不改函数签名；需要新接口时把路径和 body 写成说明交给 A。
-- 典型任务：切换后的本机 config 迁移、带宽同步与重置基准、到期销毁、把 2800 行页面按对话框拆文件（只在本目录内拆）、cloud-init 与 Worker 的差异列表（改生成逻辑要和 A 一起，不能单方面改 `vultr.py` 而不改 `gost.js`）。
-- `settings_page.py` 也含 Webshare key 输入框。C 不要改这个文件；Webshare key 的键名 `webshare_api_key` 已固定。
-
-**C. Webshare、中转、用户分配**
-
-- 独占：`app/ui/webshare_page.py`、`app/ui/nodes_page.py`、`app/ui/users_page.py`、`app/webshare.py`、`app/relay.py`、`app/share.py`、`app/ipqs.py`、`scripts/apply_relays.py`。
-- 用户页和中转页都停 relay、都组 `node_data`，拆开必然会改同一段 SSH 和同一份快照。放在一个代理里。
-- 调用 A 的分配/回收接口；调用 B 的域名函数时只使用已有的 `sync_domain` / `get_zone_id`。
-- 典型任务：替换 IP 后更新 `relays[]` 和已分配快照、部署时顺便检查 `switch_server.py` 是否在、去掉重复的 SSH 停服务（改走 VPS `/stop` 或 A 的回收接口）、分享链接与 Worker `buildLinks` 对齐、IPQS 密钥改为只从 config 读取。
-- 不要改 `servers_page.py`。服务器页分配 Vultr 时会调用 `users_page.assign_dialog`，这个函数的参数列表视为契约，改之前通知 B。
-
-**D. 客户客户端**
-
-- 独占：`client/**`（不含把产物写入 `worker/assets` 的动作；构建完成后把 `dist` 交给 A 部署）。
-- 只消费 `/login`、`/me/*`、`/version`、`/build-stamp`、`/ws`。不调用 `/admin/*`。
-- 典型任务：剩余次数和到期展示与服务端对齐、侧边栏文案、切换失败和超时后的状态、测速用的内核与服务端 Xray 版本策略、不要把新逻辑写进 `legacy-src/`。
-- Rust command 名字在 `app-commands.toml` 里，改名要同时改 `stores/proxy.js`。这是 D 内部的契约。
-
-### 5.3 必须单人拥有的横切契约
-
-协调者合并前核对，编码代理不各自「顺手改一版」：
-
-1. **`node_data` 形状**，尤其 `_creds.switch`、`candidates`、`client_expiry`、`links`。写入点在 C（relay）和 B（vultr 分配），读取点在 A 和 D。改字段要三方同一轮改完。
-2. **Worker 路由、状态码、错误 JSON `{error}`**。只有 A 改 `index.js` 和 `api_client.py`。
-3. **D1 表和迁移**。只有 A 加列。不要再提交第二个 `001_*.sql`。
-4. **`config.json` 键名**。新键先加进 `config.py` 的 `DEFAULTS`，由该键的主写入代理改 `config.py` 里这一个键，避免 B 和 C 同时重排整个字典。
-5. **端口偏移 10000/8000/12000** 和 relay id 规则。`relay.py` 与 `switch_server.py` 分属 C 和 A，改偏移必须同一个提交对。
-6. **区域表**三份拷贝。改 Vultr region id 时 A（`region.js`）、B（`vultr.py`）、D（`utils/index.js`）一起改。
-7. **分享链接语法**。`app/share.py`（C）和 `buildLinks`（A）保持一个实现的行为；短期允许复制，但 SOCKS scheme 这类差异要由协调者指定以 Python 为准还是以 Worker 为准。
-8. **客户版本号**。`client/package.json`、`tauri.conf.json`、`worker/src/index.js` 的 `CLIENT_VERSION` 和安装包文件名。D 改版本，A 改 Worker 常量，同一次发布。
-9. **前端发布物** `worker/assets/*`。D 构建，A 提交并 deploy。不要两个代理都改 `main.js`。
-10. **认证头**：用户 `Authorization: Bearer`，管理端 `X-Admin-Token`，证书 `X-Cert-Token`，VPS `X-Api-Key`。新增头要改 CORS 的 `Access-Control-Allow-Headers`（A）。
-
-按这个切分，日常功能（修切换、改中转部署、改客户按钮、改服务器表格）可以四路并行，冲突面主要是 `config.py` 的几行和 `assign_dialog` 的签名。流量、次数、到期这种跨 UI 和 Worker 的行为，先由 A 改接口，B/C/D 只改展示，不要四个人同时发明新的计费公式。
+1. A1 + A1b（重置路由、剩余次数公式）  
+2. C1、D1（依赖上面）  
+3. A2、A4 可与 2 并行（A 内部需错开 `index.js`）  
+4. A3 然后 B2  
+5. C2、C3、C4、C5、D2 无跨工作流依赖，可立即开始，但 C1 与 C2 同文件，交给同一个 C，不要两个人同时改 `_save`
