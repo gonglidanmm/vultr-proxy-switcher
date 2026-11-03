@@ -121,17 +121,23 @@ def switch_singbox(relay_id: str, host: str, port: int, user: str, password: str
 
 # ---------- 停服务（回收） ----------
 
-def stop_relay(relay_id: str) -> dict:
+def stop_relay(relay_id: str, run=None) -> dict:
     """回收 = 停服务：disable --now（停止 + 防止服务器重启后自起）。幂等，服务不存在也算成功。"""
+    run = run or _run
     ok_all = True
     errors = []
     for svc in (f"gost-relay-{relay_id}", f"sing-box-relay-{relay_id}"):
-        rc, err = _run(["systemctl", "disable", "--now", svc])
+        rc, err = run(["systemctl", "disable", "--now", svc])
         # 服务已停/不存在 = 成功（幂等）；真失败才记
         if rc != 0 and "does not exist" not in err and "not loaded" not in err:
             ok_all = False
             errors.append(f"{svc}: {err.strip()}")
     return {"ok": ok_all, "error": "; ".join(errors)}
+
+
+def stop_http_status(result: dict) -> int:
+    """缺服务（ok=true）仍返回 200。systemctl 真失败不能返回 200。"""
+    return 200 if result.get("ok") else 500
 
 
 # ---------- 流量计量（iptables 按端口计数） ----------
@@ -251,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             if not relay_id:
                 return self._json(400, {"ok": False, "error": "缺少参数 relay_id"})
-            return self._json(200, stop_relay(relay_id))
+            result = stop_relay(relay_id)
+            return self._json(stop_http_status(result), result)
 
         # /switch
         host = str(body.get("host", ""))
