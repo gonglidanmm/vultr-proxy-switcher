@@ -8,7 +8,7 @@ binding = "DB"
 database_name = "vultr-proxy-users"
 database_id = "d06a9a46-2158-441b-acee-46c8a7053b16"
 
-# 定时：每分钟收尾卡住的切换 + relay 流量同步 + relay 到期/用尽自动回收（Cloudflare cron 下限 1 分钟）
+# 定时：每分钟收尾卡住的切换、同步 relay 流量、候选到期/用尽后停服务。不自动回收。
 [triggers]
 crons = ["* * * * *"]
 

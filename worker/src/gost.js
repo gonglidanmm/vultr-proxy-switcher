@@ -277,7 +277,7 @@ ${hysteria_section}
 if [ -n "${workerUrl}" ]; then
   NEW_ID=$(curl -s -m 5 http://169.254.169.254/v1/instance-v2-id || true)
   if [ -n "\$NEW_ID" ]; then
-    curl -s -m 10 "${workerUrl}/admin/node-ready?new_id=\${NEW_ID}" || true
+    curl -s -m 10 -H "X-Cert-Token: ${certToken}" "${workerUrl}/admin/node-ready?new_id=\${NEW_ID}" || true
   fi
 fi
 `;

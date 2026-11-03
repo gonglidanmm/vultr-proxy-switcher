@@ -1,6 +1,18 @@
 import { buildGostUserData } from "./gost.js";
 import { REGION_COUNTRY, REGION_CITY, COUNTRY_NAMES } from "./region.js";
 import { SwitchRoom } from "./switch-room.js";
+import {
+  adminSwitchLedgerRows,
+  applyResetFlow,
+  assignmentsToRewrite,
+  listOrphanInstances,
+  recordOrphanInstance,
+  stopCallSucceeded,
+  switchRemaining,
+  timingSafeEqual,
+  tokenOk,
+  vultrDeleteNeedsOrphanRecord,
+} from "./control.js";
 export { SwitchRoom };
 import indexHtml from "../assets/index.html";
 import mainJs from "../assets/main.js" with { type: "text" };
@@ -84,6 +96,7 @@ function buildLinks(nodeData) {
 // 安全：
 //   - 密码 PBKDF2-SHA256（10000 次迭代 + 16 字节随机盐），存 salt$hash
 //   - 管理员 X-Admin-Token 头，timing-safe 比较（token 存在 Worker secret）
+//   - 证书回传与 node-ready 用 X-Cert-Token（CERT_TOKEN），同样 timing-safe
 //   - 用户 token 随机 32 字节，存 sessions 表，30 天过期
 
 const CORS = {
@@ -150,17 +163,6 @@ async function verifyPassword(password, stored) {
   return timingSafeEqual(computed, expected);
 }
 
-function timingSafeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) {
-    return false;
-  }
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
-}
-
 function newToken() {
   return bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
 }
@@ -169,9 +171,7 @@ function newToken() {
 
 async function requireAdmin(request, env) {
   const token = request.headers.get("X-Admin-Token") || "";
-  const expected = env.ADMIN_TOKEN || "";
-  if (!expected || !timingSafeEqual(token, expected)) return false;
-  return true;
+  return tokenOk(token, env.ADMIN_TOKEN || "");
 }
 
 // 查证书缓存（切换 IP 复用，避免频繁签发触发 Let's Encrypt 限流）
@@ -190,8 +190,7 @@ async function getCachedCert(env, domain) {
 // 节点签好证书后回传，缓存到 D1（供下次切换 IP 复用）
 async function certSave(request, env) {
   const token = request.headers.get("X-Cert-Token") || "";
-  const expected = env.CERT_TOKEN || "";
-  if (!expected || token !== expected) return json({ error: "认证失败" }, 401);
+  if (!tokenOk(token, env.CERT_TOKEN || "")) return json({ error: "认证失败" }, 401);
   const body = await request.json().catch(() => ({}));
   const domain = String(body.domain || "").trim();
   const fullchain = String(body.fullchain || "");
@@ -334,7 +333,7 @@ async function handleMeNodes(env, user) {
       quota_gb: quota,  // 统一用 assignments.quota_gb（覆盖 node_data 里的同名快照，避免双份漂移）
       note: r.note || "",
       created_at: r.created_at || "",  // 真实分配时间（assignments.created_at）
-      switch_remaining: Math.max(0, limit - 1 - count),
+      switch_remaining: switchRemaining(limit, count),
       switch_limit: limit,
       flow_used_gb: effUsed,
       flow_quota_gb: effQuota,
@@ -678,18 +677,13 @@ async function switchResource(request, env, user) {
     }
   } catch (_) {}
 
-  const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
-  // 销毁旧机失败不阻断切换（新机已创建，返回错误会让客户端重试、重复创建新机造成更多孤儿）。
-  // 记日志，旧机可后续由巡检/手动处理，避免「销毁失败→重试→孤儿新机」雪崩。
-  if (!delResp.ok && delResp.status !== 404) {
-    console.error(`销毁旧机 ${resourceId} 失败 HTTP ${delResp.status}（不阻断切换，新机已创建）`);
-  }
+  await deleteOldInstance(env, headers, resourceId, newId);
 
   await env.DB.prepare(
     "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, stage, created_at, old_used_gb) VALUES (?, ?, ?, ?, 'pending', 'booting', ?, ?)",
   ).bind(row.id, user.id, resourceId, newId, new Date().toISOString(), oldUsedGb).run();
 
-  return json({ ok: true, status: "pending", new_id: newId, remaining: limit - count - 1, stage: "booting" });
+  return json({ ok: true, status: "pending", new_id: newId, remaining: switchRemaining(limit, count), stage: "booting" });
 }
 
 async function updateDns(env, domain, ip) {
@@ -715,83 +709,29 @@ async function updateDns(env, domain, ip) {
   } catch (_) {}
 }
 
-async function checkTcpAlive(ip, port) {
-  // 检测 TCP 端口是否通：对 443 发 HTTPS，区分「连接拒绝/超时」（不通）与「TLS 握手失败」（通）。
-  // reality 对非法 SNI 会转发到 dest，可能返回正常响应，故有 response 或 TLS 错误都算「通」。
+async function deleteOldInstance(env, headers, oldId, newId) {
+  // 新机已经创建。删除失败只记孤儿记录，不返回错误、不再创建一台
+  // （返回错误会让客户端重试整次切换，再开一台新机）。
+  let status = 0;
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    await fetch(`https://${ip}:${port}`, { method: "HEAD", signal: ctrl.signal, redirect: "manual" });
-    clearTimeout(timer);
-    return true;
+    const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${oldId}`, { method: "DELETE", headers });
+    status = delResp.status;
   } catch (e) {
-    const msg = String((e && e.message) || e || "").toLowerCase();
-    if (msg.includes("fetch failed") || msg.includes("timed out") || msg.includes("timeout") || msg.includes("refused") || msg.includes("econnrefused")) {
-      return false;
-    }
-    return true; // TLS 握手失败等 = TCP 已建立 = 通
+    status = 0;
+    console.error("销毁旧机请求失败:", oldId, e && e.message ? e.message : e);
   }
-}
-
-async function checkNodeHealthy(ip) {
-  // 检测 3 个 TCP 端口（443 Reality / 45678 SS / 1080 SOCKS5），全通才算健康。
-  // 8443（Hysteria2）是 UDP，不做 TCP 检测。
-  const ports = [443, 45678, 1080];
-  const ports_status = {};
-  for (const p of ports) {
-    ports_status[p] = await checkTcpAlive(ip, p);
-  }
-  return {
-    all_ok: Object.values(ports_status).every(Boolean),
-    ports: ports_status,
-  };
-}
-
-async function createReplacement(request, env, req) {
-  // 切换的新机卡死（443 不通）时，再创建一台同 region/plan/label 的新机，销毁卡死的新机。
-  // 复用 switchResource 的创建逻辑；成功返回新机 ID，失败返回 null（如 Vultr API 限流）。
-  const VULTR_KEY = env.VULTR_API_KEY || "";
-  if (!VULTR_KEY) return null;
-  const headers = apiHeaders(env, "vultr");
-
-  const instResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { headers });
-  if (!instResp.ok) return null;
-  const inst = ((await instResp.json()).instance) || {};
-  const region = inst.region || "";
-  const plan = inst.plan || "";
-  const label = inst.label || "vultr-proxy-node";
-
-  const row = await env.DB.prepare("SELECT * FROM assignments WHERE id = ?").bind(req.assignment_id).first();
-  let nodeData = {};
-  let creds = {};
-  if (row) {
-    try { nodeData = JSON.parse(row.node_data); } catch (_) {}
-    creds = nodeData._creds || {};
-  }
-  const domain = nodeData.domain || req.domain || "";
-
-  const cert = await getCachedCert(env, domain);
-  const workerUrl = new URL(request.url).origin;
-  const userData = buildGostUserData(creds, domain, cert, workerUrl, env.CERT_TOKEN || "");
-  const createResp = await fetch(apiBase(env, "vultr") + "/v2/instances", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ region, plan, os_id: 1743, label, user_data: userData, backups: "disabled" }),
-  });
-  if (!createResp.ok) return null;
-  const newInst = ((await createResp.json()).instance) || {};
-  const newId2 = newInst.id || "";
-  if (!newId2) return null;
-
-  // 销毁卡死的新机（销毁失败也继续，保留 new_id2 供下次检测）
+  if (!vultrDeleteNeedsOrphanRecord(status)) return;
+  console.error(`销毁旧机 ${oldId} 失败 HTTP ${status}（切换继续，不另建新机；旧机可能仍在计费）`);
   try {
-    await fetch(`${apiBase(env, "vultr")}/v2/instances/${req.new_id}`, { method: "DELETE", headers });
-  } catch (_) {}
-
-  await env.DB.prepare(
-    "UPDATE switch_requests SET new_id = ?, retry_count = retry_count + 1 WHERE id = ?",
-  ).bind(newId2, req.id).run();
-  return newId2;
+    await recordOrphanInstance(env.DB, {
+      oldId,
+      newId,
+      httpStatus: status,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error("记录孤儿实例失败:", oldId, e && e.message ? e.message : e);
+  }
 }
 
 async function processOneSwitch(req, env, headers, request) {
@@ -1014,16 +954,18 @@ async function adminSwitch(request, env) {
     }
   } catch (_) {}
 
-  const delResp = await fetch(`${apiBase(env, "vultr")}/v2/instances/${resourceId}`, { method: "DELETE", headers });
-  // 销毁旧机失败不阻断切换（新机已创建，返回错误会让客户端重试、重复创建新机造成更多孤儿）。
-  // 记日志，旧机可后续由巡检/手动处理，避免「销毁失败→重试→孤儿新机」雪崩。
-  if (!delResp.ok && delResp.status !== 404) {
-    console.error(`销毁旧机 ${resourceId} 失败 HTTP ${delResp.status}（不阻断切换，新机已创建）`);
-  }
+  await deleteOldInstance(env, headers, resourceId, newId);
 
-  await env.DB.prepare(
-    "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, stage, actor_type, domain, created_at, old_used_gb, new_bandwidth) VALUES (0, 0, ?, ?, 'pending', 'booting', 'admin', ?, ?, ?, ?)",
-  ).bind(resourceId, newId, domain, new Date().toISOString(), oldUsedGb, newBandwidth).run();
+  const assigned = await env.DB.prepare(
+    "SELECT id FROM assignments WHERE resource_type = 'vultr' AND resource_id = ?",
+  ).bind(resourceId).all();
+  const ledger = adminSwitchLedgerRows(assigned.results || []);
+  const nowIso = new Date().toISOString();
+  for (const row of ledger) {
+    await env.DB.prepare(
+      "INSERT INTO switch_requests (assignment_id, user_id, old_id, new_id, status, stage, actor_type, domain, created_at, old_used_gb, new_bandwidth) VALUES (?, ?, ?, ?, 'pending', 'booting', 'admin', ?, ?, ?, ?)",
+    ).bind(row.assignment_id, row.user_id, resourceId, newId, domain, nowIso, oldUsedGb, newBandwidth).run();
+  }
 
   return json({ ok: true, status: "pending", old_id: resourceId, new_id: newId });
 }
@@ -1070,17 +1012,34 @@ async function processAdminSwitch(req, env, headers, request) {
     return { old_id: req.old_id, stage: "done", status: "done", new_ip: req.new_ip || newIp };
   }
 
-  // 回写：旧实例若已分配给某用户，更新 assignment 的 resource_id + node_data（客户端同步）
-  const assign = await env.DB.prepare(
-    "SELECT * FROM assignments WHERE resource_type = 'vultr' AND resource_id = ?",
-  ).bind(req.old_id).first();
+  // 回写：一台实例分给多人时，每一行 assignment 都要改 resource_id / node_data。
+  // assignment_id>0 只改这一行（新的管理端切换每行一条 switch_requests）；
+  // assignment_id=0 是未分配或旧数据，按 old_id 改全部匹配行。
+  const assignId = Number(req.assignment_id) || 0;
+  let pool = [];
+  if (assignId > 0) {
+    const one = await env.DB.prepare(
+      "SELECT * FROM assignments WHERE id = ? AND resource_type = 'vultr'",
+    ).bind(assignId).first();
+    if (one) pool = [one];
+  } else {
+    const all = await env.DB.prepare(
+      "SELECT * FROM assignments WHERE resource_type = 'vultr' AND resource_id = ?",
+    ).bind(req.old_id).all();
+    pool = all.results || [];
+  }
+  const assigns = assignmentsToRewrite(req, pool);
+  const domains = new Set();
   let domain = "";
-  if (assign) {
+  if (assigns.length === 0 && req.domain) {
+    domain = req.domain;
+    domains.add(req.domain);
+  }
+  for (const assign of assigns) {
     let nodeData = {};
     try { nodeData = JSON.parse(assign.node_data); } catch (_) {}
     nodeData.host = newIp;
     nodeData.ip = newIp;
-    // 更新位置/地区（新实例的 region，客户端显示实时地区，与服务端一致）
     const newRegion = inst.region || "";
     if (newRegion) {
       nodeData.region = newRegion;
@@ -1088,23 +1047,23 @@ async function processAdminSwitch(req, env, headers, request) {
       const countryName = COUNTRY_NAMES[REGION_COUNTRY[newRegion]] || "";
       if (countryName && cityName) nodeData.location = `${countryName}·${cityName}`;
     }
-    domain = nodeData.domain || "";
-    // 补 links（防切换后分享链接丢失）：host 用域名（切 IP 域名不变），凭据不变，仅空时生成
+    if (nodeData.domain) {
+      domain = nodeData.domain;
+      domains.add(nodeData.domain);
+    }
     if (!nodeData.links || Object.keys(nodeData.links).length === 0) {
       const links = buildLinks(nodeData);
       if (links) nodeData.links = links;
     }
-    // 换套餐：同步客户配额到新套餐带宽（node_data.quota_gb + assignments.quota_gb，限流依据）
     if (Number(req.new_bandwidth) > 0) {
       nodeData.quota_gb = Number(req.new_bandwidth);
     }
-    if (domain) await updateDns(env, domain, newIp);
     await env.DB.prepare(
       "UPDATE assignments SET resource_id = ?, node_data = ?, quota_gb = ? WHERE id = ?",
     ).bind(req.new_id, JSON.stringify(nodeData), Number(req.new_bandwidth) > 0 ? Number(req.new_bandwidth) : Number(assign.quota_gb) || 0, assign.id).run();
-  } else if (req.domain) {
-    domain = req.domain;
-    await updateDns(env, req.domain, newIp);
+  }
+  for (const d of domains) {
+    if (d) await updateDns(env, d, newIp);
   }
 
   await env.DB.prepare("UPDATE switch_requests SET status = 'done', stage = 'done', new_ip = ? WHERE id = ?").bind(newIp, req.id).run();
@@ -1395,15 +1354,16 @@ async function syncFlow(request, env) {
 }
 
 async function resetFlow(request, env) {
-  // 重置该服务器的已用流量（used_gb = 0），客户续费时重新给满配额。
-  // body: { resource_id }
+  // POST /admin/reset-flow
+  // body.resource_type=relay：该 relay 的 used_gb 归零，并删除这一行已完成的 switch_requests。
+  // body.resource_type=vultr：只把 vultr 行的 used_gb 归零（一台分给多人则全部归零），不删切换史。
+  // 不传 resource_type：按 resource_id 查到的类型处理，给还没带类型的旧客户端用。
   const body = await request.json().catch(() => ({}));
-  const resourceId = String(body.resource_id || "").trim();
-  if (!resourceId) return json({ error: "resource_id 必填" }, 400);
-  const result = await env.DB.prepare(
-    "UPDATE assignments SET used_gb = 0 WHERE resource_id = ?",
-  ).bind(resourceId).run();
-  return json({ ok: true, updated: (result.meta && result.meta.changes) || 0 });
+  const result = await applyResetFlow(env.DB, body);
+  if (result.error) return json({ error: result.error }, result.status || 400);
+  const payload = { ok: true };
+  if (result.updated !== undefined) payload.updated = result.updated;
+  return json(payload);
 }
 
 async function switchFlow(env) {
@@ -1511,7 +1471,7 @@ async function sweepPending(env) {
   ).bind(cutoff).all();
   for (const req of rows.results) {
     try {
-      // 管理端切换（actor_type=admin，assignment_id=0）按 resource_id 回写，客户端切换按 assignment_id 回写
+      // 管理端切换按 processAdminSwitch 回写（有 assignment_id 改该行，否则改该实例全部行）
       if (req.actor_type === "admin") {
         await processAdminSwitch(req, env, headers, null);
       } else {
@@ -1577,52 +1537,6 @@ async function syncRelayTraffic(env) {
   }
 }
 
-// ---------- relay 到期/流量用尽自动回收（phase 6）：停服务 + 删分配 + 记日志 ----------
-async function recycleExpiredRelays(env) {
-  const now = bjNow();
-  const rows = await env.DB.prepare(
-    "SELECT id, user_id, resource_id, node_data, quota_gb, used_gb FROM assignments WHERE resource_type = 'relay'",
-  ).all();
-  for (const r of rows.results) {
-    let nd = {};
-    try { nd = JSON.parse(r.node_data || "{}"); } catch (_) {}
-    const ce = nd.client_expiry || "";
-    const quota = Number(r.quota_gb) || 0;
-    const used = Number(r.used_gb) || 0;
-    const expired = !!ce && ce < now;
-    const exhausted = quota > 0 && used >= quota;
-    if (!expired && !exhausted) continue;
-    const reason = expired ? "expired" : "exhausted";
-    const sw = (nd._creds && nd._creds.switch) || {};
-    const sip = sw.server_ip || "";
-    const apikey = sw.api_key || "";
-    // 1) 停服务（best-effort，失败不阻断：删分配后客户端 /me/nodes 不再返回该节点，自然停用）
-    if (sip) {
-      try {
-        await fetch(`http://${sip}:8080/stop`, {
-          method: "POST",
-          headers: { "X-Api-Key": apikey, "Content-Type": "application/json" },
-          body: JSON.stringify({ relay_id: r.resource_id }),
-        });
-      } catch (e) {
-        console.error("recycle stop 失败:", r.resource_id, e && e.message ? e.message : e);
-      }
-    }
-    // 2) 记回收日志（管理端回收页据此同步）
-    let username = "";
-    try {
-      const u = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(r.user_id).first();
-      username = (u && u.username) || "";
-    } catch (_) {}
-    await env.DB.prepare(
-      "INSERT INTO recycle_log (resource_id, resource_type, user_id, username, reason, created_at) VALUES (?, 'relay', ?, ?, ?, ?)",
-    ).bind(r.resource_id, r.user_id, username, reason, new Date().toISOString()).run();
-    // 3) 删分配（1 IP = 1 用户，释放唯一索引，回归后可重新分配）
-    await env.DB.prepare("DELETE FROM assignments WHERE id = ?").bind(r.id).run();
-    console.log(`[recycle] relay ${r.resource_id} 已回收(${reason}) user=${username}`);
-  }
-}
-
 // ---------- 候选 IP 到期/用尽标红禁用（phase 5.5）：只禁用不回收，等管理员处理 ----------
 async function syncCandidateIpStatus(env) {
   const nowKey = bjNow().slice(0, 19);
@@ -1681,7 +1595,14 @@ async function syncCandidateIpStatus(env) {
             headers: { "X-Api-Key": apikey, "Content-Type": "application/json" },
             body: JSON.stringify({ relay_id: r.resource_id }),
           });
-          if (resp.ok) console.log(`[candidate-ip] relay ${r.resource_id} 全部候选禁用，已停服务`);
+          const stopBody = await resp.json().catch(() => null);
+          // 失败不改 enabled，下一分钟 cron 会再试。缺服务时 ok=true，算已经停掉。
+          if (stopCallSucceeded(resp.status, stopBody)) {
+            console.log(`[candidate-ip] relay ${r.resource_id} 全部候选禁用，已停服务`);
+          } else {
+            const err = stopBody && stopBody.error ? stopBody.error : "";
+            console.error(`[candidate-ip] relay ${r.resource_id} 停服务失败 HTTP ${resp.status}${err ? " " + err : ""}`);
+          }
         } catch (e) {
           console.error("[candidate-ip] 停服务失败:", r.resource_id, e && e.message ? e.message : e);
         }
@@ -1730,22 +1651,6 @@ async function listRecycleFlow(env) {
     byUser[u] = (byUser[u] || 0) + (Number(r.used_gb) || 0) + (Number(r.hist_gb) || 0);
   }
   return json({ records, by_user: byUser, total: records.length });
-}
-
-// 重置某条线路的流量（续费/重新启用时清零重算：used_gb 清零 + 清切换历史）
-async function resetRelayFlow(request, env) {
-  const b = await request.json().catch(() => ({}));
-  const rid = (b.resource_id || "").toString().trim();
-  if (!rid) return json({ error: "resource_id 必填" }, 400);
-  const row = await env.DB.prepare(
-    "SELECT id FROM assignments WHERE resource_type = 'relay' AND resource_id = ?",
-  ).bind(rid).first();
-  if (!row) return json({ error: "分配不存在" }, 404);
-  // 清零当前实例流量
-  await env.DB.prepare("UPDATE assignments SET used_gb = 0 WHERE id = ?").bind(row.id).run();
-  // 清零切换历史（hist_gb 来自 switch_requests 的 SUM(old_used_gb)）
-  await env.DB.prepare("DELETE FROM switch_requests WHERE assignment_id = ? AND status = 'done'").bind(row.id).run();
-  return json({ ok: true });
 }
 
 export default {
@@ -1855,9 +1760,12 @@ export default {
       // 节点签好证书后回传（用 X-Cert-Token 认证，非管理员 token）
       if (method === "POST" && path === "/admin/cert-save") return await certSave(request, env);
 
-      // 新机 cloud-init 安装完代理软件后回写（管理员认证之前，cloud-init 不带 token）：
-      // 把 switch_requests.stage 置为 installed，Worker 轮询据此判定「安装完成」，实现真实分阶段回显。
+      // 新机 cloud-init 安装完后回写 stage=installed。必须带 X-Cert-Token（与证书回传同一密钥）。
+      // 旧 cloud-init 没有这个头，会 401；5 分钟超时仍会把切换收尾，不在这里改超时。
       if (method === "GET" && path === "/admin/node-ready") {
+        if (!tokenOk(request.headers.get("X-Cert-Token") || "", env.CERT_TOKEN || "")) {
+          return json({ error: "认证失败" }, 401);
+        }
         const newId = (url.searchParams.get("new_id") || "").trim();
         if (!newId) return json({ error: "new_id 必填" }, 400);
         await env.DB.prepare("UPDATE switch_requests SET stage = 'installed' WHERE new_id = ? AND status = 'pending'").bind(newId).run();
@@ -1896,7 +1804,7 @@ export default {
       if (path === "/admin/stats" && method === "GET") return await getStats(env);
       if (path === "/admin/recycle-flow" && method === "POST") return await recordRecycleFlow(request, env);
       if (path === "/admin/recycle-flow" && method === "GET") return await listRecycleFlow(env);
-      if (path === "/admin/reset-flow" && method === "POST") return await resetRelayFlow(request, env);
+      if (path === "/admin/reset-flow" && method === "POST") return await resetFlow(request, env);
 
       const userMatch = path.match(/^\/admin\/users\/(\d+)$/);
       if (userMatch) {
@@ -1917,8 +1825,10 @@ export default {
       if (path === "/admin/switch/status" && method === "GET") return await adminSwitchStatus(request, env);
       if (path === "/admin/all-assignments" && method === "GET") return await listAllAssignments(env);
       if (path === "/admin/sync-flow" && method === "POST") return await syncFlow(request, env);
-      if (path === "/admin/reset-flow" && method === "POST") return await resetFlow(request, env);
       if (path === "/admin/switch-flow" && method === "GET") return await switchFlow(env);
+      if (path === "/admin/orphan-instances" && method === "GET") {
+        return json({ orphans: await listOrphanInstances(env.DB) });
+      }
 
       if (path === "/admin/resource-assignments" && method === "GET") {
         const rt = url.searchParams.get("resource_type") || "";
@@ -1935,7 +1845,8 @@ export default {
       return json({ error: "服务器内部错误" }, 500);
     }
   },
-  // Cloudflare Cron Trigger：每 10 分钟收尾卡住的切换记录（wrangler.toml triggers.crons）
+  // Cloudflare Cron Trigger：wrangler.toml 是每分钟（* * * * *），不是 10 分钟。
+  // 只做收尾卡住的切换、同步 relay 流量、候选到期/用尽后停服务。不要在这里恢复线路级自动回收。
   async scheduled(_event, env) {
     try {
       await sweepPending(env);
@@ -1952,7 +1863,5 @@ export default {
     } catch (e) {
       console.error("scheduled syncCandidateIpStatus 异常:", e && e.message ? e.message : e);
     }
-    // 注：recycleExpiredRelays（线路级到期自动回收）已停用——到期/用尽一律标红禁用，
-    // 等管理员在服务端改到期/流量/替换/加IP后恢复；只有手动「回收」才进回收页。
   },
 };

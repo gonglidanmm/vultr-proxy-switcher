@@ -189,8 +189,34 @@ def list_recycle_flow() -> dict:
 
 
 def reset_flow(resource_id: str) -> dict:
-    """重置某条线路的流量（续费/重新启用时清零重算）。"""
-    return _request("POST", "/admin/reset-flow", {"resource_id": resource_id})
+    """重置 relay 线路流量：used_gb 归零，并删除该分配已完成的 switch_requests。
+
+    续费清零用这个。Vultr 实例用 reset_vultr_flow，不要用这个函数。
+    """
+    return _request("POST", "/admin/reset-flow", {
+        "resource_id": resource_id,
+        "resource_type": "relay",
+    })
+
+
+def reset_vultr_flow(resource_id: str) -> dict:
+    """重置 Vultr 实例已用流量：只把 resource_type=vultr 的 assignments.used_gb 归零。
+
+    不删除 switch_requests。同一实例分给多个用户时，这些行一起归零。
+    签名：reset_vultr_flow(resource_id: str) -> dict
+    """
+    return _request("POST", "/admin/reset-flow", {
+        "resource_id": resource_id,
+        "resource_type": "vultr",
+    })
+
+
+def list_orphan_instances() -> dict:
+    """列出切换时旧实例删除失败、可能仍在计费的记录。
+
+    返回 {"orphans": [{"old_id", "new_id", "http_status", "created_at"}, ...]}，新的在前。
+    """
+    return _request("GET", "/admin/orphan-instances")
 
 
 def list_resource_assignments(resource_type: str, resource_id: str) -> dict:
@@ -242,11 +268,6 @@ def sync_flow(updates: list[dict]) -> dict:
     updates: [{"resource_id": str, "used_gb": float}, ...]
     """
     return _request("POST", "/admin/sync-flow", {"updates": updates})
-
-
-def reset_flow(resource_id: str) -> dict:
-    """重置某台服务器的已用流量（D1 used_gb 归零），客户续费时重新给满配额。"""
-    return _request("POST", "/admin/reset-flow", {"resource_id": resource_id})
 
 
 # ---------------- 统计 ----------------
