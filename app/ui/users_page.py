@@ -1252,6 +1252,9 @@ class _ManageIpsDialog(SizedDialog):
         c["used_gb"] = 0
         c["enabled"] = True
         self._renewed_hosts.add(c.get("host", ""))
+        # 同步配额 QSpinBox（否则点「保存」时 _collect 会用表格旧值覆盖成旧配额）
+        if idx < len(self._quota_spins):
+            self._quota_spins[idx].setValue(int(round(q)))
         self._refresh_after_edit()
         self._status.setText(
             f'<span style="color:#32d74b;">✅ 已续费 {c.get("host")}：配额 {q}G、到期已重设、已用清零，点「保存」生效</span>'
