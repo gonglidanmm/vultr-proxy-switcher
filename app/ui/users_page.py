@@ -1479,12 +1479,14 @@ class _ManageIpsDialog(SizedDialog):
         # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
         old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
         # 1. 更新 config.relays 的 candidate_upstreams（源）
-        from ..relay_ops import apply_active_primary
+        from ..relay_ops import apply_active_primary, upstream_changed
 
         relays = config.get("relays", []) or []
         target = None
+        old_host, old_port = "", None
         for r in relays:
             if str(r.get("id", "")) == rid:
+                old_host, old_port = r.get("host", ""), r.get("port")
                 r["candidate_upstreams"] = self._cands
                 r["active_upstream_idx"] = self._active_idx
                 target = r
@@ -1521,7 +1523,11 @@ class _ManageIpsDialog(SizedDialog):
         old_disabled = {c.get("host") for c in (self._creds.get("candidates") or []) if c.get("enabled") is False}
         resumed = any(c.get("host") in old_disabled and c.get("enabled", True) for c in self._cands)
         renewed = bool(self._renewed_hosts)  # 续费也重新部署：服务可能因用尽/到期被 /stop 停了
-        if new_keys != old_keys or resumed or renewed:
+        # 只切换激活候选时，候选集合不变，但服务器上正在转发的上游变了，也要部署
+        host_changed = bool(target) and upstream_changed(
+            old_host, old_port, target.get("host", ""), target.get("port"),
+        )
+        if new_keys != old_keys or resumed or renewed or host_changed:
             self._deploy_after_save(rid)
         else:
             self._status.setText('<span style="color:#32d74b;">✅ 已保存（IP 未变，无需重新部署）</span>')

@@ -1093,7 +1093,8 @@ class WebsharePage(QWidget):
                 repl_btn.setToolTip("住宅 IP 计划不支持替换（webshare 限制）")
             else:
                 repl_btn.setToolTip(
-                    "同国家替换账号池里的这个 IP。若它已在线路上会写回新 IP；写不回时已分配线路请用管理 IP。"
+                    "同国家替换账号池里的这个 IP。这张表只列未中转地址；"
+                    "若配置里仍有它，会写回线路，写不回时已分配线路请用管理 IP。"
                 )
                 repl_btn.setEnabled(repl_avail > 0)
                 repl_btn.clicked.connect(

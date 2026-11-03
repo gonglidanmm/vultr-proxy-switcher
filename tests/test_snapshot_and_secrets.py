@@ -1,5 +1,7 @@
 """激活候选不重复插入快照，以及凭据默认值不再写死在仓库里。"""
 
+import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -63,12 +65,24 @@ def test_proxy_defaults_are_empty():
     assert DEFAULTS["proxy_pass"] == ""
 
 
+# sha256 of the old hardcoded IPQS key. The key itself stays out of the repo.
+_REMOVED_IPQS_KEY_SHA256 = "90d71aadedefd57b3fdc898fee7344684740ee8003ac22bfa1d16cd85b06fe21"
+
+
 def test_ipqs_key_comes_only_from_config(monkeypatch):
-    monkeypatch.setattr("app.ipqs.config.get", lambda key, default=None: "from-config" if key == "ipqs_key" else default)
+    monkeypatch.setattr(
+        "app.ipqs.config.get",
+        lambda key, default=None: "from-config" if key == "ipqs_key" else default,
+    )
     assert ipqs_key() == "from-config"
-    monkeypatch.setattr("app.ipqs.config.get", lambda key, default=None: "" if key == "ipqs_key" else default)
+    monkeypatch.setattr(
+        "app.ipqs.config.get",
+        lambda key, default=None: "" if key == "ipqs_key" else default,
+    )
     assert ipqs_key() == ""
-    text = Path("app/ipqs.py").read_text(encoding="utf-8")
-    page = Path("app/ui/webshare_page.py").read_text(encoding="utf-8")
-    assert "fqjGYzhdyEYZS5YqE7KcFtUqJwXJC75W" not in text
-    assert "fqjGYzhdyEYZS5YqE7KcFtUqJwXJC75W" not in page
+    for rel in ("app/ipqs.py", "app/ui/webshare_page.py"):
+        text = Path(rel).read_text(encoding="utf-8")
+        assert "DEFAULT_KEY" not in text
+        for token in re.findall(r"[A-Za-z0-9]{20,}", text):
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            assert digest != _REMOVED_IPQS_KEY_SHA256, rel

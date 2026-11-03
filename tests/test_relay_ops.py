@@ -14,6 +14,7 @@ from app.relay_ops import (  # noqa: E402
     api_key_for_choice,
     apply_active_primary,
     apply_pool_replacement,
+    upstream_changed,
     available_pool,
     endpoint_from_list,
     pick_replacement,
@@ -141,6 +142,12 @@ def test_apply_active_primary_uses_second_candidate():
         "password": "pb",
         "ws_account": "acc-b",
     }
+
+
+def test_upstream_changed_when_active_candidate_switches():
+    """候选集合没变，但激活的 IP 变了，部署用的上游也变了。"""
+    assert upstream_changed("1.1.1.1", 100, "2.2.2.2", 200) is True
+    assert upstream_changed("1.1.1.1", 100, "1.1.1.1", "100") is False
 
 
 def test_apply_active_primary_empty_candidates():

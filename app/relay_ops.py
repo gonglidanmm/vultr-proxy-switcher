@@ -156,6 +156,11 @@ def apply_active_primary(relay, node_data, candidates, active_idx) -> dict | Non
     return primary
 
 
+def upstream_changed(old_host, old_port, new_host, new_port) -> bool:
+    """主上游地址变了就要重新部署。端口用 int 比，避免 "100" 和 100 误判。"""
+    return (old_host or "") != (new_host or "") or _port(old_port) != _port(new_port)
+
+
 def _port(value):
     if value is None or value == "":
         return None
