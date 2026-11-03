@@ -177,11 +177,9 @@ def _candidate_resumable(c: dict, extra_used: float = 0.0) -> bool:
 
 def _candidate_renewed(c: dict) -> bool:
     """续费后是否可启用（清零重算后已用=0，只看到期是否过期）。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    exp = (c.get("expiry") or "").strip()
-    if exp and exp < now:
-        return False
-    return True
+    from ..relay_ops import candidate_renewable
+
+    return candidate_renewable(c, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def _max_settable_duration(sub_expiry: str) -> str:
@@ -1463,19 +1461,30 @@ class _ManageIpsDialog(SizedDialog):
             c.get("host") for c in (self._creds.get("candidates") or [])
             if c.get("enabled") is False
         }
-        resumed_any = False
+        from ..relay_ops import candidate_renewable, hosts_to_reset, restore_failed_renewal
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        reset_hosts = hosts_to_reset(self._cands, old_disabled_hosts, self._renewed_hosts, now)
+        if reset_hosts:
+            try:
+                api_client.reset_flow(rid)  # relay：清 used_gb + 该行已完成的切换史
+            except ApiError as e:
+                restore_failed_renewal(
+                    self._cands, self._creds.get("candidates") or [], reset_hosts,
+                )
+                self._build_rows()
+                msg = e.message or "重置流量失败"
+                self._status.setText(
+                    f'<span style="color:#ff453a;">保存失败：{msg}。候选保持禁用，未重新部署。</span>'
+                )
+                QMessageBox.warning(self, "保存失败", msg)
+                return
         for _i, c in enumerate(self._cands):
             # 保存前是禁用，或本次会话主动点了「续费」→ 清零重算 + 重新启用
             if c.get("host") in old_disabled_hosts or c.get("host") in self._renewed_hosts:
                 c["used_gb"] = 0  # 续费重置：封账流量清零
-                if _candidate_renewed(c):  # 到期未过期即可启用
+                if candidate_renewable(c, now):  # 到期未过期即可启用
                     c["enabled"] = True
-                    resumed_any = True
-        if resumed_any:
-            try:
-                api_client.reset_flow(rid)  # 清零分配记录 used_gb + 切换历史
-            except Exception:
-                pass
         # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
         old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
         # 1. 更新 config.relays 的 candidate_upstreams（源）

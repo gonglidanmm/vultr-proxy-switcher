@@ -156,6 +156,43 @@ def apply_active_primary(relay, node_data, candidates, active_idx) -> dict | Non
     return primary
 
 
+def candidate_renewable(candidate: dict, now: str) -> bool:
+    """到期未过期即可在清零后续上。空到期当作不过期。now 用 YYYY-MM-DD HH:MM:SS。"""
+    exp = (candidate.get("expiry") or "").strip()
+    if exp and exp < now:
+        return False
+    return True
+
+
+def hosts_to_reset(candidates, old_disabled_hosts, renewed_hosts, now: str) -> list[str]:
+    """保存前禁用、或本会话点过续费，且到期未过的 host。这些才调用 reset_flow。"""
+    disabled = set(old_disabled_hosts or [])
+    renewed = set(renewed_hosts or [])
+    out = []
+    for c in candidates or []:
+        host = c.get("host")
+        if host in disabled or host in renewed:
+            if candidate_renewable(c, now):
+                out.append(host)
+    return out
+
+
+def restore_failed_renewal(candidates, original, hosts) -> None:
+    """reset_flow 失败：启用和已用回到打开弹窗时的值。配额、到期等编辑不动。"""
+    by_host = {c.get("host"): c for c in original or []}
+    wanted = set(hosts or [])
+    for c in candidates or []:
+        host = c.get("host")
+        if host not in wanted:
+            continue
+        src = by_host.get(host)
+        if src is not None:
+            c["enabled"] = src.get("enabled", True)
+            c["used_gb"] = src.get("used_gb", 0)
+        else:
+            c["enabled"] = False
+
+
 def upstream_changed(old_host, old_port, new_host, new_port) -> bool:
     """主上游地址变了就要重新部署。端口用 int 比，避免 "100" 和 100 误判。"""
     return (old_host or "") != (new_host or "") or _port(old_port) != _port(new_port)

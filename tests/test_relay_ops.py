@@ -17,8 +17,10 @@ from app.relay_ops import (  # noqa: E402
     upstream_changed,
     available_pool,
     endpoint_from_list,
+    hosts_to_reset,
     pick_replacement,
     resolve_replace_account,
+    restore_failed_renewal,
 )
 
 ACCOUNTS = [
@@ -142,6 +144,35 @@ def test_apply_active_primary_uses_second_candidate():
         "password": "pb",
         "ws_account": "acc-b",
     }
+
+
+def test_hosts_to_reset_only_renewable():
+    """禁用或本次续费、且到期未过的候选才需要 reset_flow。过期的保持禁用，不重置。"""
+    now = "2026-06-01 00:00:00"
+    cands = [
+        {"host": "1.1.1.1", "expiry": "2026-07-01 00:00:00", "enabled": False},
+        {"host": "2.2.2.2", "expiry": "2026-01-01 00:00:00", "enabled": False},
+        {"host": "3.3.3.3", "expiry": "", "enabled": True},
+    ]
+    assert hosts_to_reset(cands, {"1.1.1.1", "2.2.2.2"}, set(), now) == ["1.1.1.1"]
+    assert hosts_to_reset(cands, set(), {"3.3.3.3"}, now) == ["3.3.3.3"]
+    assert hosts_to_reset(cands, set(), set(), now) == []
+
+
+def test_restore_failed_renewal_keeps_disabled_candidate():
+    """reset_flow 失败时，把本次续费改过的启用和已用拨回去，配额编辑留下。"""
+    original = [{"host": "1.1.1.1", "enabled": False, "used_gb": 4, "quota_gb": 1}]
+    current = [{"host": "1.1.1.1", "enabled": True, "used_gb": 0, "quota_gb": 9}]
+    restore_failed_renewal(current, original, ["1.1.1.1"])
+    assert current[0]["enabled"] is False
+    assert current[0]["used_gb"] == 4
+    assert current[0]["quota_gb"] == 9
+
+
+def test_restore_failed_renewal_unknown_host_stays_disabled():
+    current = [{"host": "9.9.9.9", "enabled": True, "used_gb": 0}]
+    restore_failed_renewal(current, [], ["9.9.9.9"])
+    assert current[0]["enabled"] is False
 
 
 def test_upstream_changed_when_active_candidate_switches():
