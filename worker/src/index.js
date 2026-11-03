@@ -1627,7 +1627,7 @@ async function recycleExpiredRelays(env) {
 async function syncCandidateIpStatus(env) {
   const nowKey = bjNow().slice(0, 19);
   const rows = await env.DB.prepare(
-    "SELECT id, resource_id, node_data, used_gb FROM assignments WHERE resource_type = 'relay'",
+    "SELECT id, resource_id, node_data, used_gb, quota_gb FROM assignments WHERE resource_type = 'relay'",
   ).all();
   let changed = 0;
   for (const r of rows.results) {
@@ -1644,12 +1644,16 @@ async function syncCandidateIpStatus(env) {
       const c = cands[i];
       if (!c) continue;
       if (c.enabled === false) continue;  // 已禁用（算入 allDisabled）
-      const expKey = ((c.expiry || "").trim().replace("T", " ")).slice(0, 19);
+      const candExp = ((c.expiry || "").trim().replace("T", " ")).slice(0, 19);
+      const clientExp = ((nd.client_expiry || "").trim().replace("T", " ")).slice(0, 19);
+      // 候选 expiry 优先，为空（历史数据）时回退 client_expiry（独立线路的到期权威字段）
+      const expKey = candExp || clientExp;
       const expired = !!expKey && expKey < nowKey;
       // 用尽判断：当前激活 IP 加实时流量，非激活 IP 用封账值
       let used = Number(c.used_gb) || 0;
       if (i === active) used += relayUsed;
-      const q = Number(c.quota_gb) || 0;
+      // 生效配额：候选 IP 级配额优先；为 0（历史数据未设置）时回退到线路级分配配额
+      const q = Number(c.quota_gb) || Number(r.quota_gb) || 0;
       const exhausted = q > 0 && used >= q;
       if (expired || exhausted) {
         c.enabled = false;  // 标红禁用，不回收

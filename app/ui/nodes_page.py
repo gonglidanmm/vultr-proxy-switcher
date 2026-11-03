@@ -688,6 +688,14 @@ class NodesPage(QWidget):
             if expires_at:
                 nd["client_expiry"] = expires_at
             nd["quota_gb"] = quota
+            # 同步候选 IP 级配额/到期（否则 Worker syncCandidateIpStatus 读候选为空，判定不限流量/不过期）
+            creds = nd.get("_creds", {}) or {}
+            for c in (creds.get("candidates") or []):
+                if not c.get("quota_gb"):
+                    c["quota_gb"] = quota
+                if expires_at and not c.get("expiry"):
+                    c["expiry"] = expires_at
+            nd["_creds"] = creds
             try:
                 api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=quota)
                 ok += 1
