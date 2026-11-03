@@ -175,6 +175,15 @@ def _candidate_resumable(c: dict, extra_used: float = 0.0) -> bool:
     return True
 
 
+def _candidate_renewed(c: dict) -> bool:
+    """续费后是否可启用（清零重算后已用=0，只看到期是否过期）。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    exp = (c.get("expiry") or "").strip()
+    if exp and exp < now:
+        return False
+    return True
+
+
 def _max_settable_duration(sub_expiry: str) -> str:
     """订阅到期 − 现在 = 最多可设置时长，格式化成人类可读（天/小时/分钟）。"""
     from datetime import timedelta, timezone
@@ -1333,11 +1342,10 @@ class _ManageIpsDialog(SizedDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._cands[idx]["expiry"] = dlg.expires_at
-        # 到期时间更新（未过期）→ 重新启用（之前可能因到期被禁用）+ 续费重置封账
-        _extra = float(self._line.get("used_gb") or 0) if idx == self._active_idx else 0.0
-        if _candidate_resumable(self._cands[idx], _extra):
+        # 续费重置：清零封账，重新启用（到期未过期即可）
+        self._cands[idx]["used_gb"] = 0
+        if _candidate_renewed(self._cands[idx]):
             self._cands[idx]["enabled"] = True
-            self._cands[idx]["used_gb"] = 0
         self._build_rows()
         host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
         self._status.setText(
@@ -1409,14 +1417,14 @@ class _ManageIpsDialog(SizedDialog):
     def _save(self) -> None:
         self._collect()
         rid = str(self._line.get("resource_id", ""))
-        # 配额/到期已改：可恢复的候选自动重新启用（之前可能因用尽/到期被禁用）
+        # 配额/到期已改：之前被禁用（用尽/到期）的候选，续费重置（清零重算 + 重新启用）
         resumed_any = False
         for _i, c in enumerate(self._cands):
-            _extra = float(self._line.get("used_gb") or 0) if _i == self._active_idx else 0.0
-            if c.get("enabled") is False and _candidate_resumable(c, _extra):
-                c["enabled"] = True
+            if c.get("enabled") is False:
                 c["used_gb"] = 0  # 续费重置：封账流量清零
-                resumed_any = True
+                if _candidate_renewed(c):  # 到期未过期即可启用
+                    c["enabled"] = True
+                    resumed_any = True
         if resumed_any:
             try:
                 api_client.reset_flow(rid)  # 清零分配记录 used_gb + 切换历史
@@ -1958,14 +1966,14 @@ class _UserLinesDialog(SizedDialog):
         nd["client_expiry"] = new_exp
         if cands and act < len(cands):
             cands[act]["expiry"] = new_exp
-            # 到期时间更新（未过期）→ 重新启用该候选 + 续费重置（封账清零）
-            if _candidate_resumable(cands[act], float(a.get("used_gb") or 0)):
+            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可）
+            cands[act]["used_gb"] = 0
+            try:
+                api_client.reset_flow(rid)
+            except Exception:
+                pass
+            if _candidate_renewed(cands[act]):
                 cands[act]["enabled"] = True
-                cands[act]["used_gb"] = 0
-                try:
-                    api_client.reset_flow(rid)
-                except Exception:
-                    pass
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -1974,9 +1982,9 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["expiry"] = new_exp
-                    if _candidate_resumable(cu[act], float(a.get("used_gb") or 0)):
+                    cu[act]["used_gb"] = 0
+                    if _candidate_renewed(cu[act]):
                         cu[act]["enabled"] = True
-                        cu[act]["used_gb"] = 0
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)
@@ -2006,14 +2014,14 @@ class _UserLinesDialog(SizedDialog):
         new_q = txt
         if cands and act < len(cands):
             cands[act]["quota_gb"] = new_q
-            # 配额恢复（>已用）→ 重新启用该候选 + 续费重置（封账清零）
-            if _candidate_resumable(cands[act], float(a.get("used_gb") or 0)):
+            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可，不管之前已用多少）
+            cands[act]["used_gb"] = 0
+            try:
+                api_client.reset_flow(rid)
+            except Exception:
+                pass
+            if _candidate_renewed(cands[act]):
                 cands[act]["enabled"] = True
-                cands[act]["used_gb"] = 0
-                try:
-                    api_client.reset_flow(rid)
-                except Exception:
-                    pass
             creds["candidates"] = cands
             nd["_creds"] = creds
         relays = config.get("relays", []) or []
@@ -2022,9 +2030,9 @@ class _UserLinesDialog(SizedDialog):
                 cu = r.get("candidate_upstreams") or []
                 if cu and act < len(cu):
                     cu[act]["quota_gb"] = new_q
-                    if _candidate_resumable(cu[act], float(a.get("used_gb") or 0)):
+                    cu[act]["used_gb"] = 0
+                    if _candidate_renewed(cu[act]):
                         cu[act]["enabled"] = True
-                        cu[act]["used_gb"] = 0
                     r["candidate_upstreams"] = cu
                 break
         config.set_value("relays", relays)
