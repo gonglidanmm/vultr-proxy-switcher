@@ -188,6 +188,11 @@ def list_recycle_flow() -> dict:
     return _request("GET", "/admin/recycle-flow")
 
 
+def reset_flow(resource_id: str) -> dict:
+    """重置某条线路的流量（续费/重新启用时清零重算）。"""
+    return _request("POST", "/admin/reset-flow", {"resource_id": resource_id})
+
+
 def list_resource_assignments(resource_type: str, resource_id: str) -> dict:
     """查询某个资源（vultr）分配给了哪些用户（含用户名/备注/分配时间）。"""
     from urllib.parse import quote

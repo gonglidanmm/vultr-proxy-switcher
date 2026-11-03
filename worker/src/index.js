@@ -1728,6 +1728,22 @@ async function listRecycleFlow(env) {
   return json({ records, by_user: byUser, total: records.length });
 }
 
+// 重置某条线路的流量（续费/重新启用时清零重算：used_gb 清零 + 清切换历史）
+async function resetRelayFlow(request, env) {
+  const b = await request.json().catch(() => ({}));
+  const rid = (b.resource_id || "").toString().trim();
+  if (!rid) return json({ error: "resource_id 必填" }, 400);
+  const row = await env.DB.prepare(
+    "SELECT id FROM assignments WHERE resource_type = 'relay' AND resource_id = ?",
+  ).bind(rid).first();
+  if (!row) return json({ error: "分配不存在" }, 404);
+  // 清零当前实例流量
+  await env.DB.prepare("UPDATE assignments SET used_gb = 0 WHERE id = ?").bind(row.id).run();
+  // 清零切换历史（hist_gb 来自 switch_requests 的 SUM(old_used_gb)）
+  await env.DB.prepare("DELETE FROM switch_requests WHERE assignment_id = ? AND status = 'done'").bind(row.id).run();
+  return json({ ok: true });
+}
+
 export default {
   SwitchRoom, // Durable Object 类（WebSocket 实时推送）
   async fetch(request, env) {
@@ -1876,6 +1892,7 @@ export default {
       if (path === "/admin/stats" && method === "GET") return await getStats(env);
       if (path === "/admin/recycle-flow" && method === "POST") return await recordRecycleFlow(request, env);
       if (path === "/admin/recycle-flow" && method === "GET") return await listRecycleFlow(env);
+      if (path === "/admin/reset-flow" && method === "POST") return await resetRelayFlow(request, env);
 
       const userMatch = path.match(/^\/admin\/users\/(\d+)$/);
       if (userMatch) {
