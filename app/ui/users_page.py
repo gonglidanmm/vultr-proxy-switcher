@@ -563,6 +563,23 @@ class UsersPage(QWidget):
         self._do_recycle_relay(a, node, name)
         self.refresh()
 
+    def _resolve_server_conn(self, relay_id: str, creds: dict) -> tuple[str, str]:
+        """反查 (server_id, 服务器真实IP)。creds 缺 server_id 时从 config.relays 兜底（分配时可能没同步）。"""
+        server_id = creds.get("server_id", "") or ""
+        if not server_id:
+            for r in (config.get("relays", []) or []):
+                if str(r.get("id", "")) == str(relay_id):
+                    server_id = r.get("server_id", "") or ""
+                    break
+        ip = ""
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    ip = m.get("ip") or m.get("host") or ""
+                    break
+        return server_id, ip
+
     def _do_recycle_relay(self, a: dict, node: dict, name: str) -> None:
         """回收 relay 核心（无确认，供「取消分配」「删除用户」复用）：删 D1 分配 + 停服务 + 进回收页。"""
         if isinstance(node, str):
@@ -592,10 +609,9 @@ class UsersPage(QWidget):
             QMessageBox.warning(self, "回收失败", e.message)
             return
         creds = node.get("_creds", {}) or {}
-        server_id = creds.get("server_id", "")
-        server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
+        server_id, server_ip = self._resolve_server_conn(relay_id, creds)
         stopped = True
-        if server_ip and server_id:
+        if server_id and server_ip:
             stopped = self._ssh_stop_relay(relay_id, server_id, server_ip)
         self._mark_recycled(relay_id, username)
         self._log(f"✅ 已回收「{username}」的「{name}」，IP 进回收页冷却")
@@ -683,8 +699,7 @@ class UsersPage(QWidget):
                 node = {}
         creds = node.get("_creds", {}) or {}
         relay_id = str(a.get("resource_id", ""))
-        server_id = creds.get("server_id", "")
-        server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
+        server_id, server_ip = self._resolve_server_conn(relay_id, creds)
         if not relay_id or not server_ip:
             return None
         return relay_id, server_id, server_ip
