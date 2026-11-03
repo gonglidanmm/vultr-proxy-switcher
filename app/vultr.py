@@ -578,6 +578,17 @@ def _review_row() -> dict:
     }
 
 
+def _instance_fields(inst: dict) -> dict:
+    ip = str(inst.get("main_ip") or "")
+    label = str(inst.get("label") or "")
+    return {
+        "label": label,
+        "ip": ip,
+        "region": str(inst.get("region") or ""),
+        "caution": _looks_like_control(ip, label),
+    }
+
+
 def billing_review_rows(
     orphan_records,
     instances,
@@ -585,15 +596,17 @@ def billing_review_rows(
     *,
     assignments_ok: bool = True,
     live_checked: bool = True,
+    protected_ids=None,
+    replacements_checked: bool = True,
 ) -> list[dict]:
-    """给服务器页的只读清单。不删除、不切换。
+    """给服务器页的清单。不删除、不切换。
 
     delete_failed：D1 里删除失败的旧实例。live_checked 时对照实时列表，
     old_id 还在才 can_delete。
-    unregistered：实时账户里有，但本地配置和 D1 分配都没有。
-    分配列表没拉到时不列 unregistered，避免把正常机器标成可删。
+    unregistered：实时账户里有，但本地配置和 D1 分配都没有，也不是切换产生的新实例。
+    replacement：切换记录或删除失败记录里的 new_id。看得见，不提供删除。
+    分配列表没拉到，或切换记录没拉到时，不列 unregistered，避免把正常机器或新实例标成可删。
     已经作为「仍在计费的旧实例」出现过的 id 不再列第二次。
-    删除失败记录里的 new_id 是替换机，即使本地配置还没迁过去，也不列入未登记。
     """
     known = {str(item) for item in (known_ids or set()) if item}
     by_id: dict[str, dict] = {}
@@ -610,7 +623,7 @@ def billing_review_rows(
 
     rows: list[dict] = []
     still_billed: set[str] = set()
-    replacements: set[str] = set()
+    replacements = {str(item) for item in (protected_ids or set()) if item}
     for record in orphan_records or []:
         if not isinstance(record, dict):
             continue
@@ -634,10 +647,7 @@ def billing_review_rows(
                 "new_id": new_id,
                 "http_status": "" if status is None else status,
                 "created_at": str(record.get("created_at") or ""),
-                "label": str(inst.get("label") or ""),
-                "ip": str(inst.get("main_ip") or ""),
-                "region": str(inst.get("region") or ""),
-                "caution": _looks_like_control(inst.get("main_ip") or "", inst.get("label") or ""),
+                **_instance_fields(inst),
             }
         )
         rows.append(row)
@@ -651,12 +661,23 @@ def billing_review_rows(
         if not isinstance(inst, dict):
             continue
         instance_id = str(inst.get("id") or "")
-        if (
-            not instance_id
-            or instance_id in known
-            or instance_id in still_billed
-            or instance_id in replacements
-        ):
+        if not instance_id or instance_id in known or instance_id in still_billed:
+            continue
+        if instance_id in replacements:
+            row = _review_row()
+            row.update(
+                {
+                    "kind": "replacement",
+                    "instance_id": instance_id,
+                    "still_billing": True,
+                    "can_delete": False,
+                    "created_at": str(inst.get("date_created") or ""),
+                    **_instance_fields(inst),
+                }
+            )
+            rows.append(row)
+            continue
+        if not replacements_checked:
             continue
         row = _review_row()
         row.update(
@@ -666,10 +687,7 @@ def billing_review_rows(
                 "still_billing": True,
                 "can_delete": True,
                 "created_at": str(inst.get("date_created") or ""),
-                "label": str(inst.get("label") or ""),
-                "ip": str(inst.get("main_ip") or ""),
-                "region": str(inst.get("region") or ""),
-                "caution": _looks_like_control(inst.get("main_ip") or "", inst.get("label") or ""),
+                **_instance_fields(inst),
             }
         )
         rows.append(row)

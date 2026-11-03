@@ -553,21 +553,25 @@ class ServersPage(QWidget):
                 orphan_records = api_client.list_orphan_instances().get("orphans") or []
             except Exception as e:
                 orphan_error = str(e)
-            # 切换记录里的新实例可能尚未写入本地配置，不能当成未登记去删。
+            # 切换产生的新实例单独标出来，不提供删除。记录没载入时不列未登记，避免误删新机。
             known = known_instance_ids(config.get_all(), assigns)
+            protected: set[str] = set()
+            replacements_checked = True
             try:
                 for switch in api_client.list_switch_flow().get("switches") or []:
                     new_id = str(switch.get("new_id") or "")
                     if new_id:
-                        known.add(new_id)
+                        protected.add(new_id)
             except Exception:
-                pass
+                replacements_checked = False
             review = billing_review_rows(
                 orphan_records,
                 instances,
                 known,
                 assignments_ok=assignments_ok,
                 live_checked=instances_ok,
+                protected_ids=protected,
+                replacements_checked=replacements_checked,
             )
             return (
                 servers,
@@ -579,6 +583,7 @@ class ServersPage(QWidget):
                 assigned,
                 review,
                 orphan_error,
+                replacements_checked,
             )
 
         w = CallWorker(_do)
@@ -904,6 +909,7 @@ class ServersPage(QWidget):
             assigned,
             review,
             orphan_error,
+            replacements_checked,
         ) = result
         self._servers = servers
         self._orphan_rows = review
@@ -912,7 +918,7 @@ class ServersPage(QWidget):
         self._account_expiry = account_expiry
         self._assigned = assigned
         self._populate_table()
-        self._fill_orphan_section(review, orphan_error)
+        self._fill_orphan_section(review, orphan_error, replacements_checked)
         self._update_billing(billing)
         self._update_account_bw(account_bw)
         if api_error:
@@ -1363,31 +1369,39 @@ class ServersPage(QWidget):
         w.finished.connect(w.deleteLater)
         w.start()
 
-    def _fill_orphan_section(self, rows: list[dict], error: str) -> None:
+    def _fill_orphan_section(self, rows: list[dict], error: str, replacements_checked: bool = True) -> None:
         failed = sum(1 for row in rows if row.get("kind") == "delete_failed")
         still = sum(1 for row in rows if row.get("kind") == "delete_failed" and row.get("still_billing"))
         unknown = sum(1 for row in rows if row.get("kind") == "unregistered")
+        replacements = sum(1 for row in rows if row.get("kind") == "replacement")
         if error and not rows:
             text = f"孤儿实例：记录加载失败（{error}）。不会自动删除。"
+            if not replacements_checked:
+                text += " 切换记录没载入，未登记清单先不显示。"
             color = "#ff9f0a"
-        elif not rows:
+        elif not rows and replacements_checked:
             text = "孤儿实例：没有删除失败记录，也没有未登记的实例。"
             color = "#98989d"
         else:
             text = (
                 f"孤儿实例：删除失败记录 {failed} 条（{still} 台仍在计费），"
-                f"未登记 {unknown} 台。删除要再确认，不会自动切换。"
+                f"未登记 {unknown} 台"
             )
+            if replacements:
+                text += f"，切换新实例 {replacements} 台（不在这里删）"
+            text += "。删除要再确认，不会自动切换。"
             if error:
                 text += f" 删除失败记录没载入：{error}"
-            color = "#ff9f0a" if any(row.get("can_delete") for row in rows) or error else "#98989d"
+            if not replacements_checked:
+                text += " 切换记录没载入，未登记清单先不显示。"
+            color = "#ff9f0a" if any(row.get("can_delete") for row in rows) or error or not replacements_checked else "#98989d"
         self._orphan_label.setText(f'<span style="color:{color};">{text}</span>')
         self._orphan_table.setVisible(bool(rows))
         self._orphan_table.setRowCount(0)
         for row in rows:
             r = self._orphan_table.rowCount()
             self._orphan_table.insertRow(r)
-            kind = "删除失败" if row.get("kind") == "delete_failed" else "未登记"
+            kind = {"delete_failed": "删除失败", "replacement": "新实例"}.get(row.get("kind"), "未登记")
             self._orphan_set(r, 0, kind)
             self._orphan_set(r, 1, str(row.get("instance_id") or ""))
             if row.get("still_billing") is None:
@@ -1396,6 +1410,8 @@ class ServersPage(QWidget):
                 status = "仍在计费"
             else:
                 status = "账户里已没有"
+            if row.get("kind") == "replacement":
+                status += " · 不在这里删"
             if row.get("caution"):
                 status += " · 像控制机"
             self._orphan_set(r, 2, status)

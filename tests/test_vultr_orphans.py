@@ -173,8 +173,8 @@ def test_live_instance_unknown_to_config_and_d1_is_listed_once():
     assert [row["instance_id"] for row in rows].count("old-1") == 1
 
 
-def test_replacement_from_a_failed_delete_is_not_listed_as_unregistered():
-    """新实例可能还没写入本地配置。它不是可删的孤儿，旧实例才是。"""
+def test_replacement_from_a_failed_delete_is_shown_but_not_deletable():
+    """新实例可能还没写入本地配置。要看得见，但删除按钮只给旧实例。"""
     instances = list(LIVE) + [
         {
             "id": "new-1",
@@ -185,8 +185,26 @@ def test_replacement_from_a_failed_delete_is_not_listed_as_unregistered():
         }
     ]
     rows = billing_review_rows(RECORDS, instances, {"kept"})
-    assert "new-1" not in {row["instance_id"] for row in rows}
+    new = next(row for row in rows if row["instance_id"] == "new-1")
+    assert new["kind"] == "replacement"
+    assert new["can_delete"] is False
+    assert new["still_billing"] is True
     assert any(row["instance_id"] == "old-1" and row["can_delete"] for row in rows)
+
+
+def test_switch_new_id_is_shown_but_not_deletable():
+    rows = billing_review_rows([], LIVE, {"kept"}, protected_ids={"stray"})
+    stray = next(row for row in rows if row["instance_id"] == "stray")
+    assert stray["kind"] == "replacement"
+    assert stray["can_delete"] is False
+    assert any(row["instance_id"] == "ctrl" and row["can_delete"] for row in rows)
+
+
+def test_missing_switch_flow_hides_unregistered_deletes():
+    """切换记录没载入时，不能把可能是新实例的机器列成可删。"""
+    rows = billing_review_rows(RECORDS, LIVE, {"kept"}, replacements_checked=False)
+    assert [row["instance_id"] for row in rows] == ["old-1", "gone-1"]
+    assert all(row["kind"] == "delete_failed" for row in rows)
 
 
 def test_review_row_order_is_orphan_records_then_unknown_instances():
