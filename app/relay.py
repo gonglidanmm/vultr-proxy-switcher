@@ -324,8 +324,8 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
     cands = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [])]
     if not cands:
         candidates = [norm_candidate(upstream)]
-    elif cands[0].get("host") != relay.get("host"):
-        # candidate_upstreams 缺主 IP（历史替换操作遗留），补主 IP 为 candidates[0]
+    elif not any(c.get("host") == relay.get("host") for c in cands):
+        # 候选里没有当前 host 才补一行。激活的不是第 1 个时不能再插一次，否则快照会多出一个重复 IP。
         candidates = [norm_candidate(upstream)] + cands
     else:
         candidates = cands

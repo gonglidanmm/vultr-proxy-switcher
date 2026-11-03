@@ -1303,7 +1303,7 @@ class _ManageIpsDialog(SizedDialog):
             except Exception:
                 nd = {}
         ws_account = nd.get("ws_account", "")
-        from ..relay_ops import available_pool, resolve_replace_account
+        from ..relay_ops import api_key_for_choice, available_pool, resolve_replace_account
 
         accounts = webshare.list_accounts()
         target_host = self._cands[idx].get("host", "")
@@ -1331,12 +1331,8 @@ class _ManageIpsDialog(SizedDialog):
         recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
         cur_hosts = {c.get("host") for c in self._cands}
 
-        def pool_loader(name: str) -> list[dict]:
-            key = ""
-            for acct in accounts:
-                if acct.get("name") == name:
-                    key = acct.get("api_key", "")
-                    break
+        def pool_loader(name: str, api_key: str = "") -> list[dict]:
+            key = api_key or api_key_for_choice(name, accounts)
             if not key:
                 return []
             try:
@@ -1402,7 +1398,7 @@ class _ManageIpsDialog(SizedDialog):
 
     def _add_ip(self) -> None:
         self._collect()
-        from ..relay_ops import available_pool
+        from ..relay_ops import api_key_for_choice, available_pool
 
         accounts = webshare.list_accounts()
         api_key = webshare.get_active_key()
@@ -1420,12 +1416,8 @@ class _ManageIpsDialog(SizedDialog):
         recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
         cur_hosts = {c.get("host") for c in self._cands}
 
-        def pool_loader(name: str) -> list[dict]:
-            key = ""
-            for acct in accounts:
-                if acct.get("name") == name:
-                    key = acct.get("api_key", "")
-                    break
+        def pool_loader(name: str, api_key: str = "") -> list[dict]:
+            key = api_key or api_key_for_choice(name, accounts)
             if not key:
                 return []
             try:
@@ -1487,22 +1479,16 @@ class _ManageIpsDialog(SizedDialog):
         # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
         old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
         # 1. 更新 config.relays 的 candidate_upstreams（源）
+        from ..relay_ops import apply_active_primary
+
         relays = config.get("relays", []) or []
+        target = None
         for r in relays:
             if str(r.get("id", "")) == rid:
                 r["candidate_upstreams"] = self._cands
                 r["active_upstream_idx"] = self._active_idx
-                # 同步主 IP = candidates[0]（替换/删除后 host 与候选保持一致，避免「外面还是旧 IP」）
-                if self._cands:
-                    c0 = self._cands[0]
-                    r["host"] = c0.get("host", "")
-                    r["port"] = c0.get("port", 0)
-                    r["user"] = c0.get("user", "")
-                    r["password"] = c0.get("password", "")
-                    if c0.get("ws_account"):
-                        r["ws_account"] = c0.get("ws_account", "")
+                target = r
                 break
-        config.set_value("relays", relays)
         # 2. 更新 D1 node_data（快照）
         nd = self._line.get("node_data", {}) or {}
         if isinstance(nd, str):
@@ -1514,27 +1500,12 @@ class _ManageIpsDialog(SizedDialog):
         creds = nd.get("_creds", {}) or {}
         creds["candidates"] = self._cands
         creds["active_idx"] = self._active_idx
-        # 同步主 IP 快照（node_data.ip / ws_account / upstream / quota），客户端「当前 IP/配额」跟替换后一致
-        if self._cands:
-            c0 = self._cands[0]
-            nd["ip"] = c0.get("host", "")
-            if c0.get("ws_account"):
-                nd["ws_account"] = c0.get("ws_account", "")
-            nd["quota_gb"] = float(c0.get("quota_gb") or 0)
-            creds["upstream"] = {
-                "host": c0.get("host", ""),
-                "port": c0.get("port", 0),
-                "user": c0.get("user", ""),
-                "password": c0.get("password", ""),
-                "ws_account": c0.get("ws_account", ""),
-            }
         nd["_creds"] = creds
-        # 当前激活候选的配额/到期 → 同步到分配记录 quota_gb 与 node_data.client_expiry（外面线路明细/客户端读这两个权威值）
-        active_quota = 0.0
-        active_expiry = None
-        if self._cands and self._active_idx < len(self._cands):
-            active_quota = float(self._cands[self._active_idx].get("quota_gb") or 0)
-            active_expiry = (self._cands[self._active_idx].get("expiry") or "").strip() or None
+        # 主上游跟激活候选，不跟 candidates[0]（部署读 relay.host，客户端当前 IP 读 node_data.ip）
+        primary = apply_active_primary(target, nd, self._cands, self._active_idx) or {}
+        config.set_value("relays", relays)
+        active_quota = float(primary.get("quota_gb") or 0)
+        active_expiry = (primary.get("expiry") or "").strip() or None
         nd["expiry"] = active_expiry or ""
         nd["client_expiry"] = active_expiry or ""  # 独立线路的到期权威字段（外面/客户端读它）
         try:
@@ -1638,13 +1609,17 @@ class _IpPickerDialog(SizedDialog):
         layout.setSpacing(10)
 
         # 上游账号下拉框（跨账号选择：替换/添加时可切到别的账号池）
+        # itemData 是该账号的 api_key，和设置页 webshare_accounts / key_for_host 是同一份
+        from ..relay_ops import account_choices
+
+        self._account_choices = account_choices(self._accounts)
         self.account_combo: QComboBox | None = None
-        if len(self._accounts) > 1:
+        if len(self._account_choices) > 1:
             acct_row = QHBoxLayout()
             acct_row.addWidget(QLabel("上游账号:"))
             self.account_combo = QComboBox()
-            for a in self._accounts:
-                self.account_combo.addItem(a.get("name", ""))
+            for a in self._account_choices:
+                self.account_combo.addItem(a["name"], a["api_key"])
             if default_account:
                 _i = self.account_combo.findText(default_account)
                 if _i >= 0:
@@ -1713,12 +1688,17 @@ class _IpPickerDialog(SizedDialog):
     def _current_account(self) -> str:
         if self.account_combo:
             return self.account_combo.currentText()
-        return (self._accounts[0].get("name", "") if self._accounts else "")
+        return (self._account_choices[0]["name"] if self._account_choices else "")
+
+    def _current_api_key(self) -> str:
+        if self.account_combo:
+            return self.account_combo.currentData() or ""
+        return (self._account_choices[0]["api_key"] if self._account_choices else "")
 
     def _on_account_changed(self, _idx: int) -> None:
-        """切换上游账号 → 重新加载该账号的 IP 池。"""
+        """切换上游账号 → 用该行的 api_key 重新加载 IP 池。"""
         if self._pool_loader:
-            proxies = self._pool_loader(self._current_account()) or []
+            proxies = self._pool_loader(self._current_account(), self._current_api_key()) or []
             self._fill_table(proxies)
 
     def _fill_table(self, proxies: list[dict]) -> None:
