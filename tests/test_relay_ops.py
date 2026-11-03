@@ -16,6 +16,7 @@ from app.relay_ops import (  # noqa: E402
     apply_pool_replacement,
     upstream_changed,
     available_pool,
+    apply_detail_renewal,
     endpoint_from_list,
     hosts_to_reset,
     pick_replacement,
@@ -167,6 +168,30 @@ def test_restore_failed_renewal_keeps_disabled_candidate():
     assert current[0]["enabled"] is False
     assert current[0]["used_gb"] == 4
     assert current[0]["quota_gb"] == 9
+
+
+def test_apply_detail_renewal_failure_does_not_enable():
+    """线路明细改到期/配额时，reset_flow 失败不启用，已用保持原值。"""
+    cand = {"host": "1.1.1.1", "enabled": True, "used_gb": 0, "expiry": "2026-07-01 00:00:00", "quota_gb": 9}
+    ok = apply_detail_renewal(cand, False, "2026-06-01 00:00:00", False, 4)
+    assert ok is False
+    assert cand["enabled"] is False
+    assert cand["used_gb"] == 4
+    assert cand["quota_gb"] == 9
+
+
+def test_apply_detail_renewal_success_enables_when_unexpired():
+    cand = {"host": "1.1.1.1", "enabled": False, "used_gb": 4, "expiry": "2026-07-01 00:00:00"}
+    assert apply_detail_renewal(cand, True, "2026-06-01 00:00:00", False, 4) is True
+    assert cand["enabled"] is True
+    assert cand["used_gb"] == 0
+
+
+def test_apply_detail_renewal_success_leaves_expired_disabled():
+    cand = {"host": "1.1.1.1", "enabled": False, "used_gb": 4, "expiry": "2026-01-01 00:00:00"}
+    assert apply_detail_renewal(cand, True, "2026-06-01 00:00:00", False, 4) is True
+    assert cand["enabled"] is False
+    assert cand["used_gb"] == 0
 
 
 def test_restore_failed_renewal_unknown_host_stays_disabled():
