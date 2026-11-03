@@ -47,11 +47,13 @@ from ..vultr import (
     REGION_SPEED,
     VultrAPI,
     VultrError,
+    billing_review_rows,
     build_gost_user_data,
     compute_billing,
     compute_bandwidth,
     compute_account_bandwidth,
     country_of,
+    known_instance_ids,
     region_label,
 )
 from .proxy_controller import ProxyStatusCard
@@ -105,6 +107,7 @@ class ServersPage(QWidget):
         self._controller = controller
         self._workers: list[CallWorker] = []
         self._servers: list[dict] = []
+        self._orphan_rows: list[dict] = []
         self._bandwidth: dict[str, dict] = {}
         self._account_bw: dict = {}
         self._suppress_note = False
@@ -171,6 +174,26 @@ class ServersPage(QWidget):
         self.table.cellDoubleClicked.connect(self._on_cell_dblclick)
         self.table.row_dropped.connect(self._on_row_dropped)
         root.addWidget(self.table, 1)
+
+        # 孤儿实例：删除失败仍可能计费，以及账户里本地和 D1 都不认识的实例。只展示，删除要再确认。
+        self._orphan_label = QLabel("孤儿实例：打开页面后随刷新检查")
+        self._orphan_label.setWordWrap(True)
+        root.addWidget(self._orphan_label)
+        self._orphan_table = QTableWidget(0, 5)
+        self._orphan_table.setHorizontalHeaderLabels(["类型", "实例", "状态", "说明", "操作"])
+        self._orphan_table.verticalHeader().setVisible(False)
+        self._orphan_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._orphan_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._orphan_table.setMaximumHeight(180)
+        orphan_header = self._orphan_table.horizontalHeader()
+        orphan_header.setStretchLastSection(False)
+        orphan_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self._orphan_table.setColumnWidth(0, 80)
+        self._orphan_table.setColumnWidth(1, 260)
+        self._orphan_table.setColumnWidth(2, 150)
+        self._orphan_table.setColumnWidth(4, 110)
+        self._orphan_table.setVisible(False)
+        root.addWidget(self._orphan_table)
 
         # 切换IP 日志回显
         self._log_view = QTextEdit()
@@ -467,11 +490,14 @@ class ServersPage(QWidget):
             bandwidth = {}
             account_bw = {}
             account_expiry = ""
+            instances: list = []
+            instances_ok = False
             key = config.get("vultr_api_key", "")
             if key:
                 try:
                     api = VultrAPI(key)
                     instances = api.list_instances()
+                    instances_ok = True
                     for inst in instances:
                         servers.append(self._managed_row(inst))
                     account = api.get_account()
@@ -508,8 +534,10 @@ class ServersPage(QWidget):
                 )
             # 加载分配关系（判断哪些服务器已分配给用户，供「已分配」按钮 + 悬停显示用户名）
             assigned: dict[str, list[str]] = {}
+            assigns: list = []
+            assignments_ok = True
             try:
-                assigns = api_client.list_all_assignments().get("assignments", [])
+                assigns = api_client.list_all_assignments().get("assignments") or []
                 for a in assigns:
                     if a.get("resource_type") != "vultr":
                         continue
@@ -518,8 +546,45 @@ class ServersPage(QWidget):
                     if rid and uname:
                         assigned.setdefault(rid, []).append(uname)
             except Exception:
-                pass
-            return servers, api_error, billing, bandwidth, account_bw, account_expiry, assigned
+                assignments_ok = False
+            orphan_records: list = []
+            orphan_error = ""
+            try:
+                orphan_records = api_client.list_orphan_instances().get("orphans") or []
+            except Exception as e:
+                orphan_error = str(e)
+            # 切换产生的新实例单独标出来，不提供删除。记录没载入时不列未登记，避免误删新机。
+            known = known_instance_ids(config.get_all(), assigns)
+            protected: set[str] = set()
+            replacements_checked = True
+            try:
+                for switch in api_client.list_switch_flow().get("switches") or []:
+                    new_id = str(switch.get("new_id") or "")
+                    if new_id:
+                        protected.add(new_id)
+            except Exception:
+                replacements_checked = False
+            review = billing_review_rows(
+                orphan_records,
+                instances,
+                known,
+                assignments_ok=assignments_ok,
+                live_checked=instances_ok,
+                protected_ids=protected,
+                replacements_checked=replacements_checked,
+            )
+            return (
+                servers,
+                api_error,
+                billing,
+                bandwidth,
+                account_bw,
+                account_expiry,
+                assigned,
+                review,
+                orphan_error,
+                replacements_checked,
+            )
 
         w = CallWorker(_do)
         w.done.connect(self._on_servers)
@@ -834,13 +899,26 @@ class ServersPage(QWidget):
         }
 
     def _on_servers(self, result) -> None:
-        servers, api_error, billing, bandwidth, account_bw, account_expiry, assigned = result
+        (
+            servers,
+            api_error,
+            billing,
+            bandwidth,
+            account_bw,
+            account_expiry,
+            assigned,
+            review,
+            orphan_error,
+            replacements_checked,
+        ) = result
         self._servers = servers
+        self._orphan_rows = review
         self._bandwidth = bandwidth
         self._account_bw = account_bw
         self._account_expiry = account_expiry
         self._assigned = assigned
         self._populate_table()
+        self._fill_orphan_section(review, orphan_error, replacements_checked)
         self._update_billing(billing)
         self._update_account_bw(account_bw)
         if api_error:
@@ -850,6 +928,11 @@ class ServersPage(QWidget):
             )
         else:
             self._log(f"✅ 服务器列表已加载（{len(servers)} 台）")
+        if orphan_error:
+            self._log(f"⚠️ 孤儿实例记录加载失败：{orphan_error}")
+        billing_n = sum(1 for row in review if row.get("can_delete"))
+        if billing_n:
+            self._log(f"⚠️ {billing_n} 台实例可能仍在计费，见上方孤儿实例。不会自动删除或切换。")
 
     def _populate_table(self) -> None:
         self._suppress_note = True
@@ -1282,6 +1365,134 @@ class ServersPage(QWidget):
         w = CallWorker(_do)
         w.done.connect(lambda _=None: self.refresh())
         w.failed.connect(lambda m: self._op_label.setText(f'<span style="color:#ff453a;">操作失败：{m}</span>'))
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _fill_orphan_section(self, rows: list[dict], error: str, replacements_checked: bool = True) -> None:
+        failed = sum(1 for row in rows if row.get("kind") == "delete_failed")
+        still = sum(1 for row in rows if row.get("kind") == "delete_failed" and row.get("still_billing"))
+        unknown = sum(1 for row in rows if row.get("kind") == "unregistered")
+        replacements = sum(1 for row in rows if row.get("kind") == "replacement")
+        if error and not rows:
+            text = f"孤儿实例：记录加载失败（{error}）。不会自动删除。"
+            if not replacements_checked:
+                text += " 切换记录没载入，未登记清单先不显示。"
+            color = "#ff9f0a"
+        elif not rows and replacements_checked:
+            text = "孤儿实例：没有删除失败记录，也没有未登记的实例。"
+            color = "#98989d"
+        else:
+            text = (
+                f"孤儿实例：删除失败记录 {failed} 条（{still} 台仍在计费），"
+                f"未登记 {unknown} 台"
+            )
+            if replacements:
+                text += f"，切换新实例 {replacements} 台（不在这里删）"
+            text += "。删除要再确认，不会自动切换。"
+            if error:
+                text += f" 删除失败记录没载入：{error}"
+            if not replacements_checked:
+                text += " 切换记录没载入，未登记清单先不显示。"
+            color = "#ff9f0a" if any(row.get("can_delete") for row in rows) or error or not replacements_checked else "#98989d"
+        self._orphan_label.setText(f'<span style="color:{color};">{text}</span>')
+        self._orphan_table.setVisible(bool(rows))
+        self._orphan_table.setRowCount(0)
+        for row in rows:
+            r = self._orphan_table.rowCount()
+            self._orphan_table.insertRow(r)
+            kind = {"delete_failed": "删除失败", "replacement": "新实例"}.get(row.get("kind"), "未登记")
+            self._orphan_set(r, 0, kind)
+            self._orphan_set(r, 1, str(row.get("instance_id") or ""))
+            if row.get("still_billing") is None:
+                status = "未核对账户"
+            elif row.get("still_billing"):
+                status = "仍在计费"
+            else:
+                status = "账户里已没有"
+            if row.get("kind") == "replacement":
+                status += " · 不在这里删"
+            if row.get("caution"):
+                status += " · 像控制机"
+            self._orphan_set(r, 2, status)
+            self._orphan_set(r, 3, self._orphan_detail(row))
+            if row.get("can_delete"):
+                btn = QPushButton("删除此实例")
+                btn.setProperty("compact", True)
+                btn.setProperty("danger", True)
+                btn.setFixedHeight(28)
+                snapshot = dict(row)
+                btn.clicked.connect(lambda _=False, item=snapshot: self._delete_orphan_instance(item))
+                self._orphan_table.setCellWidget(r, 4, btn)
+            else:
+                self._orphan_set(r, 4, "—")
+
+    def _orphan_set(self, row: int, col: int, text: str) -> None:
+        item = QTableWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        self._orphan_table.setItem(row, col, item)
+
+    def _orphan_detail(self, row: dict) -> str:
+        if row.get("kind") == "delete_failed":
+            parts = [
+                f"新实例 {row.get('new_id') or '-'}",
+                f"HTTP {row.get('http_status')}",
+                str(row.get("created_at") or "-"),
+            ]
+            if row.get("ip"):
+                parts.append(str(row["ip"]))
+            if row.get("label"):
+                parts.append(str(row["label"]))
+            return " · ".join(parts)
+        parts = [str(row.get("region") or "-"), str(row.get("ip") or "无 IP"), str(row.get("label") or "无名称")]
+        if row.get("created_at"):
+            parts.append(str(row["created_at"]))
+        return " · ".join(parts)
+
+    def _delete_orphan_instance(self, row: dict) -> None:
+        """手动删除一台仍在计费的孤儿或未登记实例。确认前什么都不做，确认后只调 Vultr 删除。"""
+        if not row.get("can_delete"):
+            return
+        instance_id = str(row.get("instance_id") or "")
+        if not instance_id:
+            return
+        caution = ""
+        if row.get("caution"):
+            caution = "\n\n这台的地址或名称像控制机（IPv6 转发）。删错会打断切换。"
+        ret = QMessageBox.question(
+            self,
+            "确认删除实例",
+            (
+                f"确定删除 Vultr 实例 {instance_id}"
+                f"（{row.get('ip') or '无 IP'} / {row.get('label') or '无名称'}）？\n\n"
+                "只删除这一台，让它停止计费。\n"
+                "不会切换 IP，不会创建新实例，也不会改用户分配。"
+                + caution
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        key = config.get("vultr_api_key", "")
+        if not key:
+            QMessageBox.warning(self, "删除失败", "未配置 Vultr API 密钥")
+            return
+        self._op_label.setText('<span style="color:#0a84ff;">正在删除实例…</span>')
+
+        def _do():
+            VultrAPI(key).delete_instance(instance_id)
+            return instance_id
+
+        def _done(deleted_id: str) -> None:
+            self._log(f"🗑️ 已手动删除实例 {deleted_id}（未触发切换，未改分配）")
+            self._op_label.setText(f'<span style="color:#32d74b;">已删除实例 {deleted_id}</span>')
+            self._last_refresh = 0
+            self.refresh()
+
+        w = CallWorker(_do)
+        w.done.connect(_done)
+        w.failed.connect(lambda message: QMessageBox.warning(self, "删除失败", str(message)))
         self._workers.append(w)
         w.finished.connect(w.deleteLater)
         w.start()
