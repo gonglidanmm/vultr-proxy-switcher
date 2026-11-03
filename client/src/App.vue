@@ -49,6 +49,16 @@ onMounted(async () => {
   };
   setInterval(checkFrontendUpdate, 60000);
   checkFrontendUpdate();
+
+  // 账号被禁用：自动登出并提示（正在使用的客户端收到 403"账号已禁用"）
+  window.addEventListener("proxy:auth-disabled", (e) => {
+    const msg = (e && e.detail) || "账号已被禁用，请联系管理员";
+    auth.logout();
+    closeWs();
+    useProxyStore().reset();
+    useNodesStore().reset();
+    alert(msg);
+  });
 });
 
 function logout() {

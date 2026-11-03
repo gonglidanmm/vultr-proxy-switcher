@@ -261,11 +261,33 @@ def _relay_location(name: str) -> str:
     for cn in _CN_CITIES:
         if cn in name:
             return f"美国·{cn}"
-    m = re.search(r"US[- ]([A-Za-z]+(?:\s+[A-Za-z]+)?)", name)
+    # 中文「美国-城市」模式（城市不在 _CN_CITIES 里也能显示，如 webshare 数据 country=US/city=Melbourne）
+    m = re.search(r"美国[-·]([^-·]+)", name)
     if m:
-        key = m.group(1).lower()
-        return f"美国·{_CITY_EN2CN.get(key, m.group(1).title())}"
+        return f"美国·{m.group(1)}"
+    m2 = re.search(r"US[- ]([A-Za-z]+(?:\s+[A-Za-z]+)?)", name)
+    if m2:
+        key = m2.group(1).lower()
+        return f"美国·{_CITY_EN2CN.get(key, m2.group(1).title())}"
     return ""
+
+
+def norm_candidate(c) -> dict:
+    """把候选上游 IP 规范化为带独立属性的结构（向后兼容旧结构）。
+
+    旧结构只有 {host, port, user, password}，或纯字符串。
+    新结构加 quota_gb/used_gb/expiry/enabled/ws_account（每个 IP 独立配额/流量/到期/禁用/账号）。
+    """
+    if isinstance(c, str):
+        return {"host": c, "port": "", "user": "", "password": "",
+                "quota_gb": 0, "used_gb": 0, "expiry": "", "enabled": True, "ws_account": ""}
+    d = dict(c or {})
+    d.setdefault("quota_gb", 0)
+    d.setdefault("used_gb", 0)
+    d.setdefault("expiry", "")
+    d.setdefault("enabled", True)
+    d.setdefault("ws_account", "")
+    return d
 
 
 def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> dict:
@@ -297,8 +319,16 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "port": relay.get("port", ""),
         "user": relay.get("user", ""),
         "password": relay.get("password", ""),
+        "ws_account": relay.get("ws_account", ""),
     }
-    candidates = relay.get("candidate_upstreams") or [upstream]
+    cands = [norm_candidate(c) for c in (relay.get("candidate_upstreams") or [])]
+    if not cands:
+        candidates = [norm_candidate(upstream)]
+    elif cands[0].get("host") != relay.get("host"):
+        # candidate_upstreams 缺主 IP（历史替换操作遗留），补主 IP 为 candidates[0]
+        candidates = [norm_candidate(upstream)] + cands
+    else:
+        candidates = cands
     active_idx = int(relay.get("active_upstream_idx", 0) or 0)
 
     return {
@@ -320,6 +350,7 @@ def relay_node_data(relay: dict, server_ip: str, switch_api_key: str = "") -> di
         "ip": relay.get("host", ""),  # 上游出口 IP（客户端「当前 IP」列）
         "domain": entry,
         "ip_type": relay.get("ip_type", "dc"),
+        "ws_account": relay.get("ws_account", ""),  # 上游账号归属（列表「上游账号」列）
         "_creds": {
             "relay_id": relay.get("id", ""),
             "server_id": relay.get("server_id", ""),

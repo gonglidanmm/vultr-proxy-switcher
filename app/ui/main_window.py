@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import __version__
+from .. import __version__, config
 from .proxy_controller import ProxyController
 from .servers_page import ServersPage
 from .settings_page import SettingsPage
@@ -32,6 +32,15 @@ class MainWindow(QWidget):
         super().__init__(parent)
         self.setWindowTitle("Vultr 代理切换器")
         self._build()
+        _saved = config.get("main_window_size")
+        if _saved and len(_saved) == 2:
+            self.resize(int(_saved[0]), int(_saved[1]))
+        else:
+            self.resize(1280, 820)
+
+    def closeEvent(self, event) -> None:
+        config.set_value("main_window_size", [self.width(), self.height()])
+        super().closeEvent(event)
 
     def _build(self) -> None:
         outer = QHBoxLayout(self)

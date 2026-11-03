@@ -18,8 +18,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -37,7 +39,8 @@ from .. import cloudflare, config, ipqs, vultr, webshare
 from ..relay import RELAY_PORT_START, gen_relay_id, gen_relay_password, hysteria_port, next_relay_port, reality_port
 from ..gencreds import generate_reality
 from .drag_table import DragTableWidget
-from .workers import CallWorker
+from .persist import SizedDialog, persist_col_widths
+from .workers import CallWorker, ProgressWorker
 
 _COLS = ["选择", "#", "地址", "端口", "国家", "城市", "套餐", "状态", "标记", "评分", "备注", "操作"]
 _COL_DEFAULTS = {0: 45, 1: 40, 2: 140, 3: 60, 4: 50, 5: 100, 6: 80, 7: 50, 8: 60, 9: 130, 10: 110}
@@ -75,7 +78,10 @@ def _bj_today() -> str:
     return ipqs.bj_today()
 
 
-class BatchGenerateDialog(QDialog):
+class BatchGenerateDialog(SizedDialog):
+    _size_key = "batch_generate_dialog_size"
+    _default_w = 560
+    _default_h = 520
     """批量生成中转：选国家/城市/数量/方式（随机或顺序）。"""
 
     def __init__(self, countries: list, country_cities: dict, parent=None):
@@ -178,7 +184,10 @@ class _ServerCard(QFrame):
         super().mousePressEvent(e)
 
 
-class DomainDialog(QDialog):
+class DomainDialog(SizedDialog):
+    _size_key = "domain_dialog_size"
+    _default_w = 480
+    _default_h = 380
     """生成中转前选择入口域名：Cloudflare 主域名 + 现有域名下拉框（或手动新建二级域名）。"""
 
     def __init__(self, parent=None):
@@ -297,6 +306,137 @@ class DomainDialog(QDialog):
         return f"{sub}.{zone}"
 
 
+def _duration_to_expiry(value: int, unit: str) -> str:
+    """时长(按天/按小时/按分钟) → 北京时间绝对到期时间；「不过期」返回空串。"""
+    if unit == "不过期":
+        return ""
+    from datetime import timedelta, timezone
+
+    seconds = {"按天": 86400, "按小时": 3600, "按分钟": 60}.get(unit, 86400) * value
+    tz = timezone(timedelta(hours=8))
+    return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class _RelayNameDialog(SizedDialog):
+    _size_key = "relay_name_dialog_size"
+    _default_w = 560
+    _default_h = 150
+    """线路名称确认：预填自动生成的名称，可手动修改。"""
+
+    def __init__(self, parent, default_name: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("线路名称（可修改）")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("生成的线路名称，可手动修改后确定："))
+        self._edit = QLineEdit(default_name)
+        layout.addWidget(self._edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def name(self) -> str:
+        return self._edit.text().strip()
+
+
+class _MergeSettingsDialog(SizedDialog):
+    _size_key = "merge_settings_dialog_size"
+    _default_w = 720
+    _default_h = 480
+    """合并线路时，为每个候选 IP 设置独立配额/到期（可一键统一，时分天时长设置）。"""
+
+    def __init__(self, parent, candidates: list[dict]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("设置每个 IP 的配额/到期")
+        self.setMinimumWidth(720)
+        self._quota_spins: list[QSpinBox] = []
+        self._dur_spins: list[QSpinBox] = []
+        self._unit_combos: list[QComboBox] = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 统一设置区
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(0)
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一到期:"))
+        self.uni_dur = QSpinBox()
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        uni.addWidget(self.uni_dur)
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+        uni.addWidget(self.uni_unit)
+        apply_btn = QPushButton("应用到全部")
+        apply_btn.clicked.connect(self._apply_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        # 每个 IP 一行
+        grid = QGridLayout()
+        grid.addWidget(QLabel("上游 IP"), 0, 0)
+        grid.addWidget(QLabel("配额(GB)"), 0, 1)
+        grid.addWidget(QLabel("到期时长"), 0, 2)
+        for i, c in enumerate(candidates):
+            host = c.get("host", "") or ""
+            grid.addWidget(QLabel(host), i + 1, 0)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(0)
+            q.setToolTip("0 = 不限流量")
+            grid.addWidget(q, i + 1, 1)
+            self._quota_spins.append(q)
+            drow = QHBoxLayout()
+            drow.setContentsMargins(0, 0, 0, 0)
+            dspin = QSpinBox()
+            dspin.setRange(1, 9999)
+            dspin.setValue(1)
+            unit = QComboBox()
+            unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+            drow.addWidget(dspin)
+            drow.addWidget(unit)
+            dw = QWidget()
+            dw.setLayout(drow)
+            grid.addWidget(dw, i + 1, 2)
+            self._dur_spins.append(dspin)
+            self._unit_combos.append(unit)
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _apply_all(self) -> None:
+        q = self.uni_quota.value()
+        d = self.uni_dur.value()
+        u = self.uni_unit.currentText()
+        for spin in self._quota_spins:
+            spin.setValue(q)
+        for dspin, unit in zip(self._dur_spins, self._unit_combos):
+            dspin.setValue(d)
+            unit.setCurrentText(u)
+
+    def results(self) -> list[dict]:
+        """返回每个 IP 的 {quota_gb, expiry}（expiry 为北京时间绝对时间，不过期=空串）。"""
+        out = []
+        for q, dspin, unit in zip(self._quota_spins, self._dur_spins, self._unit_combos):
+            exp = _duration_to_expiry(dspin.value(), unit.currentText())
+            out.append({"quota_gb": q.value(), "expiry": exp})
+        return out
+
+
 class WebsharePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -322,18 +462,50 @@ class WebsharePage(QWidget):
         self._sub_timer.timeout.connect(self._refresh_subscription)
         self._sub_timer.start()
         self._build()
+        self._load_accounts()
         self._load_servers()
+
+    def _load_accounts(self) -> None:
+        """填充上游账号下拉框（多 key），选中当前账号。"""
+        from .. import webshare as ws
+
+        accounts = ws.list_accounts()
+        self.account_combo.blockSignals(True)
+        self.account_combo.clear()
+        for a in accounts:
+            self.account_combo.addItem(a.get("name", ""), a.get("api_key", ""))
+        active = ws.get_active_account()
+        if active:
+            idx = self.account_combo.findText(active.get("name", ""))
+            if idx >= 0:
+                self.account_combo.setCurrentIndex(idx)
+        self.account_combo.blockSignals(False)
+
+    def _on_account_changed(self, _idx: int) -> None:
+        """切换上游账号：保存选中账号 + 重新加载该账号的 IP 列表/套餐。"""
+        name = self.account_combo.currentText()
+        key = self.account_combo.currentData() or ""
+        config.set_value("webshare_active_account", name)
+        config.set_value("webshare_api_key", key)  # 向下兼容旧字段
+        self._selected.clear()
+        self.refresh()
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(12)
 
-        # 标题行：标题 + 刷新列表
+        # 标题行：标题 + 上游账号下拉框 + 刷新列表
         title_row = QHBoxLayout()
         title = QLabel("🛜 Webshare-IP")
         title.setStyleSheet("font-size: 20px; font-weight: 700;")
         title_row.addWidget(title)
+        title_row.addSpacing(16)
+        title_row.addWidget(QLabel("上游账号"))
+        self.account_combo = QComboBox()
+        self.account_combo.setMinimumWidth(160)
+        self.account_combo.currentIndexChanged.connect(self._on_account_changed)
+        title_row.addWidget(self.account_combo)
         title_row.addStretch(1)
         self.refresh_btn = QPushButton("刷新列表")
         self.refresh_btn.clicked.connect(self.refresh)
@@ -499,7 +671,8 @@ class WebsharePage(QWidget):
         return w
 
     def activate(self) -> None:
-        if config.get("webshare_api_key", ""):
+        self._load_accounts()  # 刷新账号下拉框（用户可能在设置页新加了 key）
+        if self.account_combo.currentData():
             self.refresh()
         if not self.server_combo.count():
             self._load_servers()
@@ -543,6 +716,11 @@ class WebsharePage(QWidget):
             idx = self.server_combo.findData(cur)
             if idx >= 0:
                 self.server_combo.setCurrentIndex(idx)
+        elif config.get("default_server_id", ""):
+            # 优先用配置的默认服务器
+            idx = self.server_combo.findData(config.get("default_server_id"))
+            if idx >= 0:
+                self.server_combo.setCurrentIndex(idx)
         elif relay_count:
             # 首次加载：默认选中转发最多的服务器
             best_sid = max(relay_count, key=relay_count.get)
@@ -581,9 +759,9 @@ class WebsharePage(QWidget):
         pool.sort(key=lambda p: order_map.get(self._ip_key(p), official.get(self._ip_key(p), len(order) + 99999)))
 
     def refresh(self) -> None:
-        key = config.get("webshare_api_key", "")
+        key = self.account_combo.currentData() or ""
         if not key:
-            self._set_status("请先在「设置」填写 webshare API 密钥", warn=True)
+            self._set_status("请先在「设置」添加 webshare 账号（API 密钥）", warn=True)
             return
         self._set_status("加载中…", loading=True)
         self.refresh_btn.setEnabled(False)
@@ -607,9 +785,19 @@ class WebsharePage(QWidget):
         # 持久化套餐 + 订阅信息（中转节点页「分配给用户」弹窗读，显示订阅到期/流量池）
         config.set_value("webshare_plans", data.get("plans", []))
         config.set_value("webshare_subscription", data.get("subscription", {}))
-        # relay 匹配表：ip_key -> relay（判断是否中转 / 取消中转）
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("relays", [])}
-        self._recycled_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in config.get("recycled_relays", []) or []}
+        # relay 匹配表：ip_key -> relay（判断是否中转 / 取消中转；合并线路的候选上游也标记为已中转）
+        self._relay_map = {}
+        for r in config.get("relays", []):
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            cands = r.get("candidate_upstreams")
+            if cands:
+                for c in cands:
+                    self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
+        self._recycled_map = {}
+        for r in config.get("recycled_relays", []) or []:
+            self._recycled_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._recycled_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._server_ip_map = {sid: (ip, name) for sid, ip, name in self._servers}
         # 官网返回顺序（取消中转的 IP 按此插回，不套用拖拽顺序）
         self._official_order = {
@@ -669,7 +857,7 @@ class WebsharePage(QWidget):
 
     def _refresh_subscription(self) -> None:
         """每分钟刷新订阅流量（plans + stats），更新 config 供「分配用户」弹窗读最新剩余。"""
-        api_key = str(config.get("webshare_api_key", "") or "")
+        api_key = self.account_combo.currentData() or ""
         if not api_key:
             return
         from ..webshare import load_subscription
@@ -690,15 +878,31 @@ class WebsharePage(QWidget):
         self._update_plans(data.get("plans", []), data.get("subscription", {}))
 
     def _update_relay_overview(self) -> None:
-        """更新顶部统计（已中转 / 冷却 / 回归 / 未中转）。"""
+        """更新顶部统计（已中转 / 冷却 / 回归 / 未中转），按当前上游账号隔离。"""
         relays = config.get("relays", [])
         recycled = config.get("recycled_relays", []) or []
         returned = config.get("returned_ips", {}) or {}
         total_ip = len(self._dc) + len(self._res)
-        relayed = len({f"{r.get('host','')}:{r.get('port','')}" for r in relays})
-        recycled_cnt = len({f"{r.get('host','')}:{r.get('port','')}" for r in recycled})
+        cur_account = self.account_combo.currentText() or "默认账号"
+
+        def _account_of(r) -> str:
+            return r.get("ws_account") or "默认账号"  # 旧 relay 无 ws_account 归属默认账号
+
+        def _count_ip(lst) -> int:
+            """中转 IP 数（只算当前账号的）：主 host:port + 候选上游 host:port 去重。"""
+            s = set()
+            for r in lst:
+                if _account_of(r) != cur_account:
+                    continue
+                s.add(f"{r.get('host','')}:{r.get('port','')}")
+                for c in r.get("candidate_upstreams", []) or []:
+                    s.add(f"{c.get('host','')}:{c.get('port','')}")
+            return len(s)
+
+        relayed = _count_ip(relays)
+        recycled_cnt = _count_ip(recycled)
         returned_cnt = len(returned)
-        unrelayed = total_ip - relayed - recycled_cnt
+        unrelayed = max(0, total_ip - relayed - recycled_cnt)
         if total_ip:
             self.stats_label.setText(
                 f'已中转 <span style="color:#9db8ff">{relayed}</span> · '
@@ -817,8 +1021,15 @@ class WebsharePage(QWidget):
                 score_item = QTableWidgetItem("-")
                 score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             table.setItem(row, 9, score_item)
-            # 标记列：回收过的 IP 显示「回归」徽章（没回收过留空）
-            if ip_key in returned_ips:
+            # 标记列：替换成功的 IP 显示「替换」徽章，回收过的显示「回归」徽章
+            replaced_ips = config.get("webshare_replaced", {}) or {}
+            if ip_key in replaced_ips:
+                badge = QLabel("替换")
+                badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                badge.setStyleSheet("background:#0a84ff; color:#ffffff; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
+                badge.setToolTip(f"替换时间：{replaced_ips.get(ip_key, '')}")
+                table.setCellWidget(row, 8, badge)
+            elif ip_key in returned_ips:
                 badge = QLabel("回归")
                 badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 badge.setStyleSheet("background:#f5c542; color:#1a1a1a; border-radius:9px; padding:2px 6px; font-size:11px; font-weight:600;")
@@ -859,15 +1070,19 @@ class WebsharePage(QWidget):
                 self._start_quota_timer()
             check_btn.clicked.connect(lambda _=False, b=check_btn, a=addr, k=ip_key: self._check_ip(a, k, b))
             lay.addWidget(check_btn)
-            # 替换按钮（只对未中转 IP；已中转替换会导致 relay 失效）
+            # 替换按钮（只对未中转 IP；res 计划不支持替换，已中转替换会导致 relay 失效）
             plan_id = p.get("_plan_id")
             repl_avail = self._plan_repl.get(plan_id, 0)
             repl_btn = QPushButton(f"替换(剩{repl_avail})")
             repl_btn.setProperty("compact", True)
             repl_btn.setFixedHeight(30)
-            repl_btn.setToolTip("替换成新的同类型 IP（消耗月度替换配额）")
-            repl_btn.setEnabled(repl_avail > 0)
-            repl_btn.clicked.connect(lambda _=False, b=repl_btn, a=addr, pid=plan_id, cc=p.get("country_code", ""): self._replace_ip(a, pid, cc, b))
+            if ip_type == "res":
+                repl_btn.setEnabled(False)
+                repl_btn.setToolTip("住宅 IP 计划不支持替换（webshare 限制）")
+            else:
+                repl_btn.setToolTip("替换成新的同类型 IP（消耗月度替换配额）")
+                repl_btn.setEnabled(repl_avail > 0)
+                repl_btn.clicked.connect(lambda _=False, b=repl_btn, a=addr, pid=plan_id, cc=p.get("country_code", ""): self._replace_ip(a, pid, cc, b))
             lay.addWidget(repl_btn)
             lay.addStretch(1)
             table.setCellWidget(row, _OP_COL, w)
@@ -1148,28 +1363,49 @@ class WebsharePage(QWidget):
         self._fill(self.res_table, self._res, "res")
 
     def _replace_ip(self, addr: str, plan_id, country_code: str, btn: QPushButton) -> None:
-        """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表）。"""
+        """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表），实时回显详细过程。"""
         btn.setEnabled(False)
         btn.setText("替换中…")
-        api_key = config.get("webshare_api_key", "")
+        api_key = self.account_combo.currentData() or ""
 
-        def _do():
+        def _do(progress=None):
+            def _p(msg):
+                if progress:
+                    progress(msg)
+
+            _p(f"提交替换请求：{addr}（同国家 {country_code}）…")
             result = webshare.replace_proxy(api_key, plan_id, addr, country_code)
             repl_id = result.get("id")
             if not repl_id:
-                return ("fail", result.get("error") or result.get("detail") or "替换请求失败")
-            # 轮询状态直到 completed / failed（最多约 30 秒）
-            for _ in range(15):
+                err = result.get("error") or result.get("detail") or ""
+                code = result.get("error_code") or ""
+                msg = err or "替换请求失败"
+                if code:
+                    msg += f"（错误码 {code}）"
+                _p(f"❌ {msg}")
+                return ("fail", msg)
+            _p(f"✅ 已提交，任务 ID={repl_id}，开始轮询状态…")
+            for i in range(30):
                 time.sleep(2)
                 status = webshare.get_replacement_status(api_key, plan_id, repl_id)
                 state = status.get("state", "")
+                _p(f"轮询第 {i + 1}/30 次：状态={state or '未知'}")
                 if state == "completed":
+                    _p("✅ 替换完成，新 IP 已生效")
                     return ("ok", status.get("proxies_added", 1))
                 if state == "failed":
-                    return ("fail", status.get("error") or "替换失败")
+                    err = status.get("error") or ""
+                    code = status.get("error_code") or ""
+                    msg = err or "替换失败"
+                    if code:
+                        msg += f"（错误码 {code}）"
+                    _p(f"❌ {msg}")
+                    return ("fail", msg)
+            _p("⏱ 替换超时（可能仍在处理，稍后刷新列表查看）")
             return ("fail", "替换超时（可能仍在处理，稍后刷新列表查看）")
 
-        w = CallWorker(_do)
+        w = ProgressWorker(_do)
+        w.progress.connect(lambda m: self._set_status(m))
         w.done.connect(self._on_replaced)
         w.failed.connect(lambda m: self._on_replaced(("fail", str(m))))
         self._workers.append(w)
@@ -1179,11 +1415,29 @@ class WebsharePage(QWidget):
     def _on_replaced(self, res) -> None:
         if res and res[0] == "ok":
             self._set_status(f"替换成功：新 IP 已生效", ok=True)
+            self._mark_replaced_ips()
             self.refresh()  # 刷新列表，显示新 IP
         else:
             self._set_status(f"替换失败：{res[1] if res else '未知错误'}", warn=True)
             self._fill(self.dc_table, self._dc, "dc")
             self._fill(self.res_table, self._res, "res")
+
+    def _mark_replaced_ips(self) -> None:
+        """替换成功后，记录新 IP（replaced_with）到 webshare_replaced，列表标记「替换」。"""
+        api_key = self.account_combo.currentData() or ""
+        if not api_key:
+            return
+        try:
+            recs = webshare.list_replaced_proxies(api_key)
+        except Exception:
+            return
+        replaced = dict(config.get("webshare_replaced", {}) or {})
+        for rec in recs[:10]:  # 最近 10 条
+            new_ip = rec.get("replaced_with", "")
+            new_port = rec.get("replaced_with_port", "")
+            if new_ip:
+                replaced[f"{new_ip}:{new_port}"] = str(rec.get("created_at", ""))[:19]
+        config.set_value("webshare_replaced", replaced)
 
     def _item(self, table: DragTableWidget, row: int, col: int, text: str) -> None:
         it = QTableWidgetItem(str(text))
@@ -1215,6 +1469,7 @@ class WebsharePage(QWidget):
                         self._selected[ip_key] = (ip_type, orig_i)
                     else:
                         self._selected.pop(ip_key, None)
+                    self._update_selected_label()
             return
         if item.column() != _NOTE_COL:
             return
@@ -1321,7 +1576,7 @@ class WebsharePage(QWidget):
         seen = {(r.get("host"), int(r.get("port", 0)), r.get("user")) for r in relays}
         pw_pool = config.get("relay_password_pool", {})
         returned_ips = config.get("returned_ips", {}) or {}
-        # 合并线路：勾选 N 个 IP 合并成 1 条线路（1 域名/端口，切换 IP 轮换这 N 个上游）
+        # 合并线路：勾选 N 个 IP 合并成 1 条线路（候选上游仅连接参数；配额/到期统一到「分配用户」时设置）
         merge_candidates = None
         if merge and len(checked) > 1:
             merge_candidates = []
@@ -1333,27 +1588,44 @@ class WebsharePage(QWidget):
                     "port": int(p.get("port", 0)),
                     "user": p.get("username", ""),
                     "password": p.get("password", ""),
+                    "ws_account": (self.account_combo.currentText() or ""),
                 })
             checked = checked[:1]  # 只生成 1 个 relay（第 1 个 IP 为主线路，其余为候选上游）
         added = 0
+        skipped = 0  # 跳过已生成/越界的 IP 数
+        # 序号基准：同域名下现有 relay 数，新线路从 +1 继续编号（该域名第一个线路是 01）
+        _base_seq = sum(1 for r in relays if r.get("entry_domain") == entry_domain)
         for ip_type, idx in checked:
             pool = self._dc if ip_type == "dc" else self._res
+            if not (0 <= idx < len(pool)):
+                skipped += 1
+                continue
             p = pool[idx]
             host = p.get("proxy_address") or "p.webshare.io"
             port = int(p.get("port", 0))
             user = p.get("username", "")
             if (host, port, user) in seen:
+                skipped += 1
                 continue
             country = p.get("country_code", "")
             city = p.get("city_name", "")
-            kind = "住宅" if ip_type == "res" else "数据中心"
             country_cn = _cn_country(country)
             city_cn = _cn_city(city)
-            date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-            if city_cn:
-                name = f"{date_str}-{kind}-{country_cn}-{city_cn}"
+            date_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+            dom_prefix = (entry_domain or "").split(".")[0]
+            seq_str = f"{_base_seq + added + 1:02d}"
+            if merge_candidates:
+                node_type = f"IP{len(merge_candidates)}个"
             else:
-                name = f"{date_str}-{kind}-{country_cn}"
+                node_type = "机房" if ip_type == "dc" else "住宅"
+            node_label = f"{node_type}({country_cn}-{city_cn})" if city_cn else f"{node_type}({country_cn})"
+            name = f"{dom_prefix}-({date_str})-{node_label}-{seq_str}"
+            # 合并生成：名称先放进文本框可手动修改，确认后应用到中转节点
+            if merge_candidates:
+                ndlg = _RelayNameDialog(self, name)
+                if ndlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                name = ndlg.name() or name
             rp = next_relay_port(used, start=high_water + 1)
             key = f"{host}:{port}"
             # 同样 IP 复用之前取消时保留的完整凭据（SS + Reality + Hysteria2，客户端不用改）
@@ -1379,6 +1651,7 @@ class WebsharePage(QWidget):
                 "relay_port": rp, "relay_password": relay_pw,
                 "ip_type": ip_type,
                 "entry_domain": entry_domain,
+                "ws_account": (self.account_combo.currentText() or ""),  # 归属账号（多账号流量隔离）
                 "reality_uuid": reality["reality_uuid"],
                 "reality_private_key": reality["reality_private_key"],
                 "reality_public_key": reality["reality_public_key"],
@@ -1400,17 +1673,27 @@ class WebsharePage(QWidget):
         config.set_value("relay_port_high_water", high_water)
         config.set_value("returned_ips", returned_ips)
         # 更新 relay 匹配表 + 重新渲染
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in relays}
+        self._relay_map = {}
+        for r in relays:
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._fill(self.dc_table, self._dc, "dc")
         self._fill(self.res_table, self._res, "res")
         self._update_relay_overview()
         self._load_servers()
         if added:
             self._sync_entry_dns(entry_domain, server_id)
-            self._set_status(f"已生成 {added} 个节点，正在部署到服务器…", loading=True)
+            msg = f"已生成 {added} 个节点"
+            if skipped:
+                msg += f"，跳过 {skipped} 个已存在的"
+            self._set_status(msg + "，正在部署到服务器…", loading=True)
             self._apply()  # 生成后自动部署，一步到位
         else:
-            self._set_status("选中的 IP 都已生成过，无新增", warn=True)
+            if skipped:
+                self._set_status(f"选中的 {skipped} 个 IP 都已生成过，无新增", warn=True)
+            else:
+                self._set_status("没有可生成的 IP", warn=True)
 
     def _sync_entry_dns(self, entry_domain: str, server_id: str) -> None:
         """入口域名 DNS 指向前置服务器 IP（失败重试 3 次 + 明确告警，不静默失败）。"""
@@ -1487,7 +1770,11 @@ class WebsharePage(QWidget):
         # per-relay sing-box：取消中转只删该 relay 的独立 sing-box 服务（不再重建单进程 config）
         sb_cmd = (f"systemctl disable --now sing-box-relay-{rid} 2>/dev/null; "
                   f"rm -f /etc/systemd/system/sing-box-relay-{rid}.service /etc/sing-box/relay-{rid}.json; ")
-        self._relay_map = {f"{r.get('host','')}:{r.get('port','')}": r for r in relays}
+        self._relay_map = {}
+        for r in relays:
+            self._relay_map[f"{r.get('host','')}:{r.get('port','')}"] = r
+            for c in r.get("candidate_upstreams", []) or []:
+                self._relay_map[f"{c.get('host','')}:{c.get('port','')}"] = r
         self._fill(self.dc_table, self._dc, "dc")
         self._fill(self.res_table, self._res, "res")
         self._update_relay_overview()
@@ -1523,7 +1810,10 @@ class WebsharePage(QWidget):
                 f"ufw delete allow {reality_port(relay_port)}/udp 2>/dev/null; "
                 f"ufw delete allow {hysteria_port(relay_port)}/udp 2>/dev/null; "
                 f"{sb_cmd}"
-                f"echo DONE"
+                f"sleep 1; "
+                f"g=$(systemctl is-active gost-relay-{rid} 2>/dev/null); "
+                f"s=$(systemctl is-active sing-box-relay-{rid} 2>/dev/null); "
+                f"echo RESULT:$g,$s"
             )
             r = subprocess.run(
                 ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
@@ -1541,7 +1831,17 @@ class WebsharePage(QWidget):
 
     def _on_cancelled(self, text: str) -> None:
         lines = str(text).strip().splitlines()
-        self._set_status(f"已取消中转：{lines[-1] if lines else text}", ok="DONE" in str(text))
+        # 校验服务是否真的停了（防孤儿服务偷跑流量）
+        if "RESULT:" in str(text):
+            states = str(text).split("RESULT:")[-1].strip()
+            g, s = (states.split(",") + ["", ""])[:2]
+            stopped = g.strip() != "active" and s.strip() != "active"
+        else:
+            stopped = "DONE" in str(text)
+        if stopped:
+            self._set_status("已取消中转，服务已确认停止", ok=True)
+        else:
+            self._set_status("已取消中转，但服务器服务未确认停止，需手动清理", warn=True)
 
     def _apply(self) -> None:
         relays = config.get("relays", [])

@@ -16,8 +16,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -30,9 +32,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import api_client, config
+from .. import api_client, config, webshare
 from ..api_client import ApiError
+from ..relay import norm_candidate
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 
 # 全局回显：让 Vultr-IP 页面的操作也能写入用户管理页的日志区
 _g_echo = None
@@ -48,7 +52,18 @@ def global_echo(msg: str) -> None:
         _g_echo(msg)
 
 
-COLS = ["用户名", "名称", "区域", "IP", "域名", "流量/状态", "已使用", "分配时间", "原始创建", "原始到期", "客户到期", "操作"]
+COLS = ["用户名", "状态", "线路数", "总流量", "到期时间", "操作"]
+
+
+def _fmt_flow(v: float) -> str:
+    """流量格式化：<1GB 显示 MB（精确到个位），否则保留 2 位小数。"""
+    if v < 0:
+        v = 0
+    if v < 1:
+        return f"{v * 1024:.0f}M"
+    if v < 100:
+        return f"{v:.2f}G"
+    return f"{v:.1f}G"
 
 
 def _fmt_expires(expires_at: str | None) -> str:
@@ -94,6 +109,33 @@ def _parse_dt(text: str):
     return None
 
 
+def _fmt_countdown(expires_at: str | None) -> str:
+    """到期倒计时：还剩 X天X小时 / X小时X分钟 / X分钟 / 已过期（北京时间）。"""
+    if not expires_at:
+        return "-"
+    from datetime import timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    try:
+        dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        else:
+            dt = dt.astimezone(tz)
+        secs = int((dt - datetime.now(tz)).total_seconds())
+    except Exception:
+        return "-"
+    if secs <= 0:
+        return "已过期"
+    d, rem = divmod(secs, 86400)
+    h, rem2 = divmod(rem, 3600)
+    m = rem2 // 60
+    if d > 0:
+        return f"还剩 {d}天{h}小时" if h else f"还剩 {d}天"
+    if h > 0:
+        return f"还剩 {h}小时{m}分钟" if m else f"还剩 {h}小时"
+    return f"还剩 {m}分钟"
+
+
 # relay 分配「使用时长」：按天/按小时/按分钟三档，默认按天
 # 按天 1-30 天；按小时 1-23 小时；按分钟 5-59 分钟（5 分钟用于测试）
 _UNIT_SECONDS = (86400, 3600, 60)      # 天 / 小时 / 分钟
@@ -107,6 +149,39 @@ def _duration_expiry(seconds: int) -> str:
 
     tz = timezone(timedelta(hours=8))
     return (datetime.now(tz) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _per_ip_expiry(value: int, unit: str) -> str:
+    """value + 单位 → 绝对到期时间；「不过期」返回空串。"""
+    if unit == "不过期":
+        return ""
+    idx = {"按天": 0, "按小时": 1, "按分钟": 2}[unit]
+    return _duration_expiry(value * _UNIT_SECONDS[idx])
+
+
+def _candidate_resumable(c: dict, extra_used: float = 0.0) -> bool:
+    """候选 IP 是否可恢复启用（配额未用尽 且 到期未到）。
+
+    extra_used = 当前实例实时流量（候选为 active 时传入；封账 + 实时 = 总已用）。
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    exp = (c.get("expiry") or "").strip()
+    if exp and exp < now:
+        return False
+    q = float(c.get("quota_gb") or 0)
+    used = float(c.get("used_gb") or 0) + extra_used
+    if q > 0 and used >= q:
+        return False
+    return True
+
+
+def _candidate_renewed(c: dict) -> bool:
+    """续费后是否可启用（清零重算后已用=0，只看到期是否过期）。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    exp = (c.get("expiry") or "").strip()
+    if exp and exp < now:
+        return False
+    return True
 
 
 def _max_settable_duration(sub_expiry: str) -> str:
@@ -201,17 +276,12 @@ class UsersPage(QWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         for c in range(len(COLS) - 1):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 120)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(2, 95)
-        self.table.setColumnWidth(3, 120)
-        self.table.setColumnWidth(4, 150)
-        self.table.setColumnWidth(5, 85)
-        self.table.setColumnWidth(6, 85)
-        self.table.setColumnWidth(7, 95)
-        self.table.setColumnWidth(8, 95)
-        self.table.setColumnWidth(9, 95)
-        self.table.setColumnWidth(10, 95)
+        self.table.setColumnWidth(0, 110)   # 用户名
+        self.table.setColumnWidth(1, 170)   # 线路名称
+        self.table.setColumnWidth(2, 130)   # 出口IP
+        self.table.setColumnWidth(3, 120)   # 剩余流量
+        self.table.setColumnWidth(4, 110)   # 分配时间
+        self.table.setColumnWidth(5, 130)   # 到期倒计时
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -248,8 +318,7 @@ class UsersPage(QWidget):
             assigns = api_client.list_all_assignments().get("assignments", [])
             st = api_client.stats()
             self._assigns = assigns
-            self._vultr_expiry, self._vultr_detail = self._compute_vultr_dynamic()
-            self._backfill_user_expiry(assigns)
+            self._build_users(assigns)
             self.stats_label.setText(
                 f"共 {st.get('total_users', 0)} 个用户 · 活跃 {st.get('active_users', 0)} · "
                 f"已分配 {st.get('assigned_users', 0)} 人 · 分配项 {st.get('total_assignments', 0)}"
@@ -259,176 +328,108 @@ class UsersPage(QWidget):
             self.stats_label.setText(f'<span style="color:#ff453a;">加载失败：{e.message}</span>')
             self.table.setRowCount(0)
 
-    def _compute_vultr_dynamic(self) -> tuple:
-        """动态拉取 Vultr 到期日期 + 每实例详情。返回 (expiry_date, {iid: {name,region,ip,domain,bandwidth}})。"""
-        from ..vultr import VultrAPI, compute_billing, compute_bandwidth, region_label
-        from .. import domain as domain_mod
-        key = config.get("vultr_api_key", "")
-        if not key:
-            return "", {}
-        try:
-            api = VultrAPI(key)
-            instances = api.list_instances()
-            account = api.get_account()
-            plans = api.get_plans()
-            billing = compute_billing(instances, plans, account)
-            days = billing.get("days_left")
-            expiry = ""
-            if days:
-                from datetime import timedelta
-                expiry = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            bandwidth = compute_bandwidth(instances, plans, api)
-            server_names = config.get("server_names", {})
-            detail_map = {}
-            for inst in instances:
-                iid = inst.get("id", "")
-                name = server_names.get(iid, "")
-                dom = domain_mod.server_domain(iid)
-                if not name:
-                    name = ("Vultr-" + dom.split(".")[0]) if dom else inst.get("label", iid)
-                bw = bandwidth.get(iid, {})
-                used = bw.get("used_gb", 0)
-                quota = bw.get("quota_gb", 0)
-                used_text = f"{used * 1000:.0f}M" if used < 1 else f"{used:.1f}G"
-                bw_text = f"{used_text} / {quota:.0f}G" if quota > 0 else used_text
-                detail_map[iid] = {
-                    "name": name,
-                    "region": region_label(inst.get("region", "")),
-                    "ip": inst.get("main_ip", ""),
-                    "domain": dom or "",
-                    "bandwidth": bw_text,
-                    "used_gb": used,
-                    "quota_gb": quota,
-                }
-            return expiry, detail_map
-        except Exception:
-            return "", {}
-
-    def _backfill_user_expiry(self, assigns: list[dict]) -> None:
-        """刷新时同步节点 node_data.expiry 为该服务器的到期时间（服务器页设置），fallback 账户动态。"""
+    def _build_users(self, assigns: list[dict]) -> None:
+        """按 user_id 分组：一个用户一行，名下分配收进 lines。"""
+        users: dict[str, dict] = {}
         for a in assigns:
-            uid = a.get("user_id")
-            rid = a.get("resource_id")
-            rtype = a.get("resource_type")
+            uid = str(a.get("user_id", ""))
             if not uid:
                 continue
-            if rtype != "vultr":
-                continue
-            # 资源到期 = 该服务器在「服务器页」设置的到期时间；没设则 fallback 账户动态
-            res_expiry = config.get("server_expiry", {}).get(str(rid), "") or self._vultr_expiry or ""
-            if not res_expiry:
-                continue
-
-            # 同步节点 node_data.expiry 为该服务器的到期时间（UPSERT 重新 assign）
-            nd = a.get("node_data") or {}
-            if isinstance(nd, str):
-                import json as _json
-                try:
-                    nd = _json.loads(nd)
-                except Exception:
-                    nd = {}
-            if str(nd.get("expiry", ""))[:10] != res_expiry:
-                nd["expiry"] = res_expiry
-                try:
-                    api_client.assign(uid, rtype, rid, nd)
-                except Exception:
-                    pass  # 静默失败
-
-    def _vultr_used_text(self, detail: dict) -> str:
-        """返回 vultr 实例的已使用流量（出站，真实值）。"""
-        used = float(detail.get("used_gb", 0) or 0)
-        if used <= 0:
-            return "-"
-        return f"{used * 1000:.0f}M" if used < 1 else f"{used:.1f}G"
+            if uid not in users:
+                users[uid] = {
+                    "user_id": a.get("user_id"),
+                    "username": a.get("username", ""),
+                    "status": a.get("user_status", "active"),
+                    "expires_at": a.get("user_expires_at"),
+                    "note": a.get("user_note", ""),
+                    "switch_limit": int(a.get("user_switch_limit", 5) or 5),
+                    "lines": [],
+                }
+            users[uid]["lines"].append(a)
+        self._users = list(users.values())
 
     def _populate(self) -> None:
-        # 按保存的拖拽顺序排序分配项（未出现在 order 里的放末尾）
-        order = config.get("user_order", []) or []
-        if order:
-            order_map = {aid: i for i, aid in enumerate(order)}
-            self._assigns.sort(key=lambda a: order_map.get(a.get("id"), len(order) + 9999))
-        self.table.setRowCount(len(self._assigns))
-        for row, a in enumerate(self._assigns):
-            node = a.get("node_data", {}) or {}
-            detail = self._vultr_detail.get(a["resource_id"], {})
-            name = detail.get("name", "") or node.get("name", "") or node.get("host", "")
-            location = detail.get("region", "") or node.get("location", "")
-            ip = detail.get("ip", "") or node.get("ip", "")
-            domain = detail.get("domain", "") or node.get("domain", "")
-            q = node.get("quota_gb") or 0
-            if q:
-                traffic = f"配额 {float(q):.0f}G"
+        self.table.setRowCount(len(self._users))
+        for row, u in enumerate(self._users):
+            lines = u["lines"]
+            n_lines = len(lines)
+            is_active = u.get("status", "active") == "active"
+            status_text = "正常" if is_active else "已禁用"
+            # 总流量：所有线路合计（配额 0 = 不限，只显示已用）
+            total_used = sum(float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0) for a in lines)
+            total_quota = sum(float(a.get("quota_gb") or 0) for a in lines)
+            if total_quota > 0:
+                traffic = f"已用 {_fmt_flow(total_used)} / {_fmt_flow(total_quota)}"
             else:
-                traffic = detail.get("bandwidth", "") or node.get("bandwidth", "")
-            # 完整时间（tooltip 用），列表显示 [:10] 短日期
-            full_assign = a.get("created_at", "") or ""
-            full_created = node.get("created_at", "") or ""
-            # 原始到期 = 该服务器在「服务器页」设置的到期时间；没设则 fallback 账户动态到期
-            _rid = str(a.get("resource_id", ""))
-            full_expiry = config.get("server_expiry", {}).get(_rid, "") or self._vultr_expiry or ""
-            # 客户到期 = 每台服务器独立的 client_expiry（默认 = 服务器到期）
-            full_user_exp = node.get("client_expiry", "") or full_expiry or ""
-
-            user_expiry = full_user_exp[:10] or "-"
-            res_expiry = full_expiry[:10] or "-"
-            assign_time = full_assign[:10] or "-"
-            res_created = full_created[:10] or "-"
+                traffic = f"已用 {_fmt_flow(total_used)}"
+            # 到期时间：该用户名下最早到期的线路（最早到期那台先断）
+            expiries = []
+            for a in lines:
+                node = a.get("node_data", {}) or {}
+                if isinstance(node, str):
+                    import json as _json
+                    try:
+                        node = _json.loads(node)
+                    except Exception:
+                        node = {}
+                creds = node.get("_creds", {}) or {}
+                cands = creds.get("candidates") or []
+                act = int(creds.get("active_idx", 0) or 0)
+                ip_exp = ""
+                if len(cands) > 1 and act < len(cands):
+                    ip_exp = (cands[act].get("expiry") or "").strip()
+                ce = (ip_exp if len(cands) > 1 else "") or node.get("client_expiry", "") or ""
+                if ce:
+                    expiries.append(ce)
+            min_exp = min(expiries) if expiries else ""
+            countdown = _fmt_countdown(min_exp)
 
             cells = [
-                a.get("username", ""),
-                name,
-                location,
-                ip,
-                domain,
-                traffic,
-                self._vultr_used_text(detail),
-                assign_time,
-                res_created,
-                res_expiry,
-                user_expiry,
+                u.get("username", ""),   # 0 用户名
+                status_text,             # 1 状态
+                f"{n_lines} 条",          # 2 线路数
+                traffic,                 # 3 总流量
+                countdown,               # 4 到期时间
             ]
-            tips = {
-                7: _fmt_full(full_assign),
-                8: _fmt_full(full_created),
-                9: _fmt_full(full_expiry),
-                10: _fmt_full(full_user_exp),
-            }
+            tips = {4: _fmt_full(min_exp)}
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                item.setForeground(Qt.GlobalColor.white)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, u.get("user_id"))
+                if col == 1:
+                    item.setForeground(Qt.GlobalColor.lightGray if is_active else Qt.GlobalColor.red)
+                else:
+                    item.setForeground(Qt.GlobalColor.white)
                 if col in tips:
                     item.setToolTip(tips[col])
-                if col == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, a.get("id"))
+                if col == 4 and countdown == "已过期":
+                    item.setForeground(Qt.GlobalColor.red)
                 self.table.setItem(row, col, item)
 
-            self.table.setCellWidget(row, 11, self._ops(a, row))
+            self.table.setCellWidget(row, 5, self._ops(u, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
-        """拖拽排序：把 self._assigns 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。
-
-        直接操作数据列表（pop + insert），再重新 populate——绝不复制、绝不错位。
-        """
-        if src_row < 0 or dst_row < 0 or src_row >= len(self._assigns) or src_row == dst_row:
+        """拖拽排序：把 self._users 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。"""
+        if src_row < 0 or dst_row < 0 or src_row >= len(self._users) or src_row == dst_row:
             return
-        a = self._assigns.pop(src_row)
-        insert_at = dst_row if dst_row <= len(self._assigns) else len(self._assigns)
-        self._assigns.insert(insert_at, a)
-        config.set_value("user_order", [x.get("id") for x in self._assigns])
+        u = self._users.pop(src_row)
+        insert_at = dst_row if dst_row <= len(self._users) else len(self._users)
+        self._users.insert(insert_at, u)
+        config.set_value("user_order", [x.get("user_id") for x in self._users])
         self._populate()
 
     def _on_cell_dbl(self, row: int, col: int) -> None:
         """双击用户名 → 编辑该用户。"""
-        if col != 0 or row < 0 or row >= len(self._assigns):
+        if col != 0 or row < 0 or row >= len(self._users):
             return
-        a = self._assigns[row]
+        u = self._users[row]
         user = {
-            "id": a.get("user_id"),
-            "username": a.get("username", ""),
-            "status": a.get("user_status", "active"),
-            "expires_at": a.get("user_expires_at"),
-            "note": a.get("user_note", ""),
+            "id": u.get("user_id"),
+            "username": u.get("username", ""),
+            "status": u.get("status", "active"),
+            "expires_at": u.get("expires_at"),
+            "note": u.get("note", ""),
         }
         self._edit_user(user)
 
@@ -474,36 +475,52 @@ class UsersPage(QWidget):
             "node_switch_limit": node_limit,
         }
 
-    def _ops(self, a: dict, row: int) -> QWidget:
+    def _ops(self, u: dict, row: int) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        detail = QPushButton("详情/设置")
+        detail = QPushButton("查看详情")
         detail.setProperty("compact", True)
         detail.setFixedHeight(26)
-        detail.clicked.connect(lambda _=False, a=a: self._detail(a))
+        detail.clicked.connect(lambda _=False, u=u: self._detail(u))
         lay.addWidget(detail)
 
-        unassign = QPushButton("取消分配")
-        unassign.setProperty("compact", True)
-        unassign.setFixedHeight(26)
-        unassign.clicked.connect(lambda _=False, a=a: self._unassign_assign(a))
-        lay.addWidget(unassign)
-
-        toggle = QPushButton("禁用" if a.get("user_status") == "active" else "启用")
+        toggle = QPushButton("禁用" if u.get("status", "active") == "active" else "启用")
         toggle.setProperty("compact", True)
         toggle.setFixedHeight(26)
-        toggle.clicked.connect(lambda _=False, a=a: self._toggle_status(self._assign_to_user(a)))
+        toggle.clicked.connect(lambda _=False, u=u: self._toggle_status(u))
         lay.addWidget(toggle)
 
         delete = QPushButton("删除")
         delete.setProperty("compact", True)
         delete.setFixedHeight(26)
-        delete.clicked.connect(lambda _=False, a=a: self._delete_user(self._assign_to_user(a)))
+        delete.clicked.connect(lambda _=False, u=u: self._delete_user(u))
         lay.addWidget(delete)
         return w
+
+    def _share_relay(self, a: dict) -> None:
+        """复制节点：从 config.relays 找 relay，复用中转节点的 NodeShareDialog（多协议 + 二维码 + 复制图片）。"""
+        rid = str(a.get("resource_id", ""))
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == rid), None)
+        if not relay:
+            QMessageBox.warning(self, "提示", "该节点已不在中转列表（可能已回收），无法复制。")
+            return
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        entry = node.get("domain", "") or relay.get("entry_domain", "") or ""
+        if not entry:
+            QMessageBox.warning(self, "提示", "该节点没有连接域名，无法复制。")
+            return
+        from .nodes_page import NodeShareDialog
+        NodeShareDialog(relay, entry, self).exec()
 
     def _unassign_assign(self, a: dict) -> None:
         node = a.get("node_data", {}) or {}
@@ -534,8 +551,7 @@ class UsersPage(QWidget):
             QMessageBox.warning(self, "取消失败", e.message)
 
     def _recycle_relay(self, a: dict, node: dict, name: str) -> None:
-        """手动回收 relay：删 D1 分配 + SSH 停服务 + 标记回收（进回收页冷却）。"""
-        relay_id = str(a.get("resource_id", ""))
+        """手动回收 relay（带确认）：删 D1 分配 + SSH 停服务 + 标记回收（进回收页冷却）。"""
         username = a.get("username", "")
         ret = QMessageBox.question(
             self, "回收 IP",
@@ -544,22 +560,110 @@ class UsersPage(QWidget):
         )
         if ret != QMessageBox.StandardButton.Yes:
             return
+        self._do_recycle_relay(a, node, name)
+        self.refresh()
+
+    def _resolve_server_conn(self, relay_id: str, creds: dict) -> tuple[str, str]:
+        """反查 (server_id, 服务器真实IP)。creds 缺 server_id 时从 config.relays 兜底（分配时可能没同步）。"""
+        server_id = creds.get("server_id", "") or ""
+        if not server_id:
+            for r in (config.get("relays", []) or []):
+                if str(r.get("id", "")) == str(relay_id):
+                    server_id = r.get("server_id", "") or ""
+                    break
+        ip = ""
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    ip = m.get("ip") or m.get("host") or ""
+                    break
+        return server_id, ip
+
+    def _do_recycle_relay(self, a: dict, node: dict, name: str) -> None:
+        """回收 relay 核心（无确认，供「取消分配」「删除用户」复用）：删 D1 分配 + 停服务 + 进回收页。"""
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        relay_id = str(a.get("resource_id", ""))
+        username = a.get("username", "")
+        # 记录流量审计（unassign 删分配前记录，避免流量数据丢失）
+        used_gb = float(a.get("used_gb") or 0)
+        hist_gb = float(a.get("hist_gb") or 0)
+        if used_gb > 0 or hist_gb > 0:
+            try:
+                api_client.record_recycle_flow(
+                    relay_id, username, name,
+                    node.get("ip", "") or node.get("host", ""),
+                    node.get("ws_account", "") or "",
+                    used_gb, hist_gb,
+                )
+            except Exception:
+                pass
         try:
             api_client.unassign(a["user_id"], "relay", relay_id)
         except ApiError as e:
             QMessageBox.warning(self, "回收失败", e.message)
             return
         creds = node.get("_creds", {}) or {}
-        server_id = creds.get("server_id", "")
-        server_ip = (creds.get("switch", {}) or {}).get("server_ip", "")
-        if server_ip and server_id:
-            self._ssh_stop_relay(relay_id, server_id, server_ip)
+        server_id, server_ip = self._resolve_server_conn(relay_id, creds)
+        stopped = True
+        if server_id and server_ip:
+            stopped = self._ssh_stop_relay(relay_id, server_id, server_ip)
         self._mark_recycled(relay_id, username)
         self._log(f"✅ 已回收「{username}」的「{name}」，IP 进回收页冷却")
-        self.refresh()
+        if not stopped:
+            QMessageBox.warning(
+                self, "回收警告",
+                f"「{name}」已进回收页，但服务器上的 relay 服务未能确认停止，可能继续消耗流量。\n"
+                f"请手动停掉 gost-relay-{relay_id} / sing-box-relay-{relay_id}（服务器 {server_ip}）。",
+            )
 
-    def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
-        """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等；失败不阻断回收）。"""
+    def _ssh_stop_relay(self, relay_id: str, server_id: str, server_ip: str) -> bool:
+        """SSH 停止 relay 的 gost + sing-box 服务（回收用，幂等），并校验真的停了。返回是否成功。"""
+        import subprocess
+
+        root_pw = config.get("root_password", "")
+        if server_id.startswith("manual:"):
+            mid = server_id[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    root_pw = m.get("password", "") or root_pw
+                    break
+        else:
+            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
+            root_pw = sc.get("root_password") or root_pw
+        if not root_pw or not server_ip:
+            return False
+        # 停服务 + 校验 is-active 是否真的 inactive（防孤儿服务偷跑流量）
+        cmd = (
+            f"systemctl disable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; "
+            f"sleep 1; "
+            f"g=$(systemctl is-active gost-relay-{relay_id} 2>/dev/null); "
+            f"s=$(systemctl is-active sing-box-relay-{relay_id} 2>/dev/null); "
+            f"echo RESULT:$g,$s"
+        )
+        try:
+            r = subprocess.run(
+                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=10", f"root@{server_ip}", cmd],
+                capture_output=True, text=True, timeout=40,
+            )
+            out = r.stdout + r.stderr
+            if "RESULT:" not in out:
+                return False
+            states = out.split("RESULT:")[-1].strip()
+            g_state, s_state = (states.split(",") + ["", ""])[:2]
+            # 两个服务都不是 active 才算停成功（inactive/failed 都算停了）
+            return g_state.strip() != "active" and s_state.strip() != "active"
+        except Exception:
+            return False
+
+    def _ssh_start_relay(self, relay_id: str, server_id: str, server_ip: str) -> None:
+        """SSH 重启 relay 的 gost + sing-box 服务（启用用户用，幂等；失败不阻断）。"""
         import subprocess
 
         root_pw = config.get("root_password", "")
@@ -574,7 +678,7 @@ class UsersPage(QWidget):
             root_pw = sc.get("root_password") or root_pw
         if not root_pw or not server_ip:
             return
-        cmd = f"systemctl disable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; echo DONE"
+        cmd = f"systemctl enable --now gost-relay-{relay_id} sing-box-relay-{relay_id} 2>/dev/null; echo DONE"
         try:
             subprocess.run(
                 ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
@@ -582,7 +686,33 @@ class UsersPage(QWidget):
                 capture_output=True, text=True, timeout=30,
             )
         except Exception:
-            pass  # 停服务失败不阻断回收（兜底清理在手动回归）
+            pass
+
+    def _relay_conn(self, a: dict) -> tuple[str, str, str] | None:
+        """从 assignment 提取 (relay_id, server_id, server_ip)。"""
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        creds = node.get("_creds", {}) or {}
+        relay_id = str(a.get("resource_id", ""))
+        server_id, server_ip = self._resolve_server_conn(relay_id, creds)
+        if not relay_id or not server_ip:
+            return None
+        return relay_id, server_id, server_ip
+
+    def _ssh_stop_relay_line(self, a: dict) -> None:
+        conn = self._relay_conn(a)
+        if conn:
+            self._ssh_stop_relay(*conn)
+
+    def _ssh_start_relay_line(self, a: dict) -> None:
+        conn = self._relay_conn(a)
+        if conn:
+            self._ssh_start_relay(*conn)
 
     def _mark_recycled(self, relay_id: str, username: str) -> None:
         """回收 = 取消中转：删 config.relays + 记 recycled_relays（进回收页冷却）。"""
@@ -590,7 +720,7 @@ class UsersPage(QWidget):
         relay = next((r for r in relays if str(r.get("id", "")) == str(relay_id)), None)
         recycled = config.get("recycled_relays", []) or []
         if relay and not any(str(x.get("id", "")) == str(relay_id) for x in recycled):
-            recycled.append({
+            entry = {
                 "id": str(relay_id),
                 "host": relay.get("host", ""),
                 "port": relay.get("port", ""),
@@ -598,7 +728,12 @@ class UsersPage(QWidget):
                 "ip_type": relay.get("ip_type", "dc"),
                 "recycled_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "recycled_from_user": username,
-            })
+                "ws_account": relay.get("ws_account", ""),
+            }
+            cands = relay.get("candidate_upstreams") or []
+            if cands:
+                entry["candidate_upstreams"] = cands  # 合并线路：候选 IP 一起进冷却，避免回归误选中
+            recycled.append(entry)
             config.set_value("recycled_relays", recycled)
         config.set_value("relays", [r for r in relays if str(r.get("id", "")) != str(relay_id)])
 
@@ -620,7 +755,7 @@ class UsersPage(QWidget):
 
     def _edit_user(self, user: dict) -> None:
         # 上限优先用该用户在「服务器页」设置的到期时间（不能超过服务器到期），fallback 账户动态
-        resource_expiry = _user_resource_expiry(user["id"]) or self._vultr_expiry
+        resource_expiry = _user_resource_expiry(user["id"]) or ""
         dlg = _UserDialog(self, user, resource_expiry)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -638,44 +773,59 @@ class UsersPage(QWidget):
             self._log(f"❌ 编辑失败：{e.message}")
             QMessageBox.warning(self, "编辑失败", e.message)
 
-    def _toggle_status(self, user: dict) -> None:
-        new_status = "disabled" if user.get("status", "active") == "active" else "active"
+    def _toggle_status(self, u: dict) -> None:
+        new_status = "disabled" if u.get("status", "active") == "active" else "active"
+        relay_lines = [a for a in u.get("lines", []) if a.get("resource_type") == "relay"]
         try:
-            api_client.update_user(user["id"], status=new_status)
-            label = "禁用" if new_status == "disabled" else "启用"
-            self._log(f"✅ 已{label}用户「{user.get('username', '')}」（客户端 30 秒内自动同步）")
-            self.refresh()
+            api_client.update_user(u["user_id"], status=new_status)
         except ApiError as e:
             self._log(f"❌ 操作失败：{e.message}")
             QMessageBox.warning(self, "操作失败", e.message)
+            return
+        # 停/启名下所有 relay 服务——禁用才能真正断开软路由，启用才能恢复
+        if relay_lines:
+            if new_status == "disabled":
+                for a in relay_lines:
+                    self._ssh_stop_relay_line(a)
+            else:
+                for a in relay_lines:
+                    self._ssh_start_relay_line(a)
+        label = "禁用" if new_status == "disabled" else "启用"
+        action = "停用其节点" if new_status == "disabled" else "恢复其节点"
+        self._log(f"✅ 已{label}用户「{u.get('username', '')}」并{action}（软路由同步失效/恢复）")
+        self.refresh()
 
-    def _delete_user(self, user: dict) -> None:
-        ret = QMessageBox.question(
-            self, "删除用户",
-            f"确定删除用户「{user.get('username', '')}」吗？\n其名下所有分配会一并删除，不可恢复。",
-        )
+    def _delete_user(self, u: dict) -> None:
+        # 名下 relay 分配（删除前回收：停服务 + 进回收页）
+        relay_assigns = [a for a in u.get("lines", []) if a.get("resource_type") == "relay"]
+        msg = f"确定删除用户「{u.get('username', '')}」吗？"
+        if relay_assigns:
+            msg += f"\n\n其名下 {len(relay_assigns)} 条中转线路会一并回收（停服务 + 进回收页冷却）。"
+        msg += "\n\n此操作不可恢复。"
+        ret = QMessageBox.question(self, "删除用户", msg)
         if ret != QMessageBox.StandardButton.Yes:
             return
+        # 先回收名下 relay（停服务 + 进回收页），再删用户
+        for a in relay_assigns:
+            node = a.get("node_data", {}) or {}
+            if isinstance(node, str):
+                import json as _json
+                try:
+                    node = _json.loads(node)
+                except Exception:
+                    node = {}
+            name = node.get("name", "") or a.get("resource_id", "")
+            self._do_recycle_relay(a, node, name)
         try:
-            api_client.delete_user(user["id"])
-            self._log(f"✅ 已删除用户「{user.get('username', '')}」及其名下分配")
+            api_client.delete_user(u["user_id"])
+            self._log(f"✅ 已删除用户「{u.get('username', '')}」及其名下分配")
             self.refresh()
         except ApiError as e:
             self._log(f"❌ 删除失败：{e.message}")
             QMessageBox.warning(self, "删除失败", e.message)
 
-    def _detail(self, a: dict) -> None:
-        user = self._assign_to_user(a)
-        node_data = a.get("node_data", {}) or {}
-        if isinstance(node_data, str):
-            import json as _json
-            try:
-                node_data = _json.loads(node_data)
-            except Exception:
-                node_data = {}
-        # 客户到期（用户级）上限 = 该用户名下最早到期的服务器（最早到期那台到期了，客户至少断一台）
-        resource_expiry = _user_resource_expiry(user["id"]) or self._vultr_expiry
-        dlg = _UserDetailDialog(self, user, a.get("resource_id", ""), node_data, resource_expiry)
+    def _detail(self, u: dict) -> None:
+        dlg = _UserLinesDialog(self, u)
         dlg.exec()
         self.refresh()
 
@@ -683,7 +833,10 @@ class UsersPage(QWidget):
         self.refresh()
 
 
-class _UserDialog(QDialog):
+class _UserDialog(SizedDialog):
+    _size_key = "user_dialog_size"
+    _default_w = 420
+    _default_h = 520
     """新增/编辑用户。编辑时密码留空 = 不修改。"""
 
     def __init__(self, parent=None, user: dict | None = None, resource_expiry: str = "") -> None:
@@ -795,15 +948,1245 @@ class _UserDialog(QDialog):
         self.accept()
 
 
-class _UserDetailDialog(QDialog):
+class _DurationDialog(SizedDialog):
+    """设置到期时长（分/时/日），转成绝对到期时间。"""
+
+    _size_key = "duration_dialog_size"
+    _default_w = 400
+    _default_h = 200
+
+    def __init__(self, parent, current_expiry: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("设置到期时间")
+        self.expires_at = current_expiry  # 默认保留原值（取消时用）
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        tip = QLabel("设置该 IP 的到期时长（从当前时间起算）")
+        tip.setStyleSheet("color:#98989d;")
+        layout.addWidget(tip)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("时长:"))
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["按天", "按小时", "按分钟"])
+        row.addWidget(self.unit_combo)
+        self.dur_spin = QSpinBox()
+        self.dur_spin.setRange(1, 9999)
+        self.dur_spin.setValue(1)
+        row.addWidget(self.dur_spin)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        btns = QHBoxLayout()
+        no_exp = QPushButton("不过期")
+        no_exp.clicked.connect(self._set_no_expiry)
+        btns.addWidget(no_exp)
+        btns.addStretch(1)
+        ok = QPushButton("确定")
+        ok.clicked.connect(self._ok)
+        btns.addWidget(ok)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+    def _set_no_expiry(self) -> None:
+        self.expires_at = ""
+        self.accept()
+
+    def _ok(self) -> None:
+        unit_idx = self.unit_combo.currentIndex()
+        seconds = self.dur_spin.value() * _UNIT_SECONDS[unit_idx]
+        self.expires_at = _duration_expiry(seconds)
+        self.accept()
+
+
+class _ManageIpsDialog(SizedDialog):
+    _size_key = "manage_ips_dialog_size"
+    _default_w = 800
+    _default_h = 460
+    """管理某条线路的候选 IP：添加/删除/禁用/设为当前/改配额/改到期。"""
+
+    COLS = ["上游IP", "上游账号", "配额(GB)", "已用", "到期时间", "状态", "激活", "操作"]
+
+    def __init__(self, page, u: dict, line: dict, on_saved=None) -> None:
+        super().__init__(page)
+        self._page = page
+        self._u = u
+        self._line = line
+        self._on_saved = on_saved
+        nd = line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        self._creds = nd.get("_creds", {}) or {}
+        self._cands = [norm_candidate(c) for c in (self._creds.get("candidates") or [])]
+        self._active_idx = int(self._creds.get("active_idx", 0) or 0)
+        self._name = nd.get("name", "") or line.get("resource_id", "")
+        # 线路级配额/到期（分配时设置），作为候选 IP 的默认继承值
+        self._line_quota = float(line.get("quota_gb") or 0)
+        self._line_expiry = (nd.get("client_expiry") or "").strip()
+        self._line_ws_account = nd.get("ws_account", "") or ""
+        self._quota_spins: list = []
+        self._expiry_btns: list = []
+        self._toggle_btns: list = []
+        self._set_btns: list = []
+        self._workers: list = []
+        self._renewed_hosts: set = set()  # 本次会话中主动续费的候选（保存时清零分配记录）
+
+        self.setWindowTitle(f"管理 IP - {self._name}")
+        self.setMinimumSize(800, 460)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self._head = QLabel("")
+        self._head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._head)
+
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(False)
+        persist_col_widths(self.table, "manage_ips_col_widths", [140, 90, 80, 70, 150, 60, 50, 300])
+        layout.addWidget(self.table, 1)
+
+        # 操作回显（替换/添加/删除的结果提示）
+        self._status = QLabel("")
+        self._status.setTextFormat(Qt.TextFormat.RichText)
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
+        btns = QHBoxLayout()
+        add_btn = QPushButton("＋ 添加 IP")
+        add_btn.setFixedHeight(32)
+        add_btn.clicked.connect(self._add_ip)
+        btns.addWidget(add_btn)
+        btns.addStretch(1)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        box.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        box.accepted.connect(self._save)
+        box.rejected.connect(self.reject)
+        btns.addWidget(box)
+        layout.addLayout(btns)
+
+        self._build_rows()
+
+    # ---------- 状态判定 ----------
+    def _ip_status(self, c: dict) -> tuple[str, Qt.GlobalColor]:
+        if not c.get("enabled", True):
+            return "已禁用", Qt.GlobalColor.red
+        exp = (c.get("expiry") or "").strip()
+        if exp:
+            try:
+                from datetime import timedelta, timezone as _tz
+                _bj = _tz(timedelta(hours=8))
+                dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_bj)  # 无时区 = 北京时间
+                else:
+                    dt = dt.astimezone(_bj)
+                if dt < datetime.now(_bj):
+                    return "已到期", Qt.GlobalColor.red
+            except Exception:
+                pass
+        quota = float(c.get("quota_gb") or 0)
+        used = float(c.get("used_gb") or 0)
+        if quota > 0 and used >= quota:
+            return "已用尽", Qt.GlobalColor.red
+        return "正常", Qt.GlobalColor.lightGray
+
+    # ---------- 表格渲染 ----------
+    def _build_rows(self) -> None:
+        self.table.setRowCount(len(self._cands))
+        self._quota_spins.clear()
+        self._expiry_btns.clear()
+        self._toggle_btns.clear()
+        self._set_btns.clear()
+        for i, c in enumerate(self._cands):
+            self.table.setRowHeight(i, 44)
+            # IP
+            it = QTableWidgetItem(c.get("host", "") or "")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 0, it)
+            # 账号（IP 级 ws_account 优先，否则继承线路级）
+            acct = c.get("ws_account") or self._line_ws_account or "默认账号"
+            acct_it = QTableWidgetItem(acct)
+            acct_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            acct_it.setForeground(Qt.GlobalColor.white)
+            acct_it.setToolTip("该 IP 所属的 webshare 上游账号")
+            self.table.setItem(i, 1, acct_it)
+            # 配额
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            # 预填：IP 级独立值优先，否则继承线路级（分配时设置的）
+            q.setValue(int(c.get("quota_gb") or self._line_quota))
+            q.setToolTip("0 = 不限流量；默认继承线路配额")
+            self.table.setCellWidget(i, 2, q)
+            self._quota_spins.append(q)
+            # 已用（封账 + 当前实例实时流量 = 真实总已用）
+            used_total = float(c.get("used_gb") or 0)
+            if i == self._active_idx:
+                used_total += float(self._line.get("used_gb") or 0)
+            used_it = QTableWidgetItem(f"{used_total:.2f}G")
+            used_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            used_it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 3, used_it)
+            # 到期（倒计时按钮，点击重新设置时长）
+            exp = (c.get("expiry") or self._line_expiry or "").strip()
+            countdown = _fmt_countdown(exp) if exp else "不过期"
+            exp_btn = QPushButton(countdown)
+            exp_btn.setProperty("compact", True)
+            exp_btn.setFixedHeight(30)
+            exp_btn.setToolTip(f"到期时间：{exp or '不过期'}（点击重新设置）")
+            exp_btn.clicked.connect(lambda _=False, idx=i: self._edit_expiry(idx))
+            self.table.setCellWidget(i, 4, exp_btn)
+            self._expiry_btns.append(exp_btn)
+            # 状态
+            st_txt, st_color = self._ip_status(c)
+            st_it = QTableWidgetItem(st_txt)
+            st_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            st_it.setForeground(st_color)
+            self.table.setItem(i, 5, st_it)
+            # 激活
+            act_it = QTableWidgetItem("●" if i == self._active_idx else "")
+            act_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
+            self.table.setItem(i, 6, act_it)
+            # 操作
+            op_w = QWidget()
+            op_lay = QHBoxLayout(op_w)
+            op_lay.setContentsMargins(0, 0, 0, 0)
+            op_lay.setSpacing(4)
+            set_btn = QPushButton("设为当前")
+            set_btn.setProperty("compact", True)
+            set_btn.setFixedSize(72, 30)
+            set_btn.clicked.connect(lambda _=False, idx=i: self._set_active(idx))
+            op_lay.addWidget(set_btn)
+            self._set_btns.append(set_btn)
+            tog = QPushButton("禁用" if c.get("enabled", True) else "启用")
+            tog.setProperty("compact", True)
+            tog.setFixedSize(52, 30)
+            tog.clicked.connect(lambda _=False, idx=i: self._toggle(idx))
+            op_lay.addWidget(tog)
+            self._toggle_btns.append(tog)
+            renew_btn = QPushButton("续费")
+            renew_btn.setProperty("compact", True)
+            renew_btn.setFixedSize(52, 30)
+            renew_btn.setToolTip("清零已用流量并重新设置配额/到期（不禁用也能主动续费）")
+            renew_btn.clicked.connect(lambda _=False, idx=i: self._renew(idx))
+            op_lay.addWidget(renew_btn)
+            replace_btn = QPushButton("替换")
+            replace_btn.setProperty("compact", True)
+            replace_btn.setFixedSize(52, 30)
+            replace_btn.setToolTip("从 webshare 未中转列表选一个 IP 替换当前 IP")
+            replace_btn.clicked.connect(lambda _=False, idx=i: self._replace_ip(idx))
+            op_lay.addWidget(replace_btn)
+            del_btn = QPushButton("删除")
+            del_btn.setProperty("compact", True)
+            del_btn.setFixedSize(52, 30)
+            del_btn.clicked.connect(lambda _=False, idx=i: self._remove(idx))
+            op_lay.addWidget(del_btn)
+            self.table.setCellWidget(i, 7, op_w)
+        self._refresh_head()
+
+    def _refresh_head(self) -> None:
+        self._head.setText(
+            f"线路：<b>{self._name}</b>　共 <b>{len(self._cands)}</b> 个 IP，"
+            f"当前激活第 <b style='color:#30d158'>{self._active_idx + 1}</b> 个"
+        )
+
+    def _collect(self) -> None:
+        """把表格里的配额写回 self._cands（到期已存在 self._cands[i]['expiry']，由倒计时按钮维护）。"""
+        for i in range(len(self._cands)):
+            if i < len(self._quota_spins):
+                self._cands[i]["quota_gb"] = self._quota_spins[i].value()
+
+    def _refresh_after_edit(self) -> None:
+        """编辑后刷新状态列 + 激活列 + 按钮文字（增量，不重建）。"""
+        for i, c in enumerate(self._cands):
+            st_txt, st_color = self._ip_status(c)
+            st_it = self.table.item(i, 5)
+            if st_it:
+                st_it.setText(st_txt)
+                st_it.setForeground(st_color)
+            act_it = self.table.item(i, 6)
+            if act_it:
+                act_it.setText("●" if i == self._active_idx else "")
+                act_it.setForeground(Qt.GlobalColor.green if i == self._active_idx else Qt.GlobalColor.darkGray)
+            if i < len(self._toggle_btns):
+                self._toggle_btns[i].setText("禁用" if c.get("enabled", True) else "启用")
+        self._refresh_head()
+
+    # ---------- 操作 ----------
+    def _set_active(self, idx: int) -> None:
+        self._collect()
+        self._active_idx = idx
+        self._refresh_after_edit()
+        host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已将 {host} 设为当前 IP，点「保存」生效</span>'
+        )
+
+    def _toggle(self, idx: int) -> None:
+        self._collect()
+        self._cands[idx]["enabled"] = not self._cands[idx].get("enabled", True)
+        self._refresh_after_edit()
+        c = self._cands[idx]
+        state = "禁用" if not c.get("enabled", True) else "启用"
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已{state} {c.get("host", "")}，点「保存」生效</span>'
+        )
+
+    def _renew(self, idx: int) -> None:
+        """续费：清零重算 + 重新设置配额/到期 + 启用（不禁用也能主动续费）。"""
+        self._collect()
+        c = self._cands[idx]
+        q, ok = QInputDialog.getDouble(
+            self, "续费配额", f"「{c.get('host', '')}」新配额（GB，0=不限）:",
+            float(c.get("quota_gb") or 0), 0, 1_000_000, 2,
+        )
+        if not ok:
+            return
+        dlg = _DurationDialog(self, (c.get("expiry") or self._line_expiry or "").strip())
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        c["quota_gb"] = q
+        c["expiry"] = dlg.expires_at
+        c["used_gb"] = 0
+        c["enabled"] = True
+        self._renewed_hosts.add(c.get("host", ""))
+        # 同步配额 QSpinBox（否则点「保存」时 _collect 会用表格旧值覆盖成旧配额）
+        if idx < len(self._quota_spins):
+            self._quota_spins[idx].setValue(int(round(q)))
+        self._refresh_after_edit()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已续费 {c.get("host")}：配额 {q}G、到期已重设、已用清零，点「保存」生效</span>'
+        )
+
+    def _remove(self, idx: int) -> None:
+        self._collect()
+        if len(self._cands) <= 1:
+            QMessageBox.warning(self, "无法删除", "至少保留 1 个 IP（删除最后一个请用「回收」）。")
+            return
+        removed_host = self._cands[idx].get("host", "")
+        del self._cands[idx]
+        if self._active_idx > idx:
+            self._active_idx -= 1
+        elif self._active_idx >= len(self._cands):
+            self._active_idx = 0
+        self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已删除 {removed_host}，点「保存」生效</span>'
+        )
+
+    def _replace_ip(self, idx: int) -> None:
+        """替换指定索引的 IP：从同账号的 webshare 未中转列表选一个新 IP 替换它（域名不变，客户软路由无需改）。"""
+        self._collect()
+        # 用当前线路的上游账号（避免跨账号替换 / 当前账号无可用 IP 导致「没反应」）
+        nd = self._line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        ws_account = nd.get("ws_account", "")
+        from ..relay_ops import available_pool, resolve_replace_account
+
+        accounts = webshare.list_accounts()
+        target_host = self._cands[idx].get("host", "")
+        target_ws = self._cands[idx].get("ws_account", "")
+        # 默认账号：当前 IP 记录 > host 反查 > 线路级 > active
+        default_name, api_key = resolve_replace_account(
+            target_ws, target_host, ws_account, accounts, webshare.key_for_host
+        )
+        if not api_key:
+            api_key = webshare.get_active_key()
+            default_name = ""
+            for acct in accounts:
+                if acct.get("api_key") == api_key:
+                    default_name = acct.get("name", "")
+                    break
+        if not api_key:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 请先在 Webshare-IP 页填写 API 密钥</span>')
+            QMessageBox.warning(self, "无法替换", "请先在 Webshare-IP 页填写 API 密钥。")
+            return
+
+        # 预计算过滤条件（pool_loader 复用；切换账号时也用它）
+        relays = config.get("relays", []) or []
+        used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
+        recycled = config.get("recycled_relays", []) or []
+        recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
+        cur_hosts = {c.get("host") for c in self._cands}
+
+        def pool_loader(name: str) -> list[dict]:
+            key = ""
+            for acct in accounts:
+                if acct.get("name") == name:
+                    key = acct.get("api_key", "")
+                    break
+            if not key:
+                return []
+            try:
+                lists = webshare.load_lists(key)
+            except Exception:
+                return []
+            all_p = (lists.get("proxy_servers", []) or []) + (lists.get("static_residential", []) or [])
+            return available_pool(all_p, used_keys, recycled_keys, cur_hosts)
+
+        available = pool_loader(default_name)
+        if not available:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 没有可替换的 IP（未中转且不在冷却中的）</span>')
+            QMessageBox.information(self, "无可用 IP", "没有可替换的 IP（未中转且不在冷却中的）。")
+            return
+        self._status.setText(f'<span style="color:#30d158;">加载 {len(available)} 个可用 IP，请选择要替换的新 IP…</span>')
+        dlg = _IpPickerDialog(self, available, single=True, accounts=accounts,
+                              pool_loader=pool_loader, default_account=default_name)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        items = dlg.selected()
+        if not items:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 未选择 IP</span>')
+            QMessageBox.information(self, "未选择", "请勾选一个要替换的 IP。")
+            return
+        item = items[0]
+        p = item["p"]
+        old_host = self._cands[idx].get("host", "")
+        old_port = self._cands[idx].get("port", "")
+        new_host = p.get("proxy_address") or "p.webshare.io"
+        new_port = int(p.get("port", 0) or 0)
+        self._cands[idx]["host"] = new_host
+        self._cands[idx]["port"] = new_port
+        self._cands[idx]["user"] = p.get("username", "")
+        self._cands[idx]["password"] = p.get("password", "")
+        self._cands[idx]["quota_gb"] = item["quota_gb"]
+        self._cands[idx]["expiry"] = item["expiry"]
+        self._cands[idx]["used_gb"] = 0
+        self._cands[idx]["enabled"] = True
+        self._cands[idx]["ws_account"] = item.get("ws_account") or default_name
+        self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已将 {old_host}:{old_port} 替换为 '
+            f'{new_host}:{new_port}（账号 {item.get("ws_account") or default_name}，配额 {item["quota_gb"]}G，点「保存」生效）</span>'
+        )
+
+    def _edit_expiry(self, idx: int) -> None:
+        """点击到期倒计时 → 弹时长设置，重新设置该 IP 的到期时间。"""
+        self._collect()
+        cur = self._cands[idx].get("expiry", "") or ""
+        dlg = _DurationDialog(self, cur)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._cands[idx]["expiry"] = dlg.expires_at
+        # 续费重置：清零封账，重新启用（到期未过期即可）
+        self._cands[idx]["used_gb"] = 0
+        if _candidate_renewed(self._cands[idx]):
+            self._cands[idx]["enabled"] = True
+        self._build_rows()
+        host = self._cands[idx].get("host", "") if idx < len(self._cands) else ""
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已设置 {host} 的到期时间，点「保存」生效</span>'
+        )
+
+    def _add_ip(self) -> None:
+        self._collect()
+        from ..relay_ops import available_pool
+
+        accounts = webshare.list_accounts()
+        api_key = webshare.get_active_key()
+        if not api_key:
+            QMessageBox.warning(self, "无法添加", "请先在 Webshare-IP 页填写 API 密钥。")
+            return
+        default_name = ""
+        for acct in accounts:
+            if acct.get("api_key") == api_key:
+                default_name = acct.get("name", "")
+                break
+        relays = config.get("relays", []) or []
+        used_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in relays}
+        recycled = config.get("recycled_relays", []) or []
+        recycled_keys = {(r.get("host"), int(r.get("port", 0) or 0)) for r in recycled}
+        cur_hosts = {c.get("host") for c in self._cands}
+
+        def pool_loader(name: str) -> list[dict]:
+            key = ""
+            for acct in accounts:
+                if acct.get("name") == name:
+                    key = acct.get("api_key", "")
+                    break
+            if not key:
+                return []
+            try:
+                lists = webshare.load_lists(key)
+            except Exception:
+                return []
+            all_p = (lists.get("proxy_servers", []) or []) + (lists.get("static_residential", []) or [])
+            return available_pool(all_p, used_keys, recycled_keys, cur_hosts)
+
+        available = pool_loader(default_name)
+        if not available:
+            QMessageBox.information(self, "无可用 IP", "没有可添加的 IP（未中转且不在冷却中的）。")
+            return
+        dlg = _IpPickerDialog(self, available, accounts=accounts,
+                              pool_loader=pool_loader, default_account=default_name)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        for item in dlg.selected():
+            p = item["p"]
+            self._cands.append({
+                "host": p.get("proxy_address") or "p.webshare.io",
+                "port": int(p.get("port", 0) or 0),
+                "user": p.get("username", ""),
+                "password": p.get("password", ""),
+                "quota_gb": item["quota_gb"],
+                "used_gb": 0,
+                "expiry": item["expiry"],
+                "enabled": True,
+                "ws_account": item.get("ws_account") or default_name,
+            })
+        self._build_rows()
+        self._status.setText(
+            f'<span style="color:#32d74b;">✅ 已添加 {len(dlg.selected())} 个 IP，点「保存」生效</span>'
+        )
+
+    # ---------- 保存 ----------
+    def _save(self) -> None:
+        self._collect()
+        rid = str(self._line.get("resource_id", ""))
+        # 续费重置：保存前是「禁用」的候选（用尽/到期），保存时清零重算 + 重新启用
+        # （不管用户是改配额、改到期还是点启用，只要保存前是禁用，就当作续费清零）
+        old_disabled_hosts = {
+            c.get("host") for c in (self._creds.get("candidates") or [])
+            if c.get("enabled") is False
+        }
+        resumed_any = False
+        for _i, c in enumerate(self._cands):
+            # 保存前是禁用，或本次会话主动点了「续费」→ 清零重算 + 重新启用
+            if c.get("host") in old_disabled_hosts or c.get("host") in self._renewed_hosts:
+                c["used_gb"] = 0  # 续费重置：封账流量清零
+                if _candidate_renewed(c):  # 到期未过期即可启用
+                    c["enabled"] = True
+                    resumed_any = True
+        if resumed_any:
+            try:
+                api_client.reset_flow(rid)  # 清零分配记录 used_gb + 切换历史
+            except Exception:
+                pass
+        # 记录保存前的 IP 集合（判断是否需重新部署：只有 IP 变了才部署）
+        old_keys = {f"{c.get('host')}:{c.get('port')}" for c in (self._creds.get("candidates") or [])}
+        # 1. 更新 config.relays 的 candidate_upstreams（源）
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                r["candidate_upstreams"] = self._cands
+                r["active_upstream_idx"] = self._active_idx
+                # 同步主 IP = candidates[0]（替换/删除后 host 与候选保持一致，避免「外面还是旧 IP」）
+                if self._cands:
+                    c0 = self._cands[0]
+                    r["host"] = c0.get("host", "")
+                    r["port"] = c0.get("port", 0)
+                    r["user"] = c0.get("user", "")
+                    r["password"] = c0.get("password", "")
+                    if c0.get("ws_account"):
+                        r["ws_account"] = c0.get("ws_account", "")
+                break
+        config.set_value("relays", relays)
+        # 2. 更新 D1 node_data（快照）
+        nd = self._line.get("node_data", {}) or {}
+        if isinstance(nd, str):
+            import json as _json
+            try:
+                nd = _json.loads(nd)
+            except Exception:
+                nd = {}
+        creds = nd.get("_creds", {}) or {}
+        creds["candidates"] = self._cands
+        creds["active_idx"] = self._active_idx
+        # 同步主 IP 快照（node_data.ip / ws_account / upstream / quota），客户端「当前 IP/配额」跟替换后一致
+        if self._cands:
+            c0 = self._cands[0]
+            nd["ip"] = c0.get("host", "")
+            if c0.get("ws_account"):
+                nd["ws_account"] = c0.get("ws_account", "")
+            nd["quota_gb"] = float(c0.get("quota_gb") or 0)
+            creds["upstream"] = {
+                "host": c0.get("host", ""),
+                "port": c0.get("port", 0),
+                "user": c0.get("user", ""),
+                "password": c0.get("password", ""),
+                "ws_account": c0.get("ws_account", ""),
+            }
+        nd["_creds"] = creds
+        # 当前激活候选的配额/到期 → 同步到分配记录 quota_gb 与 node_data.client_expiry（外面线路明细/客户端读这两个权威值）
+        active_quota = 0.0
+        active_expiry = None
+        if self._cands and self._active_idx < len(self._cands):
+            active_quota = float(self._cands[self._active_idx].get("quota_gb") or 0)
+            active_expiry = (self._cands[self._active_idx].get("expiry") or "").strip() or None
+        nd["expiry"] = active_expiry or ""
+        nd["client_expiry"] = active_expiry or ""  # 独立线路的到期权威字段（外面/客户端读它）
+        try:
+            api_client.assign(
+                self._u["user_id"], "relay", rid, nd,
+                quota_gb=active_quota,
+            )
+        except ApiError as e:
+            QMessageBox.warning(self, "保存失败", e.message)
+            return
+        # 重新部署条件：IP 变化 或 候选从禁用恢复（配额/到期改了，之前可能被 /stop 停服务）
+        new_keys = {f"{c.get('host')}:{c.get('port')}" for c in self._cands}
+        old_disabled = {c.get("host") for c in (self._creds.get("candidates") or []) if c.get("enabled") is False}
+        resumed = any(c.get("host") in old_disabled and c.get("enabled", True) for c in self._cands)
+        renewed = bool(self._renewed_hosts)  # 续费也重新部署：服务可能因用尽/到期被 /stop 停了
+        if new_keys != old_keys or resumed or renewed:
+            self._deploy_after_save(rid)
+        else:
+            self._status.setText('<span style="color:#32d74b;">✅ 已保存（IP 未变，无需重新部署）</span>')
+
+    def _deploy_after_save(self, rid: str) -> None:
+        """保存后重新部署该 relay 的服务器（替换/添加 IP 后服务器需用新 upstream）。"""
+        import subprocess
+        from pathlib import Path
+
+        from .workers import CallWorker
+
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == str(rid)), None)
+        if not relay:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 已保存，但找不到该线路，请手动点「重新部署」</span>')
+            return
+        sid = relay.get("server_id", "")
+        srv_ip = ""
+        if sid.startswith("manual:"):
+            mid = sid[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    srv_ip = m.get("host", "") or ""
+                    break
+        if not srv_ip:
+            self._status.setText('<span style="color:#ff9f0a;">⚠️ 已保存，但找不到服务器 IP，请到 Webshare-IP 页点「重新部署」</span>')
+            return
+        root = Path(__file__).resolve().parent.parent.parent
+        script = root / "scripts" / "apply_relays.py"
+        self._status.setText('<span style="color:#30d158;">已保存，正在重新部署到服务器…</span>')
+
+        def _do():
+            r = subprocess.run(
+                ["uv", "run", "python", str(script), sid, srv_ip],
+                capture_output=True, text=True, timeout=900, cwd=str(root),
+            )
+            return r.stdout + r.stderr
+
+        w = CallWorker(_do)
+        w.done.connect(self._on_deployed)
+        w.failed.connect(lambda m: self._on_deployed(f"失败：{m}"))
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _on_deployed(self, text: str) -> None:
+        lines = str(text).strip().splitlines()
+        last = lines[-1] if lines else str(text)
+        ok = "DONE" in str(text)
+        color = "#32d74b" if ok else "#ff9f0a"
+        self._status.setText(f'<span style="color:{color};">{"✅ 部署完成" if ok else "⚠️ 部署未完全成功"}：{last}</span>')
+        if hasattr(self._page, "refresh"):
+            try:
+                self._page.refresh()
+            except Exception:
+                pass
+        if self._on_saved:
+            try:
+                self._on_saved()
+            except Exception:
+                pass
+
+
+class _IpPickerDialog(SizedDialog):
+    _size_key = "ip_picker_dialog_size"
+    _default_w = 820
+    _default_h = 480
+    """从 webshare IP 列表多选要添加的候选 IP，每个 IP 独立设置配额 + 使用时长（分/时/日）。"""
+
+    def __init__(self, parent, available: list[dict], single: bool = False,
+                 accounts: list[dict] | None = None, pool_loader=None, default_account: str = "") -> None:
+        super().__init__(parent)
+        self._single = single
+        self._accounts = accounts or []
+        self._pool_loader = pool_loader
+        self.setWindowTitle("选择要替换的 IP" if single else "选择要添加的 IP")
+        self.setMinimumSize(820, 480)
+        self._available = available
+        self._checks: list = []
+        self._quota_spins: list = []
+        self._unit_combos: list = []
+        self._dur_spins: list = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # 上游账号下拉框（跨账号选择：替换/添加时可切到别的账号池）
+        self.account_combo: QComboBox | None = None
+        if len(self._accounts) > 1:
+            acct_row = QHBoxLayout()
+            acct_row.addWidget(QLabel("上游账号:"))
+            self.account_combo = QComboBox()
+            for a in self._accounts:
+                self.account_combo.addItem(a.get("name", ""))
+            if default_account:
+                _i = self.account_combo.findText(default_account)
+                if _i >= 0:
+                    self.account_combo.setCurrentIndex(_i)
+            self.account_combo.currentIndexChanged.connect(self._on_account_changed)
+            acct_row.addWidget(self.account_combo)
+            acct_row.addStretch(1)
+            layout.addLayout(acct_row)
+
+        self._tip = QLabel("")
+        layout.addWidget(self._tip)
+        self._update_tip()
+
+        # 统一设置区
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(10)  # 默认 10GB
+        self.uni_quota.valueChanged.connect(lambda v: [s.setValue(v) for s in self._quota_spins])
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一时长:"))
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟"])
+        self.uni_unit.currentIndexChanged.connect(
+            lambda _: [u.setCurrentText(self.uni_unit.currentText()) for u in self._unit_combos]
+        )
+        uni.addWidget(self.uni_unit)
+        self.uni_dur = QSpinBox()
+        self.uni_dur.valueChanged.connect(lambda v: [d.setValue(v) for d in self._dur_spins])
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        uni.addWidget(self.uni_dur)
+        apply_btn = QPushButton("应用到勾选")
+        apply_btn.clicked.connect(self._apply_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["", "IP", "配额(GB)", "时长单位", "时长"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)  # 行高，控件完整显示
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(False)
+        persist_col_widths(self.table, "ip_picker_col_widths", [40, 300, 90, 90, 70])
+        layout.addWidget(self.table, 1)
+
+        self._suppress_picker = False
+        self._fill_table(available)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("替换" if single else "添加")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        if single:
+            self.table.itemChanged.connect(self._on_item_changed_single)
+
+    def _update_tip(self) -> None:
+        self._tip.setText(f"勾选要添加的 IP，并为每个 IP 设置配额和到期时长（共 {len(self._available)} 个可用）")
+
+    def _current_account(self) -> str:
+        if self.account_combo:
+            return self.account_combo.currentText()
+        return (self._accounts[0].get("name", "") if self._accounts else "")
+
+    def _on_account_changed(self, _idx: int) -> None:
+        """切换上游账号 → 重新加载该账号的 IP 池。"""
+        if self._pool_loader:
+            proxies = self._pool_loader(self._current_account()) or []
+            self._fill_table(proxies)
+
+    def _fill_table(self, proxies: list[dict]) -> None:
+        """用给定 IP 池重建表格（切换账号时复用）。"""
+        self._suppress_picker = True
+        self._available = proxies
+        self._checks.clear()
+        self._quota_spins.clear()
+        self._unit_combos.clear()
+        self._dur_spins.clear()
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(proxies))
+        for i, p in enumerate(proxies):
+            self.table.setRowHeight(i, 40)
+            host = p.get("proxy_address") or "p.webshare.io"
+            country = p.get("country_code", "")
+            city = p.get("city_name", "")
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, chk)
+            self._checks.append(chk)
+            label = f"{host}:{p.get('port', '')}  ({country} {city})"
+            it = QTableWidgetItem(label)
+            it.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(i, 1, it)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(self.uni_quota.value() if hasattr(self, "uni_quota") else 10)
+            q.setToolTip("0 = 不限流量")
+            self.table.setCellWidget(i, 2, q)
+            self._quota_spins.append(q)
+            u = QComboBox()
+            u.addItems(["按天", "按小时", "按分钟"])
+            if hasattr(self, "uni_unit"):
+                u.setCurrentText(self.uni_unit.currentText())
+            self.table.setCellWidget(i, 3, u)
+            self._unit_combos.append(u)
+            d = QSpinBox()
+            d.setRange(1, 9999)
+            d.setValue(self.uni_dur.value() if hasattr(self, "uni_dur") else 1)
+            self.table.setCellWidget(i, 4, d)
+            self._dur_spins.append(d)
+        self._suppress_picker = False
+        self._update_tip()
+
+    def _on_item_changed_single(self, item) -> None:
+        """单选模式：勾选一个后自动取消其他勾选。"""
+        if getattr(self, "_suppress_picker", False):
+            return
+        if item.column() == 0 and item.checkState() == Qt.CheckState.Checked:
+            for i in range(self.table.rowCount()):
+                if i != item.row():
+                    chk = self._checks[i]
+                    if chk.checkState() == Qt.CheckState.Checked:
+                        chk.setCheckState(Qt.CheckState.Unchecked)
+
+    def _apply_all(self) -> None:
+        q = self.uni_quota.value()
+        u_idx = self.uni_unit.currentIndex()
+        d = self.uni_dur.value()
+        for i in range(len(self._checks)):
+            if self._checks[i].checkState() == Qt.CheckState.Checked:
+                self._quota_spins[i].setValue(q)
+                self._unit_combos[i].setCurrentIndex(u_idx)
+                self._dur_spins[i].setValue(d)
+
+    def selected(self) -> list[dict]:
+        out = []
+        acct = self._current_account()
+        for i in range(self.table.rowCount()):
+            chk = self._checks[i]
+            if chk.checkState() != Qt.CheckState.Checked:
+                continue
+            p = self._available[i]
+            quota = self._quota_spins[i].value()
+            unit_idx = self._unit_combos[i].currentIndex()
+            dur = self._dur_spins[i].value()
+            seconds = dur * _UNIT_SECONDS[unit_idx]
+            expiry = _duration_expiry(seconds)
+            out.append({"p": p, "quota_gb": quota, "expiry": expiry, "ws_account": acct})
+        return out
+
+
+class _UserLinesDialog(SizedDialog):
+    _size_key = "user_lines_dialog_size"
+    _default_w = 860
+    _default_h = 620
+    """用户线路明细弹窗：列出该用户名下所有线路，每条线路可复制节点/回收。"""
+
+    def __init__(self, page, u: dict) -> None:
+        super().__init__(page)
+        self._page = page
+        self._u = u or {}
+        lines = self._u.get("lines", [])
+        status = self._u.get("status", "active")
+        self.setWindowTitle(f"「{self._u.get('username', '')}」的线路明细")
+        self.setMinimumSize(760, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        head = QLabel(
+            f"用户名：<b>{self._u.get('username', '')}</b>　"
+            f"状态：<b style='color:{'#30d158' if status == 'active' else '#ff453a'}'>{'正常' if status == 'active' else '已禁用'}</b>　"
+            f"线路数：<b>{len(lines)}</b> 条"
+        )
+        head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(head)
+
+        table = QTableWidget(len(lines), 8)
+        table.setHorizontalHeaderLabels(["线路名称", "类型", "出口IP", "上游账号", "流量", "分配时间", "到期", "操作"])
+        _hdr = table.horizontalHeader()
+        _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        _hdr.setStretchLastSection(False)
+        # 恢复上次调整的列宽（否则用默认）
+        _saved_w = config.get("user_lines_col_widths")
+        if _saved_w and len(_saved_w) == 8:
+            for c, w in enumerate(_saved_w):
+                table.setColumnWidth(c, int(w))
+        else:
+            table.setColumnWidth(0, 140)  # 线路名称
+            table.setColumnWidth(1, 90)   # 类型（独立/合并 N 个）
+            table.setColumnWidth(2, 120)  # 出口IP
+            table.setColumnWidth(3, 100)  # 上游账号
+            table.setColumnWidth(4, 110)  # 流量
+            table.setColumnWidth(5, 100)  # 分配时间
+            table.setColumnWidth(6, 110)  # 到期
+            table.setColumnWidth(7, 220)  # 操作（管理IP + 复制节点 + 回收）
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(40)  # 行高，按钮完整放下
+        table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.itemChanged.connect(self._on_line_name_changed)
+        self._suppress = False
+        self._table = table
+        _hdr.sectionResized.connect(self._save_col_widths)  # 拖列宽实时持久化
+        layout.addWidget(table, 1)
+
+        self._suppress = True
+        for row, a in enumerate(lines):
+            self._render_line(table, row, a)
+        self._suppress = False
+
+        btns = QDialogButtonBox()
+        edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
+        edit.clicked.connect(self._edit_user)
+        close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(btns)
+
+    def _render_line(self, table, row: int, a: dict) -> None:
+        """渲染线路明细的一行（__init__ 与 _reload 复用）。"""
+        table.setRowHeight(row, 44)  # 显式行高，按钮垂直完整
+        node = a.get("node_data", {}) or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        name = node.get("name", "") or node.get("host", "") or a.get("resource_id", "")
+        creds = node.get("_creds", {}) or {}
+        n_cands = len(creds.get("candidates") or [])
+        type_text = f"合并 {n_cands} 个" if n_cands > 1 else "独立"
+        exit_ip = node.get("ip", "") or node.get("host", "")
+        quota = float(a.get("quota_gb") or 0)
+        used = float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0)
+        if quota > 0:
+            traffic = f"已用 {_fmt_flow(used)} / {_fmt_flow(quota)}"
+        else:
+            traffic = f"已用 {_fmt_flow(used)}"
+        full_assign = a.get("created_at", "") or ""
+        try:
+            adt = datetime.fromisoformat(str(full_assign).replace("Z", "+00:00"))
+            if adt.tzinfo is not None:
+                adt = adt.astimezone()
+            assign_time = adt.strftime("%m-%d %H:%M")
+        except Exception:
+            assign_time = "-"
+        cands2 = creds.get("candidates") or []
+        act2 = int(creds.get("active_idx", 0) or 0)
+        ip_exp2 = ""
+        if len(cands2) > 1 and act2 < len(cands2):
+            ip_exp2 = (cands2[act2].get("expiry") or "").strip()
+        ce = (ip_exp2 if len(cands2) > 1 else "") or node.get("client_expiry", "") or ""
+        countdown = _fmt_countdown(ce)
+
+        for col, text in zip([1, 2, 5], [type_text, exit_ip, assign_time]):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setForeground(Qt.GlobalColor.white)
+            table.setItem(row, col, item)
+
+        name_item = QTableWidgetItem(name)
+        name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_item.setForeground(Qt.GlobalColor.white)
+        name_item.setData(Qt.ItemDataRole.UserRole, str(a.get("resource_id", "")))
+        name_item.setFlags(name_item.flags() | Qt.ItemFlag.ItemIsEditable)
+        name_item.setToolTip("双击编辑名称（复制节点/二维码/协议链接跟随）")
+        table.setItem(row, 0, name_item)
+
+        cands_acct = (node.get("_creds", {}) or {}).get("candidates") or []
+        acct_set = {c.get("ws_account") for c in cands_acct if c.get("ws_account")}
+        if len(acct_set) > 1:
+            acct_text = f"多账号({len(acct_set)})"
+            acct_tip = "、".join(sorted(acct_set))
+        else:
+            acct_text = (next(iter(acct_set)) if acct_set else "") or node.get("ws_account") or webshare.default_account_name()
+            acct_tip = acct_text
+        acct = QTableWidgetItem(acct_text)
+        acct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        acct.setForeground(Qt.GlobalColor.white)
+        acct.setToolTip(f"上游账号：{acct_tip}")
+        table.setItem(row, 3, acct)
+
+        # 流量列(4)：只读展示（修改统一在「管理 IP」里）
+        flow_it = QTableWidgetItem(traffic)
+        flow_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        flow_it.setForeground(Qt.GlobalColor.white)
+        flow_it.setToolTip("配额/流量请在「管理 IP」里修改")
+        table.setItem(row, 4, flow_it)
+
+        # 到期列(6)：只读展示（修改统一在「管理 IP」里）
+        exp_it = QTableWidgetItem(countdown)
+        exp_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        if "已过期" in countdown or "已到期" in countdown:
+            exp_it.setForeground(Qt.GlobalColor.red)
+        else:
+            exp_it.setForeground(Qt.GlobalColor.white)
+        exp_it.setToolTip("到期时间请在「管理 IP」里修改")
+        table.setItem(row, 6, exp_it)
+
+        op_w = QWidget()
+        op_lay = QHBoxLayout(op_w)
+        op_lay.setContentsMargins(0, 0, 0, 0)
+        op_lay.setSpacing(6)
+        manage = QPushButton("管理IP")
+        manage.setProperty("compact", True)
+        manage.setFixedSize(64, 32)
+        manage.clicked.connect(lambda _=False, a=a: self._manage_ips(a))
+        op_lay.addWidget(manage)
+        share = QPushButton("复制节点")
+        share.setProperty("compact", True)
+        share.setFixedSize(84, 32)
+        share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
+        op_lay.addWidget(share)
+        recycle = QPushButton("回收")
+        recycle.setProperty("compact", True)
+        recycle.setFixedSize(56, 32)
+        recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
+        op_lay.addWidget(recycle)
+        table.setCellWidget(row, 7, op_w)
+
+    def _reload(self) -> None:
+        """保存/替换后重新加载线路数据并重建表格（修复「外面还是旧 IP」）。"""
+        try:
+            assigns = api_client.list_all_assignments().get("assignments", [])
+        except Exception:
+            return
+        uid = str(self._u.get("user_id", ""))
+        self._u["lines"] = [x for x in assigns if str(x.get("user_id", "")) == uid]
+        lines = self._u.get("lines", [])
+        self._suppress = True
+        self._table.setRowCount(0)
+        self._table.setRowCount(len(lines))
+        for row, a in enumerate(lines):
+            self._render_line(self._table, row, a)
+        self._suppress = False
+
+    def _on_line_name_changed(self, item: QTableWidgetItem) -> None:
+        """线路名称双击编辑后：同步 config.relays + D1 node_data.name（复制节点/二维码跟随）。"""
+        if getattr(self, "_suppress", False):
+            return
+        if item.column() != 0:
+            return
+        rid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        text = item.text().strip()
+        if not rid or not text:
+            return
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                r["name"] = text
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.rename_assignment(rid, text)
+        except Exception:
+            pass
+
+    def _edit_user(self) -> None:
+        user = {
+            "id": self._u.get("user_id"),
+            "username": self._u.get("username", ""),
+            "status": self._u.get("status", "active"),
+            "expires_at": self._u.get("expires_at"),
+            "note": self._u.get("note", ""),
+        }
+        self._page._edit_user(user)
+        self.accept()
+
+    def _recycle(self, a: dict, node: dict, name: str) -> None:
+        self._page._recycle_relay(a, node, name)
+        self.accept()
+
+    def _edit_expiry(self, a: dict, node: dict) -> None:
+        """点击到期列：设置该线路的到期时长（独立=线路级，合并=当前激活IP）。"""
+        rid = str(a.get("resource_id", ""))
+        nd = dict(node) if isinstance(node, dict) else {}
+        creds = nd.get("_creds", {}) or {}
+        cands = creds.get("candidates") or []
+        act = int(creds.get("active_idx", 0) or 0)
+        cur = ""
+        if cands and act < len(cands):
+            cur = (cands[act].get("expiry") or "").strip()
+        cur = cur or (nd.get("client_expiry") or "")
+        dlg = _DurationDialog(self, current_expiry=cur)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_exp = dlg.expires_at
+        nd["client_expiry"] = new_exp
+        if cands and act < len(cands):
+            cands[act]["expiry"] = new_exp
+            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可）
+            cands[act]["used_gb"] = 0
+            try:
+                api_client.reset_flow(rid)
+            except Exception:
+                pass
+            if _candidate_renewed(cands[act]):
+                cands[act]["enabled"] = True
+            creds["candidates"] = cands
+            nd["_creds"] = creds
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                cu = r.get("candidate_upstreams") or []
+                if cu and act < len(cu):
+                    cu[act]["expiry"] = new_exp
+                    cu[act]["used_gb"] = 0
+                    if _candidate_renewed(cu[act]):
+                        cu[act]["enabled"] = True
+                    r["candidate_upstreams"] = cu
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.assign(a.get("user_id"), "relay", rid, nd)
+        except ApiError as e:
+            QMessageBox.warning(self, "设置失败", e.message)
+            return
+        # 之前可能因到期被停服务，重新部署恢复代理
+        self._redeploy_relay(rid)
+        self._page.refresh()
+        self.accept()
+
+    def _edit_quota(self, a: dict, node: dict) -> None:
+        """点击流量列：设置该线路的流量配额（GB，独立=线路级，合并=当前激活IP）。"""
+        rid = str(a.get("resource_id", ""))
+        nd = dict(node) if isinstance(node, dict) else {}
+        creds = nd.get("_creds", {}) or {}
+        cands = creds.get("candidates") or []
+        act = int(creds.get("active_idx", 0) or 0)
+        cur_quota = float(a.get("quota_gb") or 0)
+        if cands and act < len(cands):
+            cur_quota = float(cands[act].get("quota_gb") or 0)
+        txt, ok = QInputDialog.getDouble(self, "设置流量配额", "配额（GB，0=不限）:", cur_quota, 0, 1_000_000, 2)
+        if not ok:
+            return
+        new_q = txt
+        if cands and act < len(cands):
+            cands[act]["quota_gb"] = new_q
+            # 续费重置：清零封账 + 分配流量，重新启用（到期未过期即可，不管之前已用多少）
+            cands[act]["used_gb"] = 0
+            try:
+                api_client.reset_flow(rid)
+            except Exception:
+                pass
+            if _candidate_renewed(cands[act]):
+                cands[act]["enabled"] = True
+            creds["candidates"] = cands
+            nd["_creds"] = creds
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if str(r.get("id", "")) == rid:
+                cu = r.get("candidate_upstreams") or []
+                if cu and act < len(cu):
+                    cu[act]["quota_gb"] = new_q
+                    cu[act]["used_gb"] = 0
+                    if _candidate_renewed(cu[act]):
+                        cu[act]["enabled"] = True
+                    r["candidate_upstreams"] = cu
+                break
+        config.set_value("relays", relays)
+        try:
+            api_client.assign(a.get("user_id"), "relay", rid, nd, quota_gb=new_q)
+        except ApiError as e:
+            QMessageBox.warning(self, "设置失败", e.message)
+            return
+        # 之前可能因用尽被停服务，重新部署恢复代理
+        self._redeploy_relay(rid)
+        self._page.refresh()
+        self.accept()
+
+    def _manage_ips(self, a: dict) -> None:
+        if a.get("resource_type") != "relay":
+            QMessageBox.information(self, "提示", "只有中转线路支持管理 IP。")
+            return
+        dlg = _ManageIpsDialog(self._page, self._u, a, on_saved=self._reload)
+        dlg.exec()
+        self._reload()
+        self._page.refresh()
+
+    def _redeploy_relay(self, rid: str) -> None:
+        """改配额/到期恢复后重新部署服务器（之前可能被到期/用尽 /stop 停了）。"""
+        import subprocess
+        from pathlib import Path
+
+        from .workers import CallWorker
+
+        relays = config.get("relays", []) or []
+        relay = next((r for r in relays if str(r.get("id", "")) == str(rid)), None)
+        if not relay:
+            return
+        sid = relay.get("server_id", "")
+        srv_ip = ""
+        if sid.startswith("manual:"):
+            mid = sid[len("manual:"):]
+            for m in (config.get("manual_servers", []) or []):
+                if m.get("id") == mid:
+                    srv_ip = m.get("host", "") or ""
+                    break
+        if not srv_ip:
+            return
+        root = Path(__file__).resolve().parent.parent.parent
+        script = root / "scripts" / "apply_relays.py"
+
+        def _do():
+            r = subprocess.run(
+                ["uv", "run", "python", str(script), sid, srv_ip],
+                capture_output=True, text=True, timeout=900, cwd=str(root),
+            )
+            return r.stdout + r.stderr
+
+        w = CallWorker(_do)
+        if not hasattr(self, "_workers"):
+            self._workers = []
+        self._workers.append(w)
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _save_col_widths(self, *args) -> None:
+        config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(8)])
+
+
+class _UserDetailDialog(SizedDialog):
+    _size_key = "user_detail_dialog_size"
+    _default_w = 640
+    _default_h = 520
     """用户详情/设置：编辑表单 + 名下分配（文字展示）。"""
 
-    def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "") -> None:
+    def __init__(self, parent=None, user: dict | None = None, resource_id: str = "", node_data: dict | None = None, resource_expiry: str = "", resource_type: str = "") -> None:
         super().__init__(parent)
         self._user = user or {}
         self.resource_id = resource_id
         self.node_data = node_data or {}
         self._resource_expiry = resource_expiry
+        self.resource_type = resource_type or "vultr"
         self.setWindowTitle("用户详情 / 设置")
         self.setMinimumSize(720, 720)
 
@@ -1077,7 +2460,7 @@ class _UserDetailDialog(QDialog):
         # 写回 node_data：客户到期 + 流量配额（每台服务器独立）
         node = dict(self.node_data)
         node_changed = False
-        if client_exp and node.get("client_expiry") != client_exp:
+        if client_exp and str(node.get("client_expiry", ""))[:10] != client_exp[:10]:
             node["client_expiry"] = client_exp
             node_changed = True
         elif not client_exp and node.get("client_expiry"):
@@ -1089,7 +2472,7 @@ class _UserDetailDialog(QDialog):
         if node_changed:
             try:
                 # 显式传 quota_gb，让 Worker 更新 assignments.quota_gb 列（限流依据）
-                api_client.assign(self._user["id"], "vultr", self.resource_id, node, quota_gb=new_quota)
+                api_client.assign(self._user["id"], self.resource_type, self.resource_id, node, quota_gb=new_quota)
             except ApiError as e:
                 QMessageBox.warning(self, "保存失败", e.message)
                 return
@@ -1108,7 +2491,10 @@ class _UserDetailDialog(QDialog):
             QMessageBox.warning(self, "保存失败", e.message)
 
 
-class _AssignDetailDialog(QDialog):
+class _AssignDetailDialog(SizedDialog):
+    _size_key = "assigndetail_dialog_size"
+    _default_w = 680
+    _default_h = 560
     """资源分配详情：已分配用户列表（用户名/备注/时间）+ 新增分配 + 取消分配。"""
 
     def __init__(self, parent, resource_type: str, resource_id: str, node_data: dict, resource_expiry: str = "", total_quota_gb: float = 0.0, used_gb: float = 0.0) -> None:
@@ -1293,13 +2679,16 @@ class _AssignDetailDialog(QDialog):
         except ApiError as e:
             QMessageBox.warning(self, "分配失败", e.message)
 
-class _UserPickerDialog(QDialog):
+class _UserPickerDialog(SizedDialog):
+    _size_key = "user_picker_dialog_size"
+    _default_w = 500
+    _default_h = 360
     """选择要分配的用户（只列活跃用户）。"""
 
-    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None) -> None:
+    def __init__(self, parent=None, exclude_ids: set[int] | None = None, resource_expiry: str = "", total_quota_gb: float = 0.0, remaining_quota: float = 0.0, resource_type: str = "", sub_info: dict | None = None, relay_hosts: list[str] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("选择用户")
-        self.setMinimumSize(500, 360)
+        self.setMinimumSize(560, 520 if (relay_hosts or []) else 360)
         self.user_id: int | None = None
         self.expires_at: str | None = None
         self.quota_gb: float = 0.0
@@ -1309,6 +2698,7 @@ class _UserPickerDialog(QDialog):
         self._remaining_quota = remaining_quota
         self._resource_type = resource_type
         self._sub_info = sub_info or {}
+        self._relay_hosts = relay_hosts or []
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -1343,31 +2733,35 @@ class _UserPickerDialog(QDialog):
             info_lbl.setStyleSheet("color:#98989d;")
             layout.addWidget(info_lbl)
 
-            dur_lbl = QLabel("使用时长（不能晚于订阅到期）")
-            dur_lbl.setStyleSheet("color:#98989d;")
-            layout.addWidget(dur_lbl)
-            dur_row = QHBoxLayout()
-            self.unit_combo = QComboBox()
-            self.unit_combo.addItems(["按天", "按小时", "按分钟"])
-            self.unit_combo.setCurrentIndex(0)  # 默认按天
-            self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
-            dur_row.addWidget(self.unit_combo)
-            self.duration_spin = QSpinBox()
-            self.duration_spin.setRange(*_UNIT_RANGES[0])
-            self.duration_spin.setValue(1)
-            self.duration_spin.setSuffix(_UNIT_SUFFIXES[0])
-            dur_row.addWidget(self.duration_spin)
-            dur_row.addStretch(1)
-            layout.addLayout(dur_row)
+            if len(self._relay_hosts) > 1:
+                # 多个 IP：每个 IP 单独设置配额/到期（含一键应用到全部）
+                self._build_per_ip_grid(layout)
+            else:
+                dur_lbl = QLabel("使用时长（不能晚于订阅到期）")
+                dur_lbl.setStyleSheet("color:#98989d;")
+                layout.addWidget(dur_lbl)
+                dur_row = QHBoxLayout()
+                self.unit_combo = QComboBox()
+                self.unit_combo.addItems(["按天", "按小时", "按分钟"])
+                self.unit_combo.setCurrentIndex(0)  # 默认按天
+                self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+                dur_row.addWidget(self.unit_combo)
+                self.duration_spin = QSpinBox()
+                self.duration_spin.setRange(*_UNIT_RANGES[0])
+                self.duration_spin.setValue(1)
+                self.duration_spin.setSuffix(_UNIT_SUFFIXES[0])
+                dur_row.addWidget(self.duration_spin)
+                dur_row.addStretch(1)
+                layout.addLayout(dur_row)
 
-            quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
-            quota_lbl.setStyleSheet("color:#98989d;")
-            layout.addWidget(quota_lbl)
-            self.quota_edit = QLineEdit()
-            self.quota_edit.setPlaceholderText(
-                f"如 100，不能大于剩余 {remaining:.1f}G" if plan_total > 0 else "如 100，留空 = 不限额"
-            )
-            layout.addWidget(self.quota_edit)
+                quota_lbl = QLabel("流量配额（GB，留空 = 不限额）" + (f"（剩余 {remaining:.1f}G）" if plan_total > 0 else ""))
+                quota_lbl.setStyleSheet("color:#98989d;")
+                layout.addWidget(quota_lbl)
+                self.quota_edit = QLineEdit("10")  # 默认 10GB（可改；清空 = 不限额）
+                self.quota_edit.setPlaceholderText(
+                    f"如 100，不能大于剩余 {remaining:.1f}G；默认 10，清空 = 不限额"
+                )
+                layout.addWidget(self.quota_edit)
         else:
             if resource_expiry:
                 exp_info = QLabel(f'资源原始到期：<span style="color:#ff9f0a;">{str(resource_expiry)[:10]}</span>')
@@ -1405,6 +2799,80 @@ class _UserPickerDialog(QDialog):
         self.duration_spin.setSuffix(_UNIT_SUFFIXES[idx])
         self.duration_spin.setValue(lo)
 
+    def _build_per_ip_grid(self, layout) -> None:
+        """多个 IP：每个 IP 一行，独立设置配额(GB) 与到期时长；顶部统一值改动即同步到全部。"""
+        self._per_ip_rows: list[tuple] = []
+        uni = QHBoxLayout()
+        uni.addWidget(QLabel("统一配额(GB,0=不限):"))
+        self.uni_quota = QSpinBox()
+        self.uni_quota.setRange(0, 1000000)
+        self.uni_quota.setValue(10)  # 默认 10GB
+        self.uni_quota.valueChanged.connect(lambda v: [spin.setValue(v) for spin, _, _ in self._per_ip_rows])
+        uni.addWidget(self.uni_quota)
+        uni.addWidget(QLabel("统一到期:"))
+        self.uni_dur = QSpinBox()
+        self.uni_dur.setRange(1, 9999)
+        self.uni_dur.setValue(1)
+        self.uni_dur.valueChanged.connect(lambda v: [dspin.setValue(v) for _, dspin, _ in self._per_ip_rows])
+        uni.addWidget(self.uni_dur)
+        self.uni_unit = QComboBox()
+        self.uni_unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+        self.uni_unit.currentIndexChanged.connect(
+            lambda _: [unit.setCurrentText(self.uni_unit.currentText()) for _, _, unit in self._per_ip_rows]
+        )
+        uni.addWidget(self.uni_unit)
+        apply_btn = QPushButton("应用到全部")
+        apply_btn.setProperty("compact", True)
+        apply_btn.clicked.connect(self._apply_per_ip_all)
+        uni.addWidget(apply_btn)
+        uni.addStretch(1)
+        layout.addLayout(uni)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("上游 IP"), 0, 0)
+        grid.addWidget(QLabel("配额(GB)"), 0, 1)
+        grid.addWidget(QLabel("到期时长"), 0, 2)
+        for i, host in enumerate(self._relay_hosts):
+            grid.addWidget(QLabel(host or ""), i + 1, 0)
+            q = QSpinBox()
+            q.setRange(0, 1000000)
+            q.setValue(self.uni_quota.value())
+            q.setToolTip("0 = 不限流量")
+            grid.addWidget(q, i + 1, 1)
+            drow = QHBoxLayout()
+            drow.setContentsMargins(0, 0, 0, 0)
+            dspin = QSpinBox()
+            dspin.setRange(1, 9999)
+            dspin.setValue(self.uni_dur.value())
+            unit = QComboBox()
+            unit.addItems(["按天", "按小时", "按分钟", "不过期"])
+            unit.setCurrentText(self.uni_unit.currentText())
+            drow.addWidget(dspin)
+            drow.addWidget(unit)
+            dw = QWidget()
+            dw.setLayout(drow)
+            grid.addWidget(dw, i + 1, 2)
+            self._per_ip_rows.append((q, dspin, unit))
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
+
+    def _apply_per_ip_all(self) -> None:
+        q = self.uni_quota.value()
+        d = self.uni_dur.value()
+        u = self.uni_unit.currentText()
+        for spin, _, _ in self._per_ip_rows:
+            spin.setValue(q)
+        for _, dspin, unit in self._per_ip_rows:
+            dspin.setValue(d)
+            unit.setCurrentText(u)
+
+    def per_ip_results(self) -> list[dict]:
+        """返回每个 IP 的 {quota_gb, expiry}（expiry 为绝对时间，不过期=空串）。"""
+        out = []
+        for q, dspin, unit in getattr(self, "_per_ip_rows", []):
+            out.append({"quota_gb": q.value(), "expiry": _per_ip_expiry(dspin.value(), unit.currentText())})
+        return out
+
     def _load_users(self) -> None:
         try:
             users = api_client.list_users().get("users", [])
@@ -1430,8 +2898,9 @@ class _UserPickerDialog(QDialog):
         if data is None:
             QMessageBox.warning(self, "提示", "请先选择用户")
             return
-        # 流量配额校验（仅 vultr 有配额输入框时）
-        if hasattr(self, "quota_edit"):
+        multi_ip = len(self._relay_hosts) > 1
+        # 流量配额校验（仅 vultr 有配额输入框时；多 IP 每 IP 单独设置，不在此校验）
+        if not multi_ip and hasattr(self, "quota_edit"):
             q_text = self.quota_edit.text().strip()
             if q_text:
                 try:
@@ -1455,7 +2924,7 @@ class _UserPickerDialog(QDialog):
                 self.quota_gb = q
             else:
                 self.quota_gb = self._remaining_quota  # 留空 = 分配全部剩余
-        if self._resource_type == "relay":
+        if self._resource_type == "relay" and not multi_ip:
             unit_idx = self.unit_combo.currentIndex()
             seconds = self.duration_spin.value() * _UNIT_SECONDS[unit_idx]
             self.expires_at = _duration_expiry(seconds)

@@ -26,6 +26,7 @@ const regionNode = ref(null);
 const qr = ref(null); // { name, link }
 
 const switching = reactive({}); // resource_id -> { text, disabled, checking }
+const candidateModal = reactive({ show: false, node: null }); // 合并线路候选 IP 弹窗
 let autoReSwitchCount = 0;
 
 // ===== 行拖拽排序（拖到目标行位置，调 /me/reorder 持久化）=====
@@ -240,7 +241,7 @@ const nowTick = ref(Date.now());
 
 function formatExpiry(n) {
   const _ = nowTick.value; // 依赖 nowTick，每秒触发重渲染（驱动倒计时实时刷新）
-  const expiry = String(n.client_expiry || n.expiry || "");
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
   if (!expiry) return { text: "未设置", cls: "cell-muted" };
   // client_expiry 是北京时间字符串（如 2026-11-01 04:59:29），显式按 +08:00 解析，避免客户端时区差异
   const expTime = new Date(expiry.replace(" ", "T") + "+08:00").getTime();
@@ -264,26 +265,126 @@ function formatExpiry(n) {
 
 function switchInfo(n) {
   if (n.resource_type !== "vultr" && n.resource_type !== "relay") return { text: "—", cls: "cell-muted" };
+  const cands = n.candidate_ips || [];
+  if (cands.length > 1) {
+    // 合并线路：显示候选 IP 进度（当前/总数）
+    const idx = (Number(n.active_ip_idx) || 0) + 1;
+    return { text: `${idx}/${cands.length}`, cls: "" };
+  }
+  if (n.resource_type === "relay") {
+    // 独立线路（单 IP）：显示 1
+    return { text: "1", cls: "cell-muted" };
+  }
+  // vultr：显示切换次数（已用/上限）
   const remaining = n.switch_remaining;
   const limit = n.switch_limit || 5;
   const used = Math.max(0, limit - remaining);
   return { text: `${used}/${limit}`, cls: remaining <= 0 ? "cell-danger" : "" };
 }
 
+function candidateTip(n) {
+  const cands = n.candidate_ips || [];
+  if (cands.length <= 1) return "";
+  const active = Number(n.active_ip_idx) || 0;
+  return "候选 IP（点击指定切换）：\n" + cands.map((ip, i) => `${i + 1}. ${ip}${i === active ? " ← 当前" : ""}`).join("\n");
+}
+
+function candInfo(n, i) {
+  return (n.candidate_infos || [])[i] || {};
+}
+
+function candExpired(info) {
+  const exp = ((info && info.expiry) || "").trim();
+  if (!exp) return false;
+  const expKey = exp.replace("T", " ").slice(0, 16);
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const p = (x) => String(x).padStart(2, "0");
+  const nowKey = `${now.getUTCFullYear()}-${p(now.getUTCMonth() + 1)}-${p(now.getUTCDate())} ${p(now.getUTCHours())}:${p(now.getUTCMinutes())}`;
+  return expKey < nowKey;
+}
+
+function candStatus(n, i) {
+  const info = candInfo(n, i);
+  if (info.enabled === false) return "已禁用";
+  if (candExpired(info)) return "已到期";
+  const q = Number(info.quota_gb) || 0;
+  const u = Number(info.used_gb) || 0;
+  if (q > 0 && u >= q) return "已用尽";
+  return "";
+}
+
+function candDisabled(n, i) {
+  return !!candStatus(n, i);
+}
+
+function candFlowText(n, i) {
+  const info = candInfo(n, i);
+  const q = Number(info.quota_gb) || 0;
+  const u = Number(info.used_gb) || 0;
+  const uText = u < 1 ? `${Math.round(u * 1024)}M` : `${u.toFixed(2)}G`;
+  if (q > 0) return `${uText} / ${Math.round(q)}G`;
+  return `已用 ${uText}`;
+}
+
+function candExpiryText(n, i) {
+  const info = candInfo(n, i);
+  return (info.expiry || "").trim() || "不过期";
+}
+
+function openCandidateModal(n) {
+  if ((n.candidate_ips || []).length <= 1) return;
+  candidateModal.node = n;
+  candidateModal.show = true;
+}
+
+async function switchToCandidate(n, idx) {
+  candidateModal.show = false;
+  await switchIp(n, { targetIndex: idx });
+}
+
+function canSwitch(n) {
+  if (n.resource_type === "relay") return (n.candidate_ips || []).length > 1;
+  if (n.resource_type === "vultr") return true;
+  return false;
+}
+
+function onSwitchClick(n) {
+  if (!canSwitch(n) || switching[n.resource_id]?.disabled) return;
+  if (n.resource_type === "relay") {
+    openCandidateModal(n);
+  } else if (n.resource_type === "vultr") {
+    switchIp(n);
+  }
+}
+
 function flowInfo(n) {
   const quota = Number(n.flow_quota_gb) || 0;
   const used = Number(n.flow_used_gb) || 0;
-  if (quota > 0) return { text: `${used.toFixed(1)}G / ${Math.round(quota)}G`, cls: n.flow_exhausted ? "cell-danger" : "" };
-  return { text: "不限", cls: "cell-muted" };
+  const usedText = used < 1 ? `${Math.round(used * 1024)}M` : `${used.toFixed(2)}G`;
+  if (quota > 0) return { text: `${usedText} / ${Math.round(quota)}G`, cls: n.flow_exhausted ? "cell-danger" : "" };
+  return { text: `已用 ${usedText}`, cls: "cell-muted" };
 }
 
 function isSwitchDisabled(n) {
-  const expiry = String(n.client_expiry || n.expiry || "");
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
   const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
   const expired = expTime > 0 && expTime <= Date.now();
   if (expired) return "已到期";
   if (n.flow_exhausted) return "流量用尽";
-  if ((n.resource_type === "vultr" || n.resource_type === "relay") && n.switch_remaining <= 0) return "次数用完";
+  if (n.resource_type === "relay") {
+    const cands = n.candidate_ips || [];
+    if (cands.length <= 1) return "单线路";
+  }
+  if (n.resource_type === "vultr" && n.switch_remaining <= 0) return "次数用完";
+  return "";
+}
+
+function isUpstreamDisabled(n) {
+  // 「设为上游」= 本地代理测试，只被到期/流量用尽禁用；不因「单线路」「次数用完」禁用
+  const expiry = String(n.eff_expiry || n.client_expiry || n.expiry || "");
+  const expTime = expiry ? new Date(expiry.replace(" ", "T") + "+08:00").getTime() : 0;
+  if (expTime > 0 && expTime <= Date.now()) return "已到期";
+  if (n.flow_exhausted) return "流量用尽";
   return "";
 }
 
@@ -337,6 +438,7 @@ async function afterSwitch(newIp) {
 async function switchIp(n, opts = {}) {
   const auto = !!opts.auto;
   const explicitRegion = opts.region; // undefined=弹窗，""=随机，指定值=用该区域
+  const targetIndex = opts.targetIndex; // 指定候选索引（合并线路弹窗指定切换）
   if (switching[n.resource_id]?.disabled) return;
   switching[n.resource_id] = { text: "切换中…", disabled: true };
   try {
@@ -358,14 +460,16 @@ async function switchIp(n, opts = {}) {
         }
       }
     }
-    const first = await api("/me/switch", "POST", { resource_id: n.resource_id, region });
+    const body = { resource_id: n.resource_id, region };
+    if (targetIndex !== undefined && targetIndex !== null) body.target_index = targetIndex;
+    const first = await api("/me/switch", "POST", body);
     if (first && first.error) {
       switching[n.resource_id] = { text: "切换失败", disabled: false };
       proxy.log("❌ " + first.error, "err");
       return;
     }
     if (first && first.status === "done") {
-      switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
+      switching[n.resource_id] = { text: "已切换", disabled: false };
       await afterSwitch(first.new_ip || "");
       return;
     }
@@ -405,7 +509,7 @@ async function switchIp(n, opts = {}) {
     });
 
     if (result.status === "done") {
-      switching[n.resource_id] = { text: "切换成功 ✓", disabled: false };
+      switching[n.resource_id] = { text: "已切换", disabled: false };
       await afterSwitch(result.new_ip || "");
       return;
     }
@@ -421,7 +525,7 @@ async function switchIp(n, opts = {}) {
     proxy.log("❌ " + (e && e.message ? e.message : "网络错误"), "err");
   } finally {
     setTimeout(() => {
-      if (switching[n.resource_id] && switching[n.resource_id].text !== "切换成功 ✓") {
+      if (switching[n.resource_id] && switching[n.resource_id].text !== "已切换") {
         switching[n.resource_id] = { text: "切换IP", disabled: false };
       }
     }, 3000);
@@ -639,16 +743,13 @@ onMounted(() => {
                 {{ connectivityTests[n.resource_id]?.active ? `检测中 ${checkProgress(n)}` : checkText(n) }}
               </span>
             </td>
-            <td :class="switchInfo(n).cls">{{ switchInfo(n).text }}</td>
+            <td :class="switchInfo(n).cls" :title="candidateTip(n)" :style="canSwitch(n) ? 'cursor:pointer' : ''" @click="onSwitchClick(n)">{{ switchInfo(n).text }}</td>
             <td :class="flowInfo(n).cls">{{ flowInfo(n).text }}</td>
             <td><input type="text" class="note-input" placeholder="备注" v-model="n.note" @blur="saveNote(n)" @keyup.enter="$event.target.blur()" /></td>
             <td class="col-ops">
               <div class="row-ops">
-                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isSwitchDisabled(n)" @click="proxy.toggleUpstream(n)">
+                <button class="btn upstream-btn" :class="{ 'active-upstream': proxy.upstreamId === n.resource_id }" :disabled="!!isUpstreamDisabled(n)" @click="proxy.toggleUpstream(n)">
                   {{ proxy.upstreamId === n.resource_id ? '取消上游' : '设为上游' }}
-                </button>
-                <button v-if="n.resource_type === 'vultr' || n.resource_type === 'relay'" class="btn" :disabled="switching[n.resource_id]?.disabled || !!isSwitchDisabled(n)" @click="switchIp(n)">
-                  {{ switching[n.resource_id]?.text || (isSwitchDisabled(n) || '切换IP') }}
                 </button>
                 <button class="btn" :disabled="switching[n.resource_id]?.checking" @click="checkNode(n)">
                   {{ switching[n.resource_id]?.queued ? '排队中…' : switching[n.resource_id]?.checking ? `检测中 ${checkProgress(n)}` : '查联通性' }}
@@ -666,6 +767,38 @@ onMounted(() => {
     <ShareDialog v-if="shareNode" :node="shareNode" @close="shareNode = null" @show-qr="qr = $event" />
     <QrDialog v-if="qr" :name="qr.name" :link="qr.link" @close="qr = null" />
     <RegionModal v-if="regionNode" :node="regionNode" @pick="onRegionPick" @close="onRegionClose" />
+    <div v-if="candidateModal.show" class="modal-backdrop" @click.self="candidateModal.show = false">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-head">
+          <span class="modal-title">候选 IP — {{ candidateModal.node?.name || '' }}</span>
+          <button class="modal-close" @click="candidateModal.show = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="cand-list">
+            <button
+              v-for="(ip, i) in candidateModal.node?.candidate_ips || []"
+              :key="i"
+              class="cand-item"
+              :class="{
+                'cand-active': i === (Number(candidateModal.node?.active_ip_idx) || 0),
+                'cand-disabled': candDisabled(candidateModal.node, i),
+              }"
+              :disabled="switching[candidateModal.node?.resource_id]?.disabled || candDisabled(candidateModal.node, i)"
+              @click="switchToCandidate(candidateModal.node, i)"
+            >
+              <span class="cand-idx">{{ i + 1 }}</span>
+              <span class="cand-ip">{{ ip }}</span>
+              <span v-if="i === (Number(candidateModal.node?.active_ip_idx) || 0)" class="cand-cur">当前</span>
+              <span class="cand-meta">{{ candFlowText(candidateModal.node, i) }} · {{ candExpiryText(candidateModal.node, i) }}</span>
+              <span v-if="candStatus(candidateModal.node, i)" class="cand-badge">{{ candStatus(candidateModal.node, i) }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="candidateModal.show = false">关闭</button>
+        </div>
+      </div>
+    </div>
     <BatchDialog v-if="batchModal" :nodes="batchPending" @close="batchModal = false" @confirm="doBatchSwitch" />
     <UpdateDialog ref="updateDialog" />
   </div>

@@ -24,25 +24,27 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import api_client, config, ipqs
+from .. import api_client, config, ipqs, webshare
 from ..relay import SOCKS_USER, SS_METHOD, hysteria_port, reality_port, relay_node_data, socks_port
 from ..share import hysteria2_link, socks5_link, ss_link, vless_reality_link
 from .drag_table import DragTableWidget
+from .persist import SizedDialog, persist_col_widths
 from .workers import CallWorker
 
-_COLS = ["", "#", "名称", "类型", "评分", "前置服务器", "前置域名", "上游出口", "备注", "操作"]
-_COL_DEFAULTS = {0: 30, 1: 35, 2: 110, 3: 45, 4: 130, 5: 110, 6: 150, 7: 125, 8: 85}
+_COLS = ["", "#", "名称", "类型", "评分", "前置服务器", "前置域名", "上游出口", "上游账号", "备注", "操作"]
+_COL_DEFAULTS = {0: 30, 1: 35, 2: 110, 3: 45, 4: 130, 5: 110, 6: 150, 7: 125, 8: 90, 9: 85}
 _OP_COL = len(_COLS) - 1  # 操作列索引
 _SEL_COL = 0              # 勾选列（checkbox，批量分配用）
 
 # 回收页列（回收时间 + 被回收用户 + 手动回归）
-_RECYCLE_COLS = ["#", "名称", "类型", "回收时间", "被回收用户", "上游出口", "备注", "操作"]
+_RECYCLE_COLS = ["#", "名称", "类型", "回收时间", "被回收用户", "上游出口", "上游账号", "备注", "操作"]
 _RECYCLE_OP_COL = len(_RECYCLE_COLS) - 1
 
 
@@ -61,7 +63,10 @@ def _make_qr(link: str, size: int = 150) -> QPixmap:
     )
 
 
-class QrDialog(QDialog):
+class QrDialog(SizedDialog):
+    _size_key = "qr_dialog_size"
+    _default_w = 360
+    _default_h = 420
     """二维码弹窗：大二维码 + 复制二维码图片（方便粘贴发给客户扫码导入）。"""
 
     def __init__(self, name: str, link: str, parent=None):
@@ -95,7 +100,10 @@ class QrDialog(QDialog):
         self.copy_img_btn.setText("已复制 ✓")
 
 
-class NodeShareDialog(QDialog):
+class NodeShareDialog(SizedDialog):
+    _size_key = "node_share_dialog_size"
+    _default_w = 560
+    _default_h = 560
     """复制节点：展示 SS + SOCKS5 两个协议，含字段、复制链接、二维码。"""
 
     def __init__(self, relay: dict, server_ip: str, parent=None):
@@ -533,18 +541,36 @@ class NodesPage(QWidget):
             table.setItem(row, 6, domain_item)
             self._item(table, row, 7, upstream)
 
+            # 上游账号（该 IP 来自哪个 webshare 账号）
+            account_item = QTableWidgetItem(r.get("ws_account") or webshare.default_account_name())
+            account_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            account_item.setToolTip("该上游 IP 所属的 webshare 账号")
+            table.setItem(row, 8, account_item)
+
             # 备注（共用 webshare_notes，key = host:port，与 webshare-IP 页一致）
             notes = config.get("webshare_notes", {})
             note_item = QTableWidgetItem(notes.get(ip_key, ""))
             note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
             note_item.setToolTip("双击编辑备注（与 webshare-IP 页共用）")
-            table.setItem(row, 8, note_item)
+            table.setItem(row, 9, note_item)
 
             w = QWidget()
             lay = QHBoxLayout(w)
             lay.setContentsMargins(4, 2, 4, 2)
             lay.addStretch(1)
+            # 线路类型按钮：独立线路禁用；合并线路可点击查看候选 IP / 单独解除绑定
+            cands = r.get("candidate_upstreams") or []
+            merge_btn = QPushButton(f"合并线路{len(cands)}条" if len(cands) > 1 else "独立线路")
+            merge_btn.setProperty("compact", True)
+            merge_btn.setFixedHeight(30)
+            if len(cands) > 1:
+                merge_btn.setToolTip("点击查看合并的上游 IP，可单独解除绑定")
+                merge_btn.clicked.connect(lambda _=False, rel=r: self._show_merge(rel))
+            else:
+                merge_btn.setEnabled(False)
+                merge_btn.setToolTip("独立线路（单 IP）")
+            lay.addWidget(merge_btn)
             copy_btn = QPushButton("复制节点")
             copy_btn.setProperty("compact", True)
             copy_btn.setFixedHeight(30)
@@ -588,6 +614,8 @@ class NodesPage(QWidget):
             self._item(table, row, 3, r.get("recycled_at", ""))
             self._item(table, row, 4, r.get("recycled_from_user", ""))
             self._item(table, row, 5, upstream)
+            # 上游账号(6)：该 IP 所属的 webshare 账号
+            self._item(table, row, 6, r.get("ws_account") or webshare.default_account_name())
             # 备注（可编辑，共用 webshare_notes，key = host:port，回归后 webshare-IP 页可见）
             ip_key = f"{r.get('host','')}:{r.get('port','')}"
             notes = config.get("webshare_notes", {})
@@ -595,7 +623,7 @@ class NodesPage(QWidget):
             note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item.setData(Qt.ItemDataRole.UserRole, ip_key)
             note_item.setToolTip("双击编辑备注（与 webshare-IP 页共用，回归后可见）")
-            table.setItem(row, 6, note_item)
+            table.setItem(row, 7, note_item)
             w = QWidget()
             lay = QHBoxLayout(w)
             lay.setContentsMargins(4, 2, 4, 2)
@@ -616,8 +644,8 @@ class NodesPage(QWidget):
     def _assign_selected(self) -> None:
         """批量分配：把勾选的所有 IP 分配给一个用户（选用户 + 使用时长 + 订阅约束）。
 
-        勾选多个 relay 时可选择「合并成 1 条线路」：保留 1 个主 relay（1 域名/端口/密码），
-        其余 relay 的上游 IP 收进候选列表，客户切换 IP 时轮换这 N 个 IP。
+        勾选多个 relay 时逐个独立分配给该用户（每个 relay 一条线路）。合并与否由
+        webshare-IP 页生成中转时决定，这里不再询问。
         """
         from ..api_client import ApiError
         from ..webshare import subscription_quota_info
@@ -631,147 +659,53 @@ class NodesPage(QWidget):
         ip_type = "res" if ip_types == {"res"} else "dc"
         sub_info = subscription_quota_info(ip_type)
         sub_info["mixed"] = len(ip_types) > 1
-        dlg = _UserPickerDialog(self, resource_type="relay", sub_info=sub_info)
+        relay_hosts = [r.get("host", "") for r in self._selected.values()]
+        dlg = _UserPickerDialog(self, resource_type="relay", sub_info=sub_info, relay_hosts=relay_hosts)
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.user_id is None:
             return
 
         switch_api_key = str(config.get("switch_api_key", "") or "")
         server_map = getattr(self, "_server_map", {})
         selected_list = list(self._selected.values())
-
-        # 勾选多个 relay 时询问：合并成 1 条线路（轮换候选 IP）还是 N 条独立线路
-        merge = False
-        if len(selected_list) > 1:
-            box = QMessageBox(self)
-            box.setWindowTitle("合并分配")
-            box.setText(f"勾选了 {len(selected_list)} 个中转 IP，如何分配给该用户？")
-            box.setInformativeText(
-                "「合并成 1 条线路」：只分 1 个节点（1 个域名/端口/密码），"
-                "客户切换 IP 时在这 N 个 IP 之间轮换，客户无感。\n"
-                "「独立线路」：每个 IP 分 1 个节点（N 条独立线路）。"
-            )
-            merge_btn = box.addButton("合并成 1 条线路", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("独立线路（N 条）", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            merge = box.clickedButton() is merge_btn
+        # 勾选多个 IP 时，弹窗内已为每个 IP 单独设置配额/到期；单 IP 时为空列表
+        per_ip_settings = dlg.per_ip_results()
 
         ok = fail = 0
-        if merge:
-            main = selected_list[0]
-            others = selected_list[1:]
-            candidates = [
-                {"host": r.get("host", ""), "port": int(r.get("port", 0)),
-                 "user": r.get("user", ""), "password": r.get("password", "")}
-                for r in selected_list
-            ]
-            # 更新 config.relays：主 relay 持久化候选列表，删除其余 relay
-            all_relays = config.get("relays", []) or []
-            other_ids = {str(r.get("id", "")) for r in others}
-            updated = []
-            main_updated = None
-            for r in all_relays:
-                if str(r.get("id", "")) == str(main.get("id", "")):
-                    r2 = dict(r)
-                    r2["candidate_upstreams"] = candidates
-                    r2["active_upstream_idx"] = 0
-                    updated.append(r2)
-                    main_updated = r2
-                elif str(r.get("id", "")) in other_ids:
-                    continue  # 被合并进候选，删除
-                else:
-                    updated.append(r)
-            config.set_value("relays", updated)
-            # 分配主 relay（1 条线路）
-            target = main_updated or main
-            sid = target.get("server_id", "")
+        for i, relay in enumerate(selected_list):
+            sid = relay.get("server_id", "")
             srv_ip = server_map.get(sid, ("未知", ""))[0]
             if not srv_ip or srv_ip == "未知":
                 fail += 1
+                continue
+            nd = relay_node_data(relay, srv_ip, switch_api_key)
+            if per_ip_settings:
+                s = per_ip_settings[i]
+                expires_at = s.get("expiry")
+                quota = s.get("quota_gb") or 0
             else:
-                nd = relay_node_data(target, srv_ip, switch_api_key)
-                if dlg.expires_at:
-                    nd["client_expiry"] = dlg.expires_at
-                nd["quota_gb"] = dlg.quota_gb
-                try:
-                    api_client.assign(dlg.user_id, "relay", target["id"], nd, quota_gb=dlg.quota_gb)
-                    ok += 1
-                except ApiError:
-                    fail += 1
-            # 异步停掉其余 relay 服务（释放端口/进程，不阻断分配）
-            for r in others:
-                self._stop_relay_server_async(r)
-        else:
-            for relay in selected_list:
-                sid = relay.get("server_id", "")
-                srv_ip = server_map.get(sid, ("未知", ""))[0]
-                if not srv_ip or srv_ip == "未知":
-                    fail += 1
-                    continue
-                nd = relay_node_data(relay, srv_ip, switch_api_key)
-                if dlg.expires_at:
-                    nd["client_expiry"] = dlg.expires_at
-                nd["quota_gb"] = dlg.quota_gb
-                try:
-                    api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=dlg.quota_gb)
-                    ok += 1
-                except ApiError:
-                    fail += 1
+                expires_at = dlg.expires_at
+                quota = dlg.quota_gb
+            if expires_at:
+                nd["client_expiry"] = expires_at
+            nd["quota_gb"] = quota
+            # 同步候选 IP 级配额/到期（否则 Worker syncCandidateIpStatus 读候选为空，判定不限流量/不过期）
+            creds = nd.get("_creds", {}) or {}
+            for c in (creds.get("candidates") or []):
+                if not c.get("quota_gb"):
+                    c["quota_gb"] = quota
+                if expires_at and not c.get("expiry"):
+                    c["expiry"] = expires_at
+            nd["_creds"] = creds
+            try:
+                api_client.assign(dlg.user_id, "relay", relay["id"], nd, quota_gb=quota)
+                ok += 1
+            except ApiError:
+                fail += 1
         self._selected.clear()
         self._update_selected_label()
         self.refresh()
         color = "#32d74b" if fail == 0 else "#ff9f0a"
         self.status.setText(f'<span style="color:{color};">已分配 {ok} 个线路' + (f"，{fail} 个失败" if fail else "") + '</span>')
-
-    def _stop_relay_server_async(self, relay: dict) -> None:
-        """异步停掉一个 relay 的服务（合并时释放被合并进候选的 relay 的端口/进程）。"""
-        rid = str(relay.get("id", ""))
-        relay_port = int(relay.get("relay_port", 0))
-        socks_p = relay_port + 10000
-        server_id = relay.get("server_id", "")
-        server_map = getattr(self, "_server_map", {})
-        server_ip = next((ip for sid, (ip, _) in server_map.items() if sid == server_id), "")
-        if not rid or not server_ip:
-            return
-        root_pw = config.get("root_password", "")
-        if server_id.startswith("manual:"):
-            mid = server_id[len("manual:"):]
-            for m in (config.get("manual_servers", []) or []):
-                if m.get("id") == mid:
-                    root_pw = m.get("password", "") or root_pw
-                    break
-        else:
-            sc = (config.get("server_configs", {}) or {}).get(server_id, {})
-            root_pw = sc.get("root_password") or root_pw
-
-        def _do():
-            if not root_pw:
-                return "ERROR: 缺少 root 密码"
-            cmd = (
-                f"systemctl disable --now gost-relay-{rid} 2>/dev/null; "
-                f"rm -f /etc/systemd/system/gost-relay-{rid}.service; "
-                f"systemctl disable --now sing-box-relay-{rid} 2>/dev/null; "
-                f"rm -f /etc/systemd/system/sing-box-relay-{rid}.service /etc/sing-box/relay-{rid}.json; "
-                f"systemctl daemon-reload; "
-                f"ufw delete allow {relay_port}/tcp 2>/dev/null; "
-                f"ufw delete allow {relay_port}/udp 2>/dev/null; "
-                f"ufw delete allow {socks_p}/tcp 2>/dev/null; "
-                f"ufw delete allow {socks_p}/udp 2>/dev/null; "
-                f"ufw delete allow {reality_port(relay_port)}/tcp 2>/dev/null; "
-                f"ufw delete allow {reality_port(relay_port)}/udp 2>/dev/null; "
-                f"ufw delete allow {hysteria_port(relay_port)}/udp 2>/dev/null; "
-                f"echo DONE"
-            )
-            r = subprocess.run(
-                ["sshpass", "-p", root_pw, "ssh", "-o", "StrictHostKeyChecking=no",
-                 "-o", "ConnectTimeout=15", f"root@{server_ip}", cmd],
-                capture_output=True, text=True, timeout=120,
-            )
-            return r.stdout + r.stderr
-
-        w = CallWorker(_do)
-        w.finished.connect(w.deleteLater)
-        self._workers.append(w)
-        w.start()
 
     def _return_recycled(self, rid: str) -> None:
         """手动回归 = 解除冷却：从回收记录删掉，IP 回 webshare 未中转列表并标记「刚回归」。"""
@@ -799,7 +733,7 @@ class NodesPage(QWidget):
         if getattr(table, "_width_key", "") == "nodes_recycle_col_widths":
             if col == 6:  # 回收页备注
                 table.editItem(table.item(row, col))
-        elif col in (2, 8):  # 名称、备注
+        elif col in (2, 9):  # 名称、备注
             table.editItem(table.item(row, col))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -825,7 +759,7 @@ class NodesPage(QWidget):
         if is_recycle:
             if col != 6:  # 回收页只有备注可编辑
                 return
-        elif col not in (2, 8):  # 名称、备注
+        elif col not in (2, 9):  # 名称、备注
             return
         key = item.data(Qt.ItemDataRole.UserRole)
         if not key:
@@ -841,13 +775,18 @@ class NodesPage(QWidget):
             config.set_value("webshare_notes", notes)
             return
         if col == 2:
-            # 名称：写 relay 的 name（key = relay id）
+            # 名称：写 relay 的 name（key = relay id）+ 同步 D1 node_data.name
             relays = config.get("relays", [])
             for r in relays:
                 if r["id"] == key:
                     r["name"] = text
                     break
             config.set_value("relays", relays)
+            # 同步已分配的 node_data.name（客户端/线路明细/复制节点跟随）
+            try:
+                api_client.rename_assignment(str(key), text)
+            except Exception:
+                pass
         else:
             # 备注：写 webshare_notes（共用，key = host:port）
             notes = config.get("webshare_notes", {})
@@ -986,6 +925,124 @@ class NodesPage(QWidget):
         w.finished.connect(w.deleteLater)
         w.start()
 
+    def _show_merge(self, relay: dict) -> None:
+        """合并线路弹窗：列出候选上游 IP，可单独解除绑定（回收某个已绑定 IP）。"""
+        cands = relay.get("candidate_upstreams") or []
+        notes = config.get("webshare_notes", {}) or {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"合并线路详情 - {relay.get('name', '')}")
+        _saved = config.get("merge_dialog_size")
+        if _saved and len(_saved) == 2:
+            dlg.resize(int(_saved[0]), int(_saved[1]))  # 恢复上次调整的大小
+        else:
+            dlg.resize(720, 400)
+        v = QVBoxLayout(dlg)
+
+        tip = QLabel(f"共合并 {len(cands)} 个上游 IP，主线路为首个，客户「切换 IP」时在这几个之间轮换。\n"
+                     f"点击「解除绑定」把该 IP 回收到回收页，可再手动回归正常列表。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        table = QTableWidget(len(cands), 5)
+        table.setHorizontalHeaderLabels(["角色", "IP:端口", "用户名", "备注", "操作"])
+        _hdr = table.horizontalHeader()
+        _hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        _hdr.setStretchLastSection(False)
+        persist_col_widths(table, "merge_candidates_col_widths", [70, 150, 90, 140, 90])
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(36)  # 行高 36px，按钮垂直完整放下
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+        for i, c in enumerate(cands):
+            table.setRowHeight(i, 44)  # 显式行高，按钮垂直完整
+            key = f"{c.get('host', '')}:{c.get('port', '')}"
+            role_item = QTableWidgetItem("主线路" if i == 0 else f"候选 {i + 1}")
+            role_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 0, role_item)
+            ip_item = QTableWidgetItem(key)
+            ip_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 1, ip_item)
+            user_item = QTableWidgetItem(c.get("user", ""))
+            user_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 2, user_item)
+            note_item = QTableWidgetItem(notes.get(key, ""))
+            note_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 3, note_item)
+            if i == 0:
+                main_item = QTableWidgetItem("主线路")
+                main_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                main_item.setForeground(Qt.GlobalColor.gray)
+                main_item.setToolTip("主线路不可解除")
+                table.setItem(i, 4, main_item)
+            else:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(3, 0, 3, 0)
+                h.addStretch(1)
+                unbind_btn = QPushButton("解除绑定")
+                unbind_btn.setProperty("compact", True)
+                unbind_btn.setFixedSize(80, 32)
+                unbind_btn.clicked.connect(
+                    lambda _=False, idx=i: self._unbind_candidate(relay, idx, dlg)
+                )
+                h.addWidget(unbind_btn)
+                h.addStretch(1)
+                table.setCellWidget(i, 4, w)
+
+        v.addWidget(table)
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedHeight(32)
+        close_btn.clicked.connect(dlg.accept)
+        v.addWidget(close_btn)
+        dlg.exec()
+        config.set_value("merge_dialog_size", [dlg.width(), dlg.height()])
+
+    def _unbind_candidate(self, relay: dict, idx: int, dlg: QDialog) -> None:
+        """解除绑定某个候选 IP：从 candidate_upstreams 移除，该 IP 回收到回收页。"""
+        cands = relay.get("candidate_upstreams") or []
+        if idx >= len(cands):
+            return
+        target = cands[idx]
+        key = f"{target.get('host', '')}:{target.get('port', '')}"
+        ret = QMessageBox.question(
+            self, "解除绑定",
+            f"确定解除绑定 {key} 吗？\n该 IP 会回收到回收页，可再手动回归正常列表。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        new_cands = [c for j, c in enumerate(cands) if j != idx]
+        relays = config.get("relays", []) or []
+        for r in relays:
+            if r["id"] == relay["id"]:
+                if len(new_cands) <= 1:
+                    r.pop("candidate_upstreams", None)  # 只剩主线路，变回独立线路
+                else:
+                    r["candidate_upstreams"] = new_cands
+                break
+        config.set_value("relays", relays)
+
+        recycled = config.get("recycled_relays", []) or []
+        _ts = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
+        rec = {
+            "id": f"{relay['id']}-cand{idx + 1}",
+            "host": target.get("host", ""),
+            "port": target.get("port", ""),
+            "name": f"{relay.get('name', '')}-候选{idx + 1}",
+            "ip_type": relay.get("ip_type", "dc"),
+            "recycled_at": _ts,
+            "recycled_from_user": "未分配",
+            "ws_account": relay.get("ws_account", ""),
+        }
+        if not any(str(x.get("id", "")) == rec["id"] for x in recycled):
+            recycled.append(rec)
+        config.set_value("recycled_relays", recycled)
+
+        dlg.accept()
+        self._fill()
+
     def _recycle(self, rid: str) -> None:
         """手动回收 = 取消中转 + 记回收冷却：删 config + 清服务器 + 进回收页。"""
         relays = config.get("relays", [])
@@ -1001,19 +1058,35 @@ class NodesPage(QWidget):
         )
         if ret != QMessageBox.StandardButton.Yes:
             return
-        # 记回收冷却（先保存 relay 信息，_delete 会删 config.relays）
+        # 记回收冷却（先保存 relay 信息，_delete 会删 config.relays；合并线路主+候选各记一条，可单独回归）
         recycled = config.get("recycled_relays", []) or []
-        if not any(str(x.get("id", "")) == str(rid) for x in recycled):
-            recycled.append({
-                "id": rid,
-                "host": relay.get("host", ""),
-                "port": relay.get("port", ""),
-                "name": name,
+        _ts = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
+        _entries = [{
+            "id": rid,
+            "host": relay.get("host", ""),
+            "port": relay.get("port", ""),
+            "name": name,
+            "ip_type": relay.get("ip_type", "dc"),
+            "recycled_at": _ts,
+            "recycled_from_user": "未分配",
+            "ws_account": relay.get("ws_account", ""),
+        }]
+        cands = relay.get("candidate_upstreams") or []
+        for i, c in enumerate(cands[1:], start=2):  # 跳过主线路（cands[0] 即主线路）
+            _entries.append({
+                "id": f"{rid}-cand{i}",
+                "host": c.get("host", ""),
+                "port": c.get("port", ""),
+                "name": f"{name}-候选{i}",
                 "ip_type": relay.get("ip_type", "dc"),
-                "recycled_at": datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M"),
+                "recycled_at": _ts,
                 "recycled_from_user": "未分配",
+                "ws_account": relay.get("ws_account", ""),
             })
-            config.set_value("recycled_relays", recycled)
+        for e in _entries:
+            if not any(str(x.get("id", "")) == str(e["id"]) for x in recycled):
+                recycled.append(e)
+        config.set_value("recycled_relays", recycled)
         # 取消中转（删 config + 清服务器，复用 _delete）
         self._delete(rid)
         self.refresh()
