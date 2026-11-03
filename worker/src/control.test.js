@@ -245,3 +245,9 @@ test("cloud-init node-ready call sends the cert token header", () => {
   assert.match(script, /X-Cert-Token: sekret/);
   assert.match(script, /\/admin\/node-ready\?new_id=/);
 });
+
+test("cloud-init escapes cert token characters that bash would expand", () => {
+  const b64 = buildGostUserData({}, "n.example", null, "https://user.example", "a$b\"c`d");
+  const script = Buffer.from(b64, "base64").toString("utf8");
+  assert.ok(script.includes("X-Cert-Token: a\\$b\\\"c\\`d"));
+});
