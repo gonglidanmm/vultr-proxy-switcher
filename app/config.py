@@ -1,7 +1,7 @@
 """持久化配置：JSON 存 ~/.vultr-proxy-switcher/config.json。
 
-只存非敏感/用户可编辑的字段。代理账号密码沿用旧配置作为默认值，
-用户可在设置页改。Vultr API 密钥由用户输入。
+只存非敏感/用户可编辑的字段。代理账号密码默认空，
+新建 Vultr 时由 gencreds.generate_credentials() 现生成。Vultr API 密钥由用户输入。
 """
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ DEFAULTS: dict = {
     "label": "vultr-proxy-node",
     "regions": ["nrt", "osa"],
     "plans": ["vhf-1c-1gb", "vc2-1c-1gb"],
-    # 远端 gost 代理的账号密码端口（cloud-init 安装时写入）
-    "proxy_user": "yduas4980",
-    "proxy_pass": "a9966996",
+    # 远端 gost 代理的账号密码端口。默认空：已有 config.json 不受影响；
+    # 首次建机走 gencreds.generate_credentials()，不把口令写进仓库。
+    "proxy_user": "",
+    "proxy_pass": "",
     "proxy_port": 1080,
     # 本地转发代理监听端口
     "local_port": 1080,

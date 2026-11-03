@@ -7,8 +7,6 @@ import urllib.request
 
 from . import config
 
-DEFAULT_KEY = "fqjGYzhdyEYZS5YqE7KcFtUqJwXJC75W"
-
 
 def bj_today() -> str:
     """北京时间今天的日期（UTC+8 固定偏移，与本机时区无关）。"""
@@ -16,7 +14,8 @@ def bj_today() -> str:
 
 
 def ipqs_key() -> str:
-    return config.get("ipqs_key") or DEFAULT_KEY
+    """只读 config.json 的 ipqs_key。没配就返回空串，调用方不要发请求。"""
+    return (config.get("ipqs_key") or "").strip()
 
 
 def ipqs_remaining() -> int:
@@ -46,7 +45,10 @@ def check_ip(ip: str) -> dict:
     返回 {"score", "proxy", "vpn", "tor", "abuse"}；
     额度耗尽返回 {"quota": True, "message": ...}；网络/key 失败抛异常。
     """
-    url = f"https://www.ipqualityscore.com/api/json/ip/{ipqs_key()}/{ip}"
+    key = ipqs_key()
+    if not key:
+        raise RuntimeError("未配置 IPQS 密钥（config.json 的 ipqs_key）")
+    url = f"https://www.ipqualityscore.com/api/json/ip/{key}/{ip}"
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=15) as resp:
         r = json.load(resp)

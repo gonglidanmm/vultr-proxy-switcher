@@ -32,15 +32,19 @@ class WebshareError(Exception):
 
 
 def list_accounts() -> list[dict]:
-    """返回 webshare 多账号列表 [{name, api_key}]（向下兼容旧的 webshare_api_key）。"""
+    """返回 webshare 多账号列表 [{name, api_key}]（向下兼容旧的 webshare_api_key）。
+
+    与设置页账号表、key_for_host、管理 IP 下拉共用 account_choices。
+    """
     from . import config
+    from .relay_ops import account_choices
 
     accounts = config.get("webshare_accounts", []) or []
     if not accounts:
-        legacy = config.get("webshare_api_key", "")
+        legacy = (config.get("webshare_api_key", "") or "").strip()
         if legacy:
             accounts = [{"name": "默认账号", "api_key": legacy}]
-    return [a for a in accounts if a.get("api_key")]
+    return account_choices(accounts)
 
 
 def get_active_account() -> dict | None:
@@ -323,9 +327,15 @@ def get_replacement_status(api_key: str, plan_id: int, replacement_id: int) -> d
         raise WebshareError(detail.get("detail") or detail.get("error") or f"HTTP {e.code}", e.code)
 
 
-def list_replaced_proxies(api_key: str) -> list[dict]:
-    """列出被替换的代理（旧 IP → 新 IP），用于标记替换成功的新 IP。"""
-    data = _get(api_key, "/proxy/list/replaced/")
+def list_replaced_proxies(api_key: str, replacement_id: int | None = None) -> list[dict]:
+    """列出被替换的代理（旧 IP → 新 IP）。
+
+    replacement_id 有值时只取这一次替换，避免翻到历史记录把线路指到旧地址。
+    """
+    path = "/proxy/list/replaced/"
+    if replacement_id:
+        path += f"?proxy_list_replacement={int(replacement_id)}"
+    data = _get(api_key, path)
     return data.get("results", []) or []
 
 
