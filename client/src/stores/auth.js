@@ -1,6 +1,5 @@
 import { defineStore } from "pinia";
 import { api, TOKEN_KEY, USER_KEY } from "../api/index.js";
-import { ACCOUNT_DISABLED_TEXT } from "../utils/clientRules.js";
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
@@ -23,7 +22,7 @@ export const useAuthStore = defineStore("auth", {
         localStorage.setItem(TOKEN_KEY, data.token);
         localStorage.setItem(USER_KEY, JSON.stringify(data.user));
       } catch (e) {
-        this.error = e.accountDisabled ? ACCOUNT_DISABLED_TEXT : (e.message || "登录失败");
+        this.error = e.message || "登录失败";
         throw e;
       } finally {
         this.loading = false;

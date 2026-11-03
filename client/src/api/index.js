@@ -22,7 +22,6 @@ export async function api(path, method = "GET", body = null, auth = true) {
     err.status = resp.status;
     // 账号被禁用：清本地登录态并通知 App，登录页显示「账号已禁用」
     if (disabledText) {
-      err.accountDisabled = true;
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
       window.dispatchEvent(new CustomEvent("proxy:auth-disabled", { detail: disabledText }));
