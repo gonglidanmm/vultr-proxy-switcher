@@ -1244,7 +1244,7 @@ class _ManageIpsDialog(SizedDialog):
         )
         if not ok:
             return
-        dlg = _DurationDialog(self, (c.get("expiry") or "").strip())
+        dlg = _DurationDialog(self, (c.get("expiry") or self._line_expiry or "").strip())
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         c["quota_gb"] = q
@@ -1511,17 +1511,18 @@ class _ManageIpsDialog(SizedDialog):
                 "ws_account": c0.get("ws_account", ""),
             }
         nd["_creds"] = creds
-        # 当前激活候选的配额/到期 → 同步到分配记录 quota_gb / expires_at（客户端/外面线路明细读这个权威值）
+        # 当前激活候选的配额/到期 → 同步到分配记录 quota_gb 与 node_data.client_expiry（外面线路明细/客户端读这两个权威值）
         active_quota = 0.0
         active_expiry = None
         if self._cands and self._active_idx < len(self._cands):
             active_quota = float(self._cands[self._active_idx].get("quota_gb") or 0)
             active_expiry = (self._cands[self._active_idx].get("expiry") or "").strip() or None
         nd["expiry"] = active_expiry or ""
+        nd["client_expiry"] = active_expiry or ""  # 独立线路的到期权威字段（外面/客户端读它）
         try:
             api_client.assign(
                 self._u["user_id"], "relay", rid, nd,
-                expires_at=active_expiry, quota_gb=active_quota,
+                quota_gb=active_quota,
             )
         except ApiError as e:
             QMessageBox.warning(self, "保存失败", e.message)
