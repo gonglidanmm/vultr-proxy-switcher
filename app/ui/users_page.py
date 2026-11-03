@@ -1867,19 +1867,22 @@ class _UserLinesDialog(SizedDialog):
         acct.setToolTip(f"上游账号：{acct_tip}")
         table.setItem(row, 3, acct)
 
-        flow_btn = QPushButton(traffic)
-        flow_btn.setProperty("compact", True)
-        flow_btn.setToolTip("点击设置流量配额")
-        flow_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_quota(a, node))
-        table.setCellWidget(row, 4, flow_btn)
+        # 流量列(4)：只读展示（修改统一在「管理 IP」里）
+        flow_it = QTableWidgetItem(traffic)
+        flow_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        flow_it.setForeground(Qt.GlobalColor.white)
+        flow_it.setToolTip("配额/流量请在「管理 IP」里修改")
+        table.setItem(row, 4, flow_it)
 
-        exp_btn = QPushButton(countdown)
-        exp_btn.setProperty("compact", True)
-        exp_btn.setToolTip(f"点击设置到期时间\n当前: {ce or '不过期'}")
+        # 到期列(6)：只读展示（修改统一在「管理 IP」里）
+        exp_it = QTableWidgetItem(countdown)
+        exp_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         if "已过期" in countdown or "已到期" in countdown:
-            exp_btn.setStyleSheet("color:#ff453a;")
-        exp_btn.clicked.connect(lambda _=False, a=a, node=node: self._edit_expiry(a, node))
-        table.setCellWidget(row, 6, exp_btn)
+            exp_it.setForeground(Qt.GlobalColor.red)
+        else:
+            exp_it.setForeground(Qt.GlobalColor.white)
+        exp_it.setToolTip("到期时间请在「管理 IP」里修改")
+        table.setItem(row, 6, exp_it)
 
         op_w = QWidget()
         op_lay = QHBoxLayout(op_w)
