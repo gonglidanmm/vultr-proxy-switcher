@@ -285,7 +285,9 @@ class SettingsPage(QWidget):
 
     # ---------- webshare 多账号管理 ----------
     def _collect_ws_accounts(self) -> list[dict]:
-        """从表格读所有账号 [{name, api_key}]（跳过空 key）。"""
+        """从表格读所有账号 [{name, api_key}]，形状与 list_accounts / key_for_host 一致。"""
+        from ..relay_ops import account_choices
+
         out = []
         for row in range(self.ws_accounts_table.rowCount()):
             name = (self.ws_accounts_table.item(row, 0).text().strip() if self.ws_accounts_table.item(row, 0) else "")
@@ -293,7 +295,7 @@ class SettingsPage(QWidget):
             key = key_item.data(Qt.ItemDataRole.UserRole) if key_item else ""
             if key:
                 out.append({"name": name or f"账号{row + 1}", "api_key": key})
-        return out
+        return account_choices(out)
 
     def _persist_ws_accounts(self) -> None:
         """立即保存账号列表到 config（添加/删除/改名后即时生效，不必点保存按钮）。"""

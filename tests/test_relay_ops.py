@@ -9,9 +9,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.relay_ops import (  # noqa: E402
+    account_choices,
     account_name_for_key,
+    api_key_for_choice,
+    apply_active_primary,
+    apply_pool_replacement,
+    upstream_changed,
     available_pool,
+    apply_detail_renewal,
+    endpoint_from_list,
+    hosts_to_reset,
+    pick_replacement,
     resolve_replace_account,
+    restore_failed_renewal,
 )
 
 ACCOUNTS = [
@@ -71,8 +81,8 @@ def test_available_pool_keeps_only_free():
     assert [p["proxy_address"] for p in out] == ["1.1.1.1"]
 
 
-def test_available_pool_cur_host_overrides_used():
-    """当前线路自己的 IP：即使 host:port 命中 used，也允许（因为属于本线路候选）。"""
+def test_available_pool_excludes_current_host():
+    """当前线路的 host 一律排除，即使它也在 used 里（替换不能选回自己）。"""
     proxies = [
         {"proxy_address": "5.5.5.5", "port": 500},
     ]
@@ -80,7 +90,17 @@ def test_available_pool_cur_host_overrides_used():
     recycled = set()
     cur_hosts = {"5.5.5.5"}
     out = available_pool(proxies, used, recycled, cur_hosts)
-    assert len(out) == 0  # host 在 cur_hosts → 排除（替换不能选自己）
+    assert len(out) == 0
+
+
+def test_available_pool_does_not_filter_country():
+    """国家过滤在界面层，不在 available_pool。"""
+    proxies = [
+        {"proxy_address": "1.1.1.1", "port": 100, "country_code": "US"},
+        {"proxy_address": "8.8.8.8", "port": 100, "country_code": "JP"},
+    ]
+    out = available_pool(proxies, set(), set(), set())
+    assert [p["country_code"] for p in out] == ["US", "JP"]
 
 
 def test_available_pool_empty_input():
@@ -95,3 +115,278 @@ def test_account_name_for_key_found():
 
 def test_account_name_for_key_missing():
     assert account_name_for_key("nope", ACCOUNTS) == ""
+
+
+# ---------- 管理 IP 保存：主上游跟激活候选，不跟 candidates[0] ----------
+
+def test_apply_active_primary_uses_second_candidate():
+    """激活第 2 个候选后，线路 host 与 node_data.ip / upstream 都是第 2 个。"""
+    candidates = [
+        {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa",
+         "ws_account": "acc-a", "quota_gb": 10, "expiry": "2026-01-01 00:00:00"},
+        {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb",
+         "ws_account": "acc-b", "quota_gb": 5, "expiry": "2026-06-01 00:00:00"},
+    ]
+    relay = {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa"}
+    node = {"ip": "1.1.1.1", "quota_gb": 10, "_creds": {}}
+    primary = apply_active_primary(relay, node, candidates, 1)
+    assert primary["host"] == "2.2.2.2"
+    assert relay["host"] == "2.2.2.2"
+    assert relay["port"] == 200
+    assert relay["user"] == "b"
+    assert relay["password"] == "pb"
+    assert relay["ws_account"] == "acc-b"
+    assert node["ip"] == "2.2.2.2"
+    assert node["quota_gb"] == 5
+    assert node["_creds"]["upstream"] == {
+        "host": "2.2.2.2",
+        "port": 200,
+        "user": "b",
+        "password": "pb",
+        "ws_account": "acc-b",
+    }
+
+
+def test_hosts_to_reset_only_renewable():
+    """禁用或本次续费、且到期未过的候选才需要 reset_flow。过期的保持禁用，不重置。"""
+    now = "2026-06-01 00:00:00"
+    cands = [
+        {"host": "1.1.1.1", "expiry": "2026-07-01 00:00:00", "enabled": False},
+        {"host": "2.2.2.2", "expiry": "2026-01-01 00:00:00", "enabled": False},
+        {"host": "3.3.3.3", "expiry": "", "enabled": True},
+    ]
+    assert hosts_to_reset(cands, {"1.1.1.1", "2.2.2.2"}, set(), now) == ["1.1.1.1"]
+    assert hosts_to_reset(cands, set(), {"3.3.3.3"}, now) == ["3.3.3.3"]
+    assert hosts_to_reset(cands, set(), set(), now) == []
+
+
+def test_restore_failed_renewal_keeps_disabled_candidate():
+    """reset_flow 失败时，把本次续费改过的启用和已用拨回去，配额编辑留下。"""
+    original = [{"host": "1.1.1.1", "enabled": False, "used_gb": 4, "quota_gb": 1}]
+    current = [{"host": "1.1.1.1", "enabled": True, "used_gb": 0, "quota_gb": 9}]
+    restore_failed_renewal(current, original, ["1.1.1.1"])
+    assert current[0]["enabled"] is False
+    assert current[0]["used_gb"] == 4
+    assert current[0]["quota_gb"] == 9
+
+
+def test_apply_detail_renewal_failure_does_not_enable():
+    """线路明细改到期/配额时，reset_flow 失败不启用，已用保持原值。"""
+    cand = {"host": "1.1.1.1", "enabled": True, "used_gb": 0, "expiry": "2026-07-01 00:00:00", "quota_gb": 9}
+    ok = apply_detail_renewal(cand, False, "2026-06-01 00:00:00", False, 4)
+    assert ok is False
+    assert cand["enabled"] is False
+    assert cand["used_gb"] == 4
+    assert cand["quota_gb"] == 9
+
+
+def test_apply_detail_renewal_success_enables_when_unexpired():
+    cand = {"host": "1.1.1.1", "enabled": False, "used_gb": 4, "expiry": "2026-07-01 00:00:00"}
+    assert apply_detail_renewal(cand, True, "2026-06-01 00:00:00", False, 4) is True
+    assert cand["enabled"] is True
+    assert cand["used_gb"] == 0
+
+
+def test_apply_detail_renewal_success_leaves_expired_disabled():
+    cand = {"host": "1.1.1.1", "enabled": False, "used_gb": 4, "expiry": "2026-01-01 00:00:00"}
+    assert apply_detail_renewal(cand, True, "2026-06-01 00:00:00", False, 4) is True
+    assert cand["enabled"] is False
+    assert cand["used_gb"] == 0
+
+
+def test_restore_failed_renewal_unknown_host_stays_disabled():
+    current = [{"host": "9.9.9.9", "enabled": True, "used_gb": 0}]
+    restore_failed_renewal(current, [], ["9.9.9.9"])
+    assert current[0]["enabled"] is False
+
+
+def test_upstream_changed_when_active_candidate_switches():
+    """候选集合没变，但激活的 IP 变了，部署用的上游也变了。"""
+    assert upstream_changed("1.1.1.1", 100, "2.2.2.2", 200) is True
+    assert upstream_changed("1.1.1.1", 100, "1.1.1.1", "100") is False
+
+
+def test_apply_active_primary_empty_candidates():
+    relay = {"host": "1.1.1.1"}
+    node = {"ip": "1.1.1.1"}
+    assert apply_active_primary(relay, node, [], 1) is None
+    assert relay["host"] == "1.1.1.1"
+    assert node["ip"] == "1.1.1.1"
+
+
+# ---------- 列表替换：把新 IP 写回线路和分配快照 ----------
+
+def test_pick_replacement_uses_newest_match():
+    records = [
+        {"proxy": "1.1.1.1", "proxy_port": 100, "replaced_with": "9.9.9.9",
+         "replaced_with_port": 900, "created_at": "2026-01-01T00:00:00"},
+        {"proxy": "1.1.1.1", "proxy_port": 100, "replaced_with": "8.8.8.8",
+         "replaced_with_port": 800, "created_at": "2026-02-01T00:00:00"},
+        {"proxy": "3.3.3.3", "proxy_port": 300, "replaced_with": "7.7.7.7",
+         "replaced_with_port": 700, "created_at": "2026-03-01T00:00:00"},
+    ]
+    picked = pick_replacement(records, "1.1.1.1", 100)
+    assert picked["replaced_with"] == "8.8.8.8"
+    assert picked["replaced_with_port"] == 800
+
+
+def test_endpoint_from_list_requires_credentials():
+    proxies = [
+        {"proxy_address": "8.8.8.8", "port": 800, "username": "n", "password": "pn"},
+        {"proxy_address": "9.9.9.9", "port": 900, "username": "", "password": ""},
+    ]
+    assert endpoint_from_list(proxies, "8.8.8.8", 800) == {
+        "host": "8.8.8.8", "port": 800, "user": "n", "password": "pn",
+    }
+    assert endpoint_from_list(proxies, "9.9.9.9", 900) is None
+
+
+def test_apply_pool_replacement_rewrites_active_line_and_snapshot():
+    """已生成线路的当前上游被替换后，config host 与 D1 ip 都变成新 IP。"""
+    relays = [{
+        "id": "r1",
+        "server_id": "manual:s",
+        "host": "2.2.2.2",
+        "port": 200,
+        "user": "b",
+        "password": "pb",
+        "active_upstream_idx": 1,
+        "candidate_upstreams": [
+            {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa",
+             "quota_gb": 10, "expiry": "2026-01-01", "enabled": True, "used_gb": 3,
+             "ws_account": "acc-a"},
+            {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb",
+             "quota_gb": 5, "expiry": "2026-06-01", "enabled": False, "used_gb": 1,
+             "ws_account": "acc-b"},
+        ],
+    }]
+    assignments = [{
+        "user_id": 7,
+        "resource_type": "relay",
+        "resource_id": "r1",
+        "quota_gb": 5,
+        "node_data": {
+            "ip": "2.2.2.2",
+            "quota_gb": 5,
+            "name": "line",
+            "_creds": {
+                "active_idx": 1,
+                "upstream": {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb"},
+                "candidates": [
+                    {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa",
+                     "quota_gb": 10, "used_gb": 3},
+                    {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb",
+                     "quota_gb": 5, "used_gb": 1, "enabled": False},
+                ],
+            },
+        },
+    }]
+    new = {"host": "8.8.8.8", "port": 800, "user": "n", "password": "pn"}
+    out = apply_pool_replacement(relays, assignments, "2.2.2.2", 200, new)
+    relay = out["relays"][0]
+    assert relay["host"] == "8.8.8.8"
+    assert relay["port"] == 800
+    assert relay["user"] == "n"
+    assert relay["password"] == "pn"
+    assert relay["candidate_upstreams"][0]["host"] == "1.1.1.1"
+    assert relay["candidate_upstreams"][1]["host"] == "8.8.8.8"
+    assert relay["candidate_upstreams"][1]["quota_gb"] == 5
+    assert relay["candidate_upstreams"][1]["used_gb"] == 1
+    assert relay["candidate_upstreams"][1]["enabled"] is False
+    nd = out["assignments"][0]["node_data"]
+    assert nd["ip"] == "8.8.8.8"
+    assert nd["quota_gb"] == 5
+    assert nd["_creds"]["upstream"]["host"] == "8.8.8.8"
+    assert nd["_creds"]["upstream"]["password"] == "pn"
+    assert nd["_creds"]["candidates"][1]["host"] == "8.8.8.8"
+    assert nd["_creds"]["candidates"][1]["used_gb"] == 1
+    assert out["changed_relay_ids"] == ["r1"]
+    assert out["deploy_server_ids"] == ["manual:s"]
+    assert relays[0]["host"] == "2.2.2.2"
+
+
+def test_apply_pool_replacement_leaves_other_candidate_primary():
+    """替换非当前上游时，不改 host / node ip，也不要求重新部署。"""
+    relays = [{
+        "id": "r1",
+        "server_id": "manual:s",
+        "host": "2.2.2.2",
+        "port": 200,
+        "user": "b",
+        "password": "pb",
+        "active_upstream_idx": 1,
+        "candidate_upstreams": [
+            {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa", "quota_gb": 10},
+            {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb", "quota_gb": 5},
+        ],
+    }]
+    assignments = [{
+        "user_id": 7,
+        "resource_type": "relay",
+        "resource_id": "r1",
+        "node_data": {
+            "ip": "2.2.2.2",
+            "_creds": {
+                "active_idx": 1,
+                "upstream": {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb"},
+                "candidates": [
+                    {"host": "1.1.1.1", "port": 100, "user": "a", "password": "pa"},
+                    {"host": "2.2.2.2", "port": 200, "user": "b", "password": "pb"},
+                ],
+            },
+        },
+    }]
+    new = {"host": "8.8.8.8", "port": 800, "user": "n", "password": "pn"}
+    out = apply_pool_replacement(relays, assignments, "1.1.1.1", 100, new)
+    assert out["relays"][0]["host"] == "2.2.2.2"
+    assert out["relays"][0]["candidate_upstreams"][0]["host"] == "8.8.8.8"
+    assert out["assignments"][0]["node_data"]["ip"] == "2.2.2.2"
+    assert out["deploy_server_ids"] == []
+
+
+def test_apply_pool_replacement_refuses_incomplete_endpoint():
+    relays = [{"id": "r1", "host": "1.1.1.1", "port": 100, "user": "a", "password": "pa"}]
+    out = apply_pool_replacement(relays, [], "1.1.1.1", 100, {"host": "8.8.8.8", "port": 800, "user": "", "password": ""})
+    assert out["relays"][0]["host"] == "1.1.1.1"
+    assert out["changed_relay_ids"] == []
+
+
+# ---------- 设置页账号表与管理 IP 下拉共用 webshare_accounts ----------
+
+def test_account_choices_keeps_second_key():
+    choices = account_choices([
+        {"name": " gonglidanmm ", "api_key": " key-a "},
+        {"name": "baoyexiong4980", "api_key": "key-b"},
+        {"name": "empty", "api_key": "  "},
+    ])
+    assert choices == [
+        {"name": "gonglidanmm", "api_key": "key-a"},
+        {"name": "baoyexiong4980", "api_key": "key-b"},
+    ]
+    assert api_key_for_choice("baoyexiong4980", choices) == "key-b"
+
+
+def test_list_accounts_and_key_for_host_see_second_key(monkeypatch):
+    """设置页写入的 webshare_accounts，list_accounts 与 key_for_host 都能看到第二个 key。"""
+    stored = [
+        {"name": "gonglidanmm", "api_key": "key-a"},
+        {"name": "baoyexiong4980", "api_key": "key-b"},
+    ]
+
+    def fake_get(key, default=None):
+        if key == "webshare_accounts":
+            return stored
+        return default
+
+    monkeypatch.setattr("app.config.get", fake_get)
+
+    def fake_load(key):
+        if key == "key-b":
+            return {"proxy_servers": [{"proxy_address": "9.9.9.9"}], "static_residential": []}
+        return {"proxy_servers": [{"proxy_address": "1.1.1.1"}], "static_residential": []}
+
+    monkeypatch.setattr("app.webshare.load_lists", fake_load)
+    from app.webshare import key_for_host, list_accounts
+
+    assert [a["api_key"] for a in list_accounts()] == ["key-a", "key-b"]
+    assert key_for_host("9.9.9.9") == "key-b"

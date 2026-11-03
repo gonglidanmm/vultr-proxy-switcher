@@ -822,9 +822,14 @@ class WebsharePage(QWidget):
         self._update_relay_overview()
         self.tabs.setTabText(0, f"代理服务器（机房 · {len(self._dc)}）")
         self.tabs.setTabText(1, f"静态住宅（ISP · {len(self._res)}）")
-        self._set_status(
-            f"加载成功：代理服务器 {len(self._dc)} 个，静态住宅 {len(self._res)} 个", ok=True
-        )
+        notice = getattr(self, "_replace_notice", "") or ""
+        self._replace_notice = ""
+        deploy_ids = getattr(self, "_pending_deploy", None) or []
+        self._pending_deploy = None
+        loaded = f"加载成功：代理服务器 {len(self._dc)} 个，静态住宅 {len(self._res)} 个"
+        self._set_status(f"{loaded}。{notice}" if notice else loaded, ok=True)
+        if deploy_ids:
+            self._deploy_sids(deploy_ids)
         # 异步查询 IPQS 账户真实剩余 credits（按钮显示真实次数）
         self._refresh_ipqs_credits()
 
@@ -950,7 +955,14 @@ class WebsharePage(QWidget):
 
     def _on_failed(self, msg: str) -> None:
         self.refresh_btn.setEnabled(True)
-        self._set_status(f"失败：{msg}", warn=True)
+        notice = getattr(self, "_replace_notice", "") or ""
+        self._replace_notice = ""
+        deploy_ids = getattr(self, "_pending_deploy", None) or []
+        self._pending_deploy = None
+        extra = f" {notice}" if notice else ""
+        self._set_status(f"失败：{msg}{extra}", warn=True)
+        if deploy_ids:
+            self._deploy_sids(deploy_ids)
 
     def _fill(self, table: DragTableWidget, proxies: list, ip_type: str) -> None:
         # 只显示未中转 + 符合国家/城市筛选的 IP；回归过的排最后
@@ -1070,7 +1082,7 @@ class WebsharePage(QWidget):
                 self._start_quota_timer()
             check_btn.clicked.connect(lambda _=False, b=check_btn, a=addr, k=ip_key: self._check_ip(a, k, b))
             lay.addWidget(check_btn)
-            # 替换按钮（只对未中转 IP；res 计划不支持替换，已中转替换会导致 relay 失效）
+            # 未中转 IP 才显示在这张表里。若地址其实已在线路上，成功回调会写回 relays 和分配快照。
             plan_id = p.get("_plan_id")
             repl_avail = self._plan_repl.get(plan_id, 0)
             repl_btn = QPushButton(f"替换(剩{repl_avail})")
@@ -1080,9 +1092,15 @@ class WebsharePage(QWidget):
                 repl_btn.setEnabled(False)
                 repl_btn.setToolTip("住宅 IP 计划不支持替换（webshare 限制）")
             else:
-                repl_btn.setToolTip("替换成新的同类型 IP（消耗月度替换配额）")
+                repl_btn.setToolTip(
+                    "同国家替换账号池里的这个 IP。这张表只列未中转地址；"
+                    "若配置里仍有它，会写回线路，写不回时已分配线路请用管理 IP。"
+                )
                 repl_btn.setEnabled(repl_avail > 0)
-                repl_btn.clicked.connect(lambda _=False, b=repl_btn, a=addr, pid=plan_id, cc=p.get("country_code", ""): self._replace_ip(a, pid, cc, b))
+                repl_btn.clicked.connect(
+                    lambda _=False, b=repl_btn, a=addr, pt=port, pid=plan_id, cc=p.get("country_code", ""):
+                    self._replace_ip(a, pt, pid, cc, b)
+                )
             lay.addWidget(repl_btn)
             lay.addStretch(1)
             table.setCellWidget(row, _OP_COL, w)
@@ -1243,7 +1261,9 @@ class WebsharePage(QWidget):
 
     def _refresh_ipqs_credits(self) -> None:
         """异步查询 IPQS 账户真实剩余 credits，刷新按钮显示。"""
-        ipqs_key = config.get("ipqs_key") or "fqjGYzhdyEYZS5YqE7KcFtUqJwXJC75W"
+        ipqs_key = ipqs.ipqs_key()
+        if not ipqs_key:
+            return
 
         def _do():
             url = f"https://www.ipqualityscore.com/api/json/account/{ipqs_key}"
@@ -1278,7 +1298,10 @@ class WebsharePage(QWidget):
 
     def _probe_quota(self) -> None:
         """探测 IPQS 额度是否已恢复（查一个固定 IP，看是否 success）。"""
-        ipqs_key = config.get("ipqs_key") or "fqjGYzhdyEYZS5YqE7KcFtUqJwXJC75W"
+        ipqs_key = ipqs.ipqs_key()
+        if not ipqs_key:
+            self._on_probe_done(False)
+            return
 
         def _do():
             url = f"https://www.ipqualityscore.com/api/json/ip/{ipqs_key}/8.8.8.8"
@@ -1362,8 +1385,8 @@ class WebsharePage(QWidget):
         self._fill(self.dc_table, self._dc, "dc")
         self._fill(self.res_table, self._res, "res")
 
-    def _replace_ip(self, addr: str, plan_id, country_code: str, btn: QPushButton) -> None:
-        """替换 IP（异步：提交替换请求 → 轮询到完成 → 刷新列表），实时回显详细过程。"""
+    def _replace_ip(self, addr: str, port, plan_id, country_code: str, btn: QPushButton) -> None:
+        """替换账号池里的 IP。完成后若该地址已在线路上，把新 IP 写回 relays 和分配快照。"""
         btn.setEnabled(False)
         btn.setText("替换中…")
         api_key = self.account_combo.currentData() or ""
@@ -1391,8 +1414,8 @@ class WebsharePage(QWidget):
                 state = status.get("state", "")
                 _p(f"轮询第 {i + 1}/30 次：状态={state or '未知'}")
                 if state == "completed":
-                    _p("✅ 替换完成，新 IP 已生效")
-                    return ("ok", status.get("proxies_added", 1))
+                    _p("✅ 替换完成，正在核对是否要写回已分配线路…")
+                    return ("ok", self._plan_pool_writeback(api_key, addr, port, repl_id))
                 if state == "failed":
                     err = status.get("error") or ""
                     code = status.get("error_code") or ""
@@ -1412,11 +1435,63 @@ class WebsharePage(QWidget):
         w.finished.connect(w.deleteLater)
         w.start()
 
+    def _plan_pool_writeback(self, api_key: str, addr: str, port, replacement_id) -> dict:
+        """在工作线程里查出新 IP。对不上旧地址或没有新凭据时不猜，留给界面提示用管理 IP。"""
+        from .. import api_client
+        from ..relay_ops import apply_pool_replacement, endpoint_from_list, pick_replacement
+
+        try:
+            try:
+                recs = webshare.list_replaced_proxies(api_key, replacement_id)
+            except Exception:
+                recs = webshare.list_replaced_proxies(api_key)
+            picked = pick_replacement(recs, addr, port)
+            if not picked:
+                return {"written": False, "reason": "no-record"}
+            lists = webshare.load_lists(api_key)
+            proxies = (lists.get("proxy_servers") or []) + (lists.get("static_residential") or [])
+            endpoint = endpoint_from_list(
+                proxies, picked.get("replaced_with"), picked.get("replaced_with_port"),
+            )
+            if not endpoint:
+                return {"written": False, "reason": "no-creds"}
+            assignments = api_client.list_all_assignments().get("assignments") or []
+        except Exception:
+            return {"written": False, "reason": "lookup"}
+        patched = apply_pool_replacement(config.get("relays") or [], assignments, addr, port, endpoint)
+        return {"written": True, "endpoint": endpoint, "patched": patched}
+
+    def _commit_pool_writeback(self, info: dict) -> tuple[str, list]:
+        """主线程写 config 和 D1。不调用管理 IP 的 _save：那条路径会把禁用候选当成续费清零。"""
+        if not info.get("written"):
+            return "账号池已更换。没有改已分配线路；若这个 IP 已在线路上，请用管理 IP。", []
+        patched = info.get("patched") or {}
+        host = (info.get("endpoint") or {}).get("host") or ""
+        if not patched.get("changed_relay_ids") and not patched.get("assignments"):
+            return "账号池已更换（该 IP 不在已分配线路上）。", []
+        from .. import api_client
+
+        config.set_value("relays", patched.get("relays") or [])
+        failed = False
+        for a in patched.get("assignments") or []:
+            try:
+                api_client.assign(int(a["user_id"]), "relay", str(a["resource_id"]), a["node_data"])
+            except Exception:
+                failed = True
+        if failed:
+            notice = f"线路上游已改为 {host}，但分配快照没写上。已分配线路请用管理 IP。"
+        else:
+            notice = f"线路上游已改为 {host}。"
+        return notice, list(patched.get("deploy_server_ids") or [])
+
     def _on_replaced(self, res) -> None:
         if res and res[0] == "ok":
-            self._set_status(f"替换成功：新 IP 已生效", ok=True)
+            info = res[1] if isinstance(res[1], dict) else {}
             self._mark_replaced_ips()
-            self.refresh()  # 刷新列表，显示新 IP
+            notice, deploy_ids = self._commit_pool_writeback(info)
+            self._replace_notice = notice
+            self._pending_deploy = deploy_ids
+            self.refresh()
         else:
             self._set_status(f"替换失败：{res[1] if res else '未知错误'}", warn=True)
             self._fill(self.dc_table, self._dc, "dc")
@@ -1862,8 +1937,25 @@ class WebsharePage(QWidget):
                 return
             targets.append((sid, srv_ip))
         self._set_status("正在部署到服务器…", loading=True)
-        self.apply_btn.setEnabled(False)
+        self._run_apply(targets, self._on_applied)
 
+    def _deploy_sids(self, sids: list) -> None:
+        """只重新部署上游变了的那几台服务器。"""
+        targets = []
+        for sid in sids:
+            srv_ip = next((ip for s, ip, _ in self._servers if s == sid), "")
+            if not srv_ip:
+                self._set_status(
+                    "线路已改新 IP，但找不到服务器地址，请点「重新部署」。已分配线路请用管理 IP。",
+                    warn=True,
+                )
+                return
+            targets.append((sid, srv_ip))
+        self._set_status("线路已改新 IP，正在重新部署…", loading=True)
+        self._run_apply(targets, self._on_replace_deployed)
+
+    def _run_apply(self, targets: list, on_done) -> None:
+        self.apply_btn.setEnabled(False)
         root = Path(__file__).resolve().parent.parent.parent
         script = root / "scripts" / "apply_relays.py"
 
@@ -1878,11 +1970,19 @@ class WebsharePage(QWidget):
             return "\n".join(outs)
 
         w = CallWorker(_do)
-        w.done.connect(self._on_applied)
-        w.failed.connect(lambda m: self._on_applied(f"失败：{m}"))
+        w.done.connect(on_done)
+        w.failed.connect(lambda m, cb=on_done: cb(f"失败：{m}"))
         self._workers.append(w)
         w.finished.connect(w.deleteLater)
         w.start()
+
+    def _on_replace_deployed(self, text: str) -> None:
+        self.apply_btn.setEnabled(True)
+        ok = "DONE" in str(text)
+        if ok:
+            self._set_status("替换完成：新 IP 已写回线路并重新部署", ok=True)
+        else:
+            self._set_status("新 IP 已写回线路，但部署未完成。已分配线路请用管理 IP 后重新部署", warn=True)
 
     def _on_applied(self, text: str) -> None:
         self.apply_btn.setEnabled(True)
