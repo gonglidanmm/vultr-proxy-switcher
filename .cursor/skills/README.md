@@ -45,3 +45,4 @@
 - `codebase-design`：`tdd` 在模块接口形状还没定时会查阅它。没有这份词汇表时，按 `tdd` 自己的 seam 规则继续。
 - `setup-matt-pocock-skills`：`to-tickets`、`triage`、`code-review` 在读不到 tracker 配置时会提示去跑它。配置已在 `docs/agents/`，不要安装或重跑。
 - `improve-codebase-architecture`：只出现在上游 `domain.md` 模板里。本仓库的 `docs/agents/domain.md` 已改成只指向已安装的 `grill-with-docs`。
+- `ponytail-audit` 以及 `ponytail-review`、`ponytail-debt`、`ponytail-gain`、`ponytail-help`：没有安装。`/ponytail-audit` 与分支 `cursor/architecture-analysis-00ee` 上的 `docs/ARCHITECTURE_ANALYSIS.md` 重叠，需要时再装，默认不做。
