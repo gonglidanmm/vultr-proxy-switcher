@@ -41,8 +41,11 @@ QListWidget#nav::item:selected {
     color: #ffffff; font-weight: 500;
 }
 
-QTableWidget { background-color: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 8px; gridline-color: #2c2c2e; font-size: 12px; }
-QTableWidget::item { padding: 6px 10px; border: none; }
+QTableWidget { background-color: #1c1c1e; border: 1px solid #2a2a2c; border-radius: 10px; gridline-color: transparent; font-size: 12px; }
+QTableWidget::item { padding: 4px 8px; border: none; border-bottom: 1px solid #262628; }
+QTableWidget::item:alternate { background-color: #202022; }
+QTableWidget::item:hover { background-color: rgba(255,255,255,0.04); }
+QTableWidget::item:selected { background-color: rgba(10,132,255,0.16); color: #ffffff; }
 QHeaderView::section {
     background-color: #232326; color: #98989d; border: none;
     border-bottom: 1px solid #3a3a3c; padding: 8px 10px; font-weight: 500; font-size: 13px;
@@ -94,10 +97,12 @@ QTabBar::tab {
 QTabBar::tab:hover { color: #e5e5ea; }
 QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #0a84ff; font-weight: 600; }
 
-QTextEdit {
-    background-color: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 8px;
+QTextEdit, QPlainTextEdit {
+    background-color: #1c1c1e; border: 1px solid #2a2a2c; border-radius: 8px;
     padding: 8px; color: #98989d; font-size: 12px;
 }
+QSplitter::handle { background-color: #2a2a2c; }
+QSplitter::handle:horizontal { width: 1px; }
 """
 
 
