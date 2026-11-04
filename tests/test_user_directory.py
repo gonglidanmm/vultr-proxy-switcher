@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.user_directory import (  # noqa: E402
     filter_users,
     free_line_choices,
+    line_overview,
     merge_user_rows,
     order_users,
 )
@@ -56,21 +57,58 @@ def test_filter_search_exit_ip_and_note_keeps_full_list():
     assert len(rows) == 2
 
 
+def _line(expiry: str, ip: str = "1.1.1.1") -> dict:
+    return {"resource_id": ip, "node_data": {"ip": ip, "client_expiry": expiry}}
+
+
+def test_line_overview_mixes_expired_and_active():
+    """一条线路过期不能把整个用户写成「已过期」。最近到期只看还在用的线路。"""
+    rows = merge_user_rows(
+        [{"id": 1, "username": "mix", "status": "active", "expires_at": "2020-01-01", "switch_limit": 5}],
+        [
+            {"user_id": 1, **_line("2026-06-01 00:00:00", "1.1.1.1")},
+            {"user_id": 1, **_line("2026-06-20 12:00:00", "2.2.2.2")},
+        ],
+    )
+    overview = line_overview(rows[0], NOW)
+    assert overview["active"] == 1
+    assert overview["expired"] == 1
+    assert overview["text"] == "在用 1 · 已到期 1 · 最近 5天"
+    assert "已过期" not in overview["text"]
+    assert filter_users(rows, "", "已过期", NOW) == rows
+    assert filter_users(rows, "", "即将到期", NOW) == rows
+    assert filter_users(rows, "", "正常", NOW) == rows
+
+
+def test_line_overview_zero_lines():
+    rows = merge_user_rows(
+        [{"id": 1, "username": "zero", "status": "active", "expires_at": "2026-06-01", "switch_limit": 5}],
+        [],
+    )
+    assert line_overview(rows[0], NOW)["text"] == "无线路"
+    assert filter_users(rows, "", "已过期", NOW) == []
+    assert filter_users(rows, "", "即将到期", NOW) == []
+    assert filter_users(rows, "", "零线路", NOW) == rows
+
+
 def test_filter_chips():
     rows = merge_user_rows(
         [
             {"id": 1, "username": "zero", "status": "active", "note": "", "expires_at": "2026-06-20", "switch_limit": 5},
             {"id": 2, "username": "off", "status": "disabled", "note": "", "expires_at": None, "switch_limit": 5},
-            {"id": 3, "username": "late", "status": "active", "note": "", "expires_at": "2026-06-01", "switch_limit": 5},
-            {"id": 4, "username": "ok", "status": "active", "note": "", "expires_at": "2026-12-01", "switch_limit": 5},
+            {"id": 3, "username": "late", "status": "active", "note": "", "expires_at": None, "switch_limit": 5},
+            {"id": 4, "username": "soon", "status": "active", "note": "", "expires_at": None, "switch_limit": 5},
         ],
-        [],
+        [
+            {"user_id": 3, **_line("2026-06-01 00:00:00", "3.3.3.3")},
+            {"user_id": 4, **_line("2026-06-18 00:00:00", "4.4.4.4")},
+        ],
     )
-    assert [u["username"] for u in filter_users(rows, "", "零线路", NOW)] == ["zero", "off", "late", "ok"]
+    assert [u["username"] for u in filter_users(rows, "", "零线路", NOW)] == ["zero", "off"]
     assert [u["username"] for u in filter_users(rows, "", "已禁用", NOW)] == ["off"]
-    assert [u["username"] for u in filter_users(rows, "", "即将到期", NOW)] == ["zero"]
+    assert [u["username"] for u in filter_users(rows, "", "即将到期", NOW)] == ["soon"]
     assert [u["username"] for u in filter_users(rows, "", "已过期", NOW)] == ["late"]
-    assert [u["username"] for u in filter_users(rows, "", "正常", NOW)] == ["zero", "late", "ok"]
+    assert [u["username"] for u in filter_users(rows, "", "正常", NOW)] == ["zero", "late", "soon"]
 
 
 def test_order_users_appends_unknown_ids():
