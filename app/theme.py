@@ -74,6 +74,11 @@ QWidget#userRail {{ background-color: {t['sidebar']}; border-right: 1px solid {t
 QWidget#railBody {{ background-color: {t['sidebar']}; }}
 QWidget#workspace {{ background-color: {t['window']}; }}
 QWidget#chipRow {{ background-color: transparent; }}
+QWidget#userPane {{ background-color: {t['surface']}; }}
+QWidget#listBody {{ background-color: {t['surface']}; }}
+QWidget#rowOps {{ background-color: transparent; }}
+QWidget#detailStack {{ background-color: {t['window']}; }}
+QScrollArea#userScroll {{ background-color: {t['surface']}; border: none; }}
 
 QListWidget#nav {{ background-color: transparent; border: none; }}
 QListWidget#nav::item {{ padding: 10px 14px; border-left: 3px solid transparent; color: {t['muted']}; }}
@@ -162,6 +167,10 @@ QPushButton[mini="true"] {{
     min-width: 28px; max-width: 28px; min-height: 24px; max-height: 24px;
     padding: 0; font-size: 14px;
 }}
+QPushButton[rowact="true"] {{
+    min-height: 26px; max-height: 26px; padding: 0 8px;
+    font-size: {t['font_small']}px; font-weight: 600; border-radius: 6px;
+}}
 QPushButton[chip="true"] {{
     background-color: transparent;
     color: {t['muted']};
@@ -215,7 +224,7 @@ QTextEdit, QPlainTextEdit {{
 }}
 QSplitter::handle {{ background-color: {t['border']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
-QSplitter::handle:vertical {{ height: 6px; }}
+QSplitter#userSplit {{ background-color: {t['window']}; }}
 """
 
 

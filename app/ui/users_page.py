@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QMenu,
     QMessageBox,
     QProgressBar,
     QPlainTextEdit,
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QSplitterHandle,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -239,6 +239,32 @@ def _user_resource_expiry(user_id: int) -> str:
     return earliest.strftime("%Y-%m-%d") if earliest else ""
 
 
+class _GripHandle(QSplitterHandle):
+    """分割处只画一小节握把，不画通栏灰线。"""
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(T["window"]))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(T["stroke"]))
+        width, height = 36, 4
+        painter.drawRoundedRect(
+            (self.width() - width) // 2,
+            (self.height() - height) // 2,
+            width,
+            height,
+            2,
+            2,
+        )
+        painter.end()
+
+
+class _UserSplit(QSplitter):
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
+
+
 class _UserRow(QFrame):
     """上半列表的一行。点整行打开下方详情。"""
 
@@ -248,7 +274,7 @@ class _UserRow(QFrame):
         self._on_pick = on_pick
         self.setObjectName("userRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(36)
+        self.setFixedHeight(44)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -273,8 +299,10 @@ class UsersPage(QWidget):
         layout.setSpacing(0)
 
         top = QWidget()
+        top.setObjectName("userPane")
+        top.setMinimumHeight(280)
         top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(16, 12, 16, 4)
+        top_layout.setContentsMargins(16, 12, 16, 8)
         top_layout.setSpacing(8)
 
         bar = QHBoxLayout()
@@ -332,20 +360,25 @@ class UsersPage(QWidget):
             if text == "总流量":
                 lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             head.addWidget(lab, stretch)
-        head.addSpacing(36)
+        ops_head = QLabel("操作")
+        ops_head.setMinimumWidth(132)
+        ops_head.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        ops_head.setStyleSheet(f"color:{T['faint']}; font-size:11px; font-weight:600;")
+        head.addWidget(ops_head)
         top_layout.addLayout(head)
 
         list_body = QWidget()
+        list_body.setObjectName("listBody")
         self._list_layout = QVBoxLayout(list_body)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(2)
+        self._list_layout.setSpacing(4)
         self._list_layout.addStretch(1)
         list_scroll = QScrollArea()
-        list_scroll.setObjectName("lineScroll")
+        list_scroll.setObjectName("userScroll")
         list_scroll.setWidgetResizable(True)
         list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         list_scroll.setWidget(list_body)
-        self._tint_scroll(list_scroll, T["window"])
+        self._tint_scroll(list_scroll, T["surface"])
         top_layout.addWidget(list_scroll, 1)
 
         self.log_box = QPlainTextEdit(self)
@@ -354,7 +387,8 @@ class UsersPage(QWidget):
         set_global_echo(self._log)
 
         self._stack = QStackedWidget()
-        self._stack.setObjectName("workspace")
+        self._stack.setObjectName("detailStack")
+        self._stack.setMinimumHeight(240)
         empty = QWidget()
         empty_lay = QVBoxLayout(empty)
         empty_lay.addStretch(1)
@@ -375,7 +409,9 @@ class UsersPage(QWidget):
         self._split_ready = False
         self._user_sized = False
 
-        self._split = QSplitter(Qt.Orientation.Vertical)
+        self._split = _UserSplit(Qt.Orientation.Vertical)
+        self._split.setObjectName("userSplit")
+        self._split.setHandleWidth(16)
         self._split.setChildrenCollapsible(False)
         self._split.addWidget(top)
         self._split.addWidget(self._stack)
@@ -431,7 +467,7 @@ class UsersPage(QWidget):
         query = self.search.text() if hasattr(self, "search") else ""
         self._visible = filter_users(self._users, query, getattr(self, "_chip", "全部"), datetime.now())
         self._populate()
-        if self._split_ready and config.get("users_split_ratio") is None:
+        if self._split_ready and config.get("users_split_ratio_v2") is None:
             self._apply_split(use_saved=False)
 
     def _clear_list(self) -> None:
@@ -464,9 +500,10 @@ class UsersPage(QWidget):
     def _user_row(self, u: dict, overview: dict, traffic: str, selected: bool) -> QWidget:
         row = _UserRow(u, self._detail)
         row.setProperty("selected", bool(selected))
+        row.setFixedHeight(44)
         lay = QHBoxLayout(row)
         lay.setContentsMargins(12, 0, 8, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(8)
         name = QLabel(u.get("username") or "")
         name.setFixedWidth(180)
         name.setStyleSheet(f"color:{T['text']}; font-size:13px; font-weight:700;")
@@ -492,17 +529,27 @@ class UsersPage(QWidget):
         flow.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         flow.setStyleSheet(f"color:{T['muted']}; font-size:12px;")
         lay.addWidget(flow)
-        more = QPushButton("⋯")
-        more.setProperty("mini", True)
-        more.setCursor(Qt.CursorShape.PointingHandCursor)
-        menu = QMenu(more)
-        toggle_label = "禁用" if active else "启用"
-        menu.addAction(toggle_label, lambda user=u: self._toggle_status(user))
-        menu.addAction("删除", lambda user=u: self._delete_user(user))
-        more.clicked.connect(lambda _=False, b=more, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
-        lay.addWidget(more)
+        ops = QWidget()
+        ops.setObjectName("rowOps")
+        ops.setMinimumWidth(132)
+        ops_lay = QHBoxLayout(ops)
+        ops_lay.setContentsMargins(0, 0, 0, 0)
+        ops_lay.setSpacing(6)
+        ops_lay.addStretch(1)
+        toggle = QPushButton("禁用" if active else "启用")
+        toggle.setProperty("rowact", True)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.clicked.connect(lambda _=False, user=u: self._toggle_status(user))
+        ops_lay.addWidget(toggle)
+        delete = QPushButton("删除")
+        delete.setProperty("rowact", True)
+        delete.setProperty("danger", True)
+        delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.clicked.connect(lambda _=False, user=u: self._delete_user(user))
+        ops_lay.addWidget(delete)
+        lay.addWidget(ops)
         for child in row.findChildren(QWidget):
-            if child is more:
+            if isinstance(child, QPushButton):
                 continue
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         return row
@@ -521,8 +568,8 @@ class UsersPage(QWidget):
     def _fit_top(self, total: int) -> int:
         """按行数收上半，最多占四成，把线路留在下面。"""
         rows = len(getattr(self, "_visible", []) or [])
-        want = 64 + 28 + max(rows, 1) * 38 + 8
-        return min(want, int(total * 0.4))
+        want = 96 + max(rows, 1) * 48
+        return min(max(want, 280), int(total * 0.42))
 
     def _apply_split(self, use_saved: bool) -> None:
         total = self._split.height()
@@ -530,7 +577,7 @@ class UsersPage(QWidget):
             return
         top = None
         if use_saved:
-            saved = config.get("users_split_ratio")
+            saved = config.get("users_split_ratio_v2")
             try:
                 if saved is not None:
                     top = int(total * float(saved))
@@ -554,7 +601,7 @@ class UsersPage(QWidget):
         total = sum(sizes)
         if total <= 0:
             return
-        config.set_value("users_split_ratio", round(sizes[0] / total, 4))
+        config.set_value("users_split_ratio_v2", round(sizes[0] / total, 4))
 
     def _assign_to_user(self, a: dict) -> dict:
         """把分配行转换成 user dict（供用户操作按钮使用）。"""
@@ -1926,8 +1973,8 @@ class _UserLinesDialog(QWidget):
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(T["space_lg"], T["space_lg"], T["space_lg"], T["space_lg"])
-        layout.setSpacing(16)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
 
         head = QHBoxLayout()
         head.setSpacing(10)
@@ -1942,19 +1989,32 @@ class _UserLinesDialog(QWidget):
         self._count_lbl.setStyleSheet(f"color:{T['muted']}; font-size:{T['font_small']}px;")
         head.addWidget(self._count_lbl)
         head.addStretch(1)
+        for label, slot, danger in (
+            ("改密码", self._toggle_password, False),
+            ("账号到期", self._toggle_expiry, False),
+        ):
+            btn = QPushButton(label)
+            btn.setProperty("rowact", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(slot)
+            head.addWidget(btn)
+        self._toggle_btn = QPushButton("禁用")
+        self._toggle_btn.setProperty("rowact", True)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._toggle_from_panel)
+        head.addWidget(self._toggle_btn)
+        delete_btn = QPushButton("删除")
+        delete_btn.setProperty("rowact", True)
+        delete_btn.setProperty("danger", True)
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_btn.clicked.connect(lambda _=False: self._page._delete_user(self._u))
+        head.addWidget(delete_btn)
         add_line = QPushButton("＋ 分配线路")
         add_line.setProperty("primary", True)
+        add_line.setProperty("rowact", True)
+        add_line.setCursor(Qt.CursorShape.PointingHandCursor)
         add_line.clicked.connect(self._assign_line)
         head.addWidget(add_line)
-        more = QPushButton("⋯")
-        more.setProperty("iconbtn", True)
-        menu = QMenu(more)
-        menu.addAction("改密码", self._toggle_password)
-        menu.addAction("账号到期", self._toggle_expiry)
-        self._toggle_action = menu.addAction("禁用", self._toggle_from_panel)
-        menu.addAction("删除", lambda: self._page._delete_user(self._u))
-        more.clicked.connect(lambda _=False, b=more, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
-        head.addWidget(more)
         layout.addLayout(head)
 
         self._pass_row = QWidget()
@@ -2061,7 +2121,7 @@ class _UserLinesDialog(QWidget):
         line_body.setObjectName("lineBody")
         self._lines_lay = QVBoxLayout(line_body)
         self._lines_lay.setContentsMargins(0, 0, 0, 0)
-        self._lines_lay.setSpacing(8)
+        self._lines_lay.setSpacing(6)
         self._line_scroll = QScrollArea()
         self._line_scroll.setObjectName("lineScroll")
         self._line_scroll.setWidgetResizable(True)
@@ -2076,9 +2136,10 @@ class _UserLinesDialog(QWidget):
     def _metric_card(self, key: str, label: str) -> QFrame:
         box = QFrame()
         box.setProperty("card", True)
+        box.setFixedHeight(72)
         lay = QVBoxLayout(box)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(2)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(0)
         num = QLabel("—")
         num.setProperty("statValue", True)
         cap = QLabel(label)
@@ -2093,7 +2154,7 @@ class _UserLinesDialog(QWidget):
         lab.setText(str(text))
         color = T["warning"] if warn else T["text"]
         lab.setStyleSheet(
-            f"color:{color}; font-size:{T['font_metric']}px; font-weight:700; background:transparent;"
+            f"color:{color}; font-size:22px; font-weight:700; background:transparent;"
         )
 
     def _line_facts(self, a: dict) -> dict:
@@ -2137,9 +2198,10 @@ class _UserLinesDialog(QWidget):
         frame = QFrame()
         frame.setObjectName("lineRow")
         frame.setProperty("expired", expired)
+        frame.setFixedHeight(44)
         row = QHBoxLayout(frame)
-        row.setContentsMargins(14, 12, 12, 12)
-        row.setSpacing(12)
+        row.setContentsMargins(10, 0, 8, 0)
+        row.setSpacing(8)
 
         tag = QLabel(facts["type_text"])
         tag.setStyleSheet(
@@ -2150,6 +2212,7 @@ class _UserLinesDialog(QWidget):
 
         name_edit = QLineEdit(facts["name"])
         name_edit.setFrame(False)
+        name_edit.setFixedHeight(26)
         name_edit.setProperty("savedName", facts["name"])
         name_edit.setStyleSheet(
             f"QLineEdit {{ background: transparent; border: 0px; padding: 0px; color: {fg}; font-weight: 600; font-size: 14px; }}\n"
@@ -2160,36 +2223,30 @@ class _UserLinesDialog(QWidget):
         name_edit.editingFinished.connect(lambda edit=name_edit, rid=rid: self._rename_line(rid, edit))
         row.addWidget(name_edit, 2)
 
-        mid = QWidget()
-        mid_lay = QVBoxLayout(mid)
-        mid_lay.setContentsMargins(0, 0, 0, 0)
-        mid_lay.setSpacing(4)
         quota = facts["quota"]
         used = facts["used"]
         if quota > 0:
             text = f"{_fmt_flow(used)} / {_fmt_flow(quota)}"
+            ratio = used / quota
         else:
             text = f"已用 {_fmt_flow(used)}"
-        flow = QLabel(text)
-        flow.setStyleSheet(f"color:{fg}; font-size:12px;")
+            ratio = 0
         bar = QProgressBar()
         bar.setRange(0, 1000)
         bar.setTextVisible(False)
-        bar.setFixedHeight(8)
+        bar.setFixedSize(140, 6)
         if quota > 0:
-            bar.setValue(min(1000, int(used / quota * 1000)))
-            ratio = used / quota
-        else:
-            bar.setValue(0)
-            ratio = 0
+            bar.setValue(min(1000, int(ratio * 1000)))
         chunk = T["warning"] if expired or ratio >= 0.85 else T["success"]
         bar.setStyleSheet(
-            f"QProgressBar {{ background:{T['window']}; border:none; border-radius:4px; }}"
-            f"QProgressBar::chunk {{ background:{chunk}; border-radius:4px; }}"
+            f"QProgressBar {{ background:{T['window']}; border:none; border-radius:3px; }}"
+            f"QProgressBar::chunk {{ background:{chunk}; border-radius:3px; }}"
         )
-        mid_lay.addWidget(bar)
-        mid_lay.addWidget(flow)
-        row.addWidget(mid, 3)
+        row.addWidget(bar)
+        flow = QLabel(text)
+        flow.setMinimumWidth(108)
+        flow.setStyleSheet(f"color:{fg}; font-size:12px;")
+        row.addWidget(flow)
 
         exp = QLabel(facts["countdown"])
         exp.setStyleSheet(f"color:{T['muted']}; font-size:12px;")
@@ -2204,18 +2261,21 @@ class _UserLinesDialog(QWidget):
 
         node = facts["node"]
         name = facts["name"]
-        more_btn = QPushButton("⋯")
-        more_btn.setProperty("iconbtn", True)
-        menu = QMenu(more_btn)
-        menu.addAction("管理 IP", lambda a=a: self._manage_ips(a))
-        menu.addAction("续费", lambda a=a, node=node, host=block: self._edit_expiry(a, node, host))
-        menu.addAction("改配额", lambda a=a, node=node, host=block: self._edit_quota(a, node, host))
-        menu.addAction("复制节点", lambda a=a: self._page._share_relay(a))
-        menu.addAction("回收", lambda a=a, node=node, name=name: self._recycle(a, node, name))
-        more_btn.clicked.connect(
-            lambda _=False, b=more_btn, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft()))
+        actions = (
+            ("管理 IP", lambda _=False, a=a: self._manage_ips(a), False),
+            ("续费", lambda _=False, a=a, node=node, host=block: self._edit_expiry(a, node, host), False),
+            ("改配额", lambda _=False, a=a, node=node, host=block: self._edit_quota(a, node, host), False),
+            ("复制", lambda _=False, a=a: self._page._share_relay(a), False),
+            ("回收", lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name), True),
         )
-        row.addWidget(more_btn)
+        for label, slot, danger in actions:
+            btn = QPushButton(label)
+            btn.setProperty("rowact", True)
+            if danger:
+                btn.setProperty("danger", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
         outer.addWidget(frame)
         return block
 
@@ -2291,8 +2351,8 @@ class _UserLinesDialog(QWidget):
             f" font-size:{T['font_small']}px; font-weight:600;"
         )
         self._count_lbl.setText(f"{len(lines)} 条线路" if lines else "无线路")
-        if hasattr(self, "_toggle_action"):
-            self._toggle_action.setText("禁用" if active else "启用")
+        if hasattr(self, "_toggle_btn"):
+            self._toggle_btn.setText("禁用" if active else "启用")
         used = sum(float(a.get("used_gb") or 0) + float(a.get("hist_gb") or 0) for a in lines)
         quota = sum(float(a.get("quota_gb") or 0) for a in lines)
         overview = line_overview(self._u, datetime.now())
