@@ -64,6 +64,12 @@ QPushButton[primary="true"]:hover { background-color: #0a84ff; }
 QPushButton[danger="true"] { background-color: #3a1e1e; border: 1px solid #7a2e2e; color: #ff8a80; }
 QPushButton[danger="true"]:hover { background-color: #4a2424; }
 QPushButton[compact="true"] { padding: 5px 10px; font-size: 12px; }
+QPushButton[chip="true"] { padding: 5px 12px; font-size: 12px; }
+QPushButton[chip="true"]:checked {
+    background-color: rgba(10,132,255,0.18);
+    border: 1px solid #0a84ff;
+    color: #ffffff;
+}
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; padding: 7px 10px; color: #f2f2f7;

@@ -285,7 +285,7 @@ class UsersPage(QWidget):
         for name in CHIPS:
             btn = QPushButton(name)
             btn.setCheckable(True)
-            btn.setProperty("compact", True)
+            btn.setProperty("chip", True)
             btn.setChecked(name == "全部")
             btn.clicked.connect(lambda _=False, n=name: self._set_chip(n))
             self._chips[name] = btn
@@ -304,12 +304,11 @@ class UsersPage(QWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         for c in range(len(COLS) - 1):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 110)   # 用户名
-        self.table.setColumnWidth(1, 170)   # 线路名称
-        self.table.setColumnWidth(2, 130)   # 出口IP
-        self.table.setColumnWidth(3, 120)   # 剩余流量
-        self.table.setColumnWidth(4, 110)   # 分配时间
-        self.table.setColumnWidth(5, 130)   # 到期倒计时
+        self.table.setColumnWidth(0, 140)   # 用户名
+        self.table.setColumnWidth(1, 72)    # 状态
+        self.table.setColumnWidth(2, 72)    # 线路数
+        self.table.setColumnWidth(3, 180)   # 总流量
+        self.table.setColumnWidth(4, 150)   # 到期时间
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -500,19 +499,20 @@ class UsersPage(QWidget):
     def _ops(self, u: dict, row: int) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(8, 0, 8, 0)
         lay.setSpacing(6)
 
         detail = QPushButton("打开")
         detail.setProperty("compact", True)
-        detail.setProperty("primary", True)
         detail.setFixedHeight(26)
+        detail.setMinimumWidth(72)
         detail.clicked.connect(lambda _=False, u=u: self._detail(u))
         lay.addWidget(detail)
 
         more = QPushButton("⋯")
         more.setProperty("compact", True)
-        more.setFixedSize(32, 26)
+        more.setFixedHeight(26)
+        more.setMinimumWidth(36)
         menu = QMenu(more)
         toggle_label = "禁用" if u.get("status", "active") == "active" else "启用"
         menu.addAction(toggle_label, lambda u=u: self._toggle_status(u))
@@ -1844,20 +1844,30 @@ class _UserLinesDialog(SizedDialog):
         layout.addWidget(self._head)
         self._refresh_head()
 
-        account = QHBoxLayout()
-        account.addWidget(QLabel("状态"))
+        card = QFrame()
+        card.setProperty("card", True)
+        account = QHBoxLayout(card)
+        account.setContentsMargins(12, 10, 12, 10)
+        account.setSpacing(8)
+
+        def _dim(text: str) -> QLabel:
+            lab = QLabel(text)
+            lab.setStyleSheet("color:#98989d;")
+            return lab
+
+        account.addWidget(_dim("状态"))
         self.status_combo = QComboBox()
         self.status_combo.addItems(["正常", "已禁用"])
         self.status_combo.setCurrentIndex(0 if status == "active" else 1)
         account.addWidget(self.status_combo)
-        account.addWidget(QLabel("账号到期"))
+        account.addWidget(_dim("账号到期"))
         self.exp_edit = QLineEdit(str(self._u.get("expires_at") or ""))
         self.exp_edit.setPlaceholderText("空 = 不过期，如 2026-12-31")
         account.addWidget(self.exp_edit, 1)
-        account.addWidget(QLabel("备注"))
+        account.addWidget(_dim("备注"))
         self.note_edit = QLineEdit(self._u.get("note") or "")
         account.addWidget(self.note_edit, 1)
-        account.addWidget(QLabel("新密码"))
+        account.addWidget(_dim("新密码"))
         self.pass_edit = QLineEdit()
         self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.pass_edit.setPlaceholderText("空 = 不改")
@@ -1866,10 +1876,12 @@ class _UserLinesDialog(SizedDialog):
         save_user.setProperty("compact", True)
         save_user.clicked.connect(self._save_account)
         account.addWidget(save_user)
-        layout.addLayout(account)
+        layout.addWidget(card)
 
         line_bar = QHBoxLayout()
-        line_bar.addWidget(QLabel("线路"))
+        line_title = QLabel("线路")
+        line_title.setStyleSheet("color:#98989d;")
+        line_bar.addWidget(line_title)
         line_bar.addStretch(1)
         add_line = QPushButton("＋ 分配线路")
         add_line.setProperty("primary", True)
