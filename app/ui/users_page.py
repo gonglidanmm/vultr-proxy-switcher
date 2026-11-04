@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -238,8 +239,8 @@ def _user_resource_expiry(user_id: int) -> str:
     return earliest.strftime("%Y-%m-%d") if earliest else ""
 
 
-class _RailRow(QFrame):
-    """左轨里的一条用户。点整行打开右侧，不走表格。"""
+class _UserRow(QFrame):
+    """上半列表的一行。点整行打开下方详情。"""
 
     def __init__(self, user: dict, on_pick) -> None:
         super().__init__()
@@ -247,6 +248,7 @@ class _RailRow(QFrame):
         self._on_pick = on_pick
         self.setObjectName("userRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(36)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -255,7 +257,7 @@ class _RailRow(QFrame):
 
 
 class UsersPage(QWidget):
-    """用户管理：左轨选人，右侧是工作区。"""
+    """用户管理：上面选人，下面是全宽详情。"""
 
     def __init__(self) -> None:
         super().__init__()
@@ -266,41 +268,28 @@ class UsersPage(QWidget):
         self.refresh()
 
     def _build(self) -> None:
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        rail = QWidget()
-        rail.setObjectName("userRail")
-        rail.setFixedWidth(int(T["rail"]))
-        rail_layout = QVBoxLayout(rail)
-        rail_layout.setContentsMargins(T["space"], T["space"], T["space"], T["space"])
-        rail_layout.setSpacing(10)
+        top = QWidget()
+        top_layout = QVBoxLayout(top)
+        top_layout.setContentsMargins(16, 12, 16, 4)
+        top_layout.setSpacing(8)
 
-        top = QHBoxLayout()
-        top.setSpacing(8)
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索用户 / 备注 / IP")
+        self.search.setPlaceholderText("搜索用户名 / 备注 / 出口 IP")
         self.search.setClearButtonEnabled(True)
         self.search.setFixedHeight(34)
+        self.search.setMinimumWidth(200)
+        self.search.setMaximumWidth(360)
         self.search.textChanged.connect(lambda _t: self._apply_view())
-        top.addWidget(self.search, 1)
-        add_btn = QPushButton("＋")
-        add_btn.setProperty("primary", True)
-        add_btn.setProperty("iconbtn", True)
-        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_btn.setToolTip("新增用户")
-        add_btn.clicked.connect(self._add_user)
-        top.addWidget(add_btn)
-        rail_layout.addLayout(top)
-
+        bar.addWidget(self.search)
+        bar.addStretch(1)
         self._chip = "全部"
         self._chips = {}
-        chip_row = QWidget()
-        chip_row.setObjectName("chipRow")
-        chips = QHBoxLayout(chip_row)
-        chips.setContentsMargins(0, 0, 0, 0)
-        chips.setSpacing(4)
         for name in CHIPS:
             btn = QPushButton(name)
             btn.setCheckable(True)
@@ -311,44 +300,53 @@ class UsersPage(QWidget):
             btn.setChecked(name == "全部")
             btn.clicked.connect(lambda _=False, n=name: self._set_chip(n))
             self._chips[name] = btn
-            chips.addWidget(btn)
-        chips.addStretch(1)
-        chip_row.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        chip_scroll = QScrollArea()
-        chip_scroll.setObjectName("chipScroll")
-        chip_scroll.setWidgetResizable(True)
-        chip_scroll.setFixedHeight(40)
-        chip_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        chip_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        chip_scroll.setWidget(chip_row)
-        self._tint_scroll(chip_scroll, T["sidebar"])
-        rail_layout.addWidget(chip_scroll)
-
-        rail_body = QWidget()
-        rail_body.setObjectName("railBody")
-        self._rail_layout = QVBoxLayout(rail_body)
-        self._rail_layout.setContentsMargins(0, 0, 0, 0)
-        self._rail_layout.setSpacing(2)
-        self._rail_layout.addStretch(1)
-        rail_scroll = QScrollArea()
-        rail_scroll.setObjectName("railScroll")
-        rail_scroll.setWidgetResizable(True)
-        rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        rail_scroll.setWidget(rail_body)
-        self._tint_scroll(rail_scroll, T["sidebar"])
-        rail_layout.addWidget(rail_scroll, 1)
-
-        foot = QHBoxLayout()
-        foot.setSpacing(8)
+            bar.addWidget(btn)
+        bar.addStretch(1)
         self.stats_label = QLabel("")
-        self.stats_label.setWordWrap(True)
         self.stats_label.setStyleSheet(f"color:{T['faint']}; font-size:11px;")
-        foot.addWidget(self.stats_label, 1)
+        bar.addWidget(self.stats_label)
         refresh_btn = QPushButton("刷新")
         refresh_btn.setProperty("compact", True)
         refresh_btn.clicked.connect(self.refresh)
-        foot.addWidget(refresh_btn)
-        rail_layout.addLayout(foot)
+        bar.addWidget(refresh_btn)
+        add_btn = QPushButton("＋ 新增")
+        add_btn.setProperty("primary", True)
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._add_user)
+        bar.addWidget(add_btn)
+        top_layout.addLayout(bar)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(12, 0, 8, 0)
+        head.setSpacing(12)
+        for text, stretch, width in (
+            ("用户名", 0, 180),
+            ("状态", 0, 84),
+            ("线路概况", 1, 0),
+            ("总流量", 0, 160),
+        ):
+            lab = QLabel(text)
+            lab.setStyleSheet(f"color:{T['faint']}; font-size:11px; font-weight:600;")
+            if width:
+                lab.setFixedWidth(width)
+            if text == "总流量":
+                lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            head.addWidget(lab, stretch)
+        head.addSpacing(36)
+        top_layout.addLayout(head)
+
+        list_body = QWidget()
+        self._list_layout = QVBoxLayout(list_body)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(2)
+        self._list_layout.addStretch(1)
+        list_scroll = QScrollArea()
+        list_scroll.setObjectName("lineScroll")
+        list_scroll.setWidgetResizable(True)
+        list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        list_scroll.setWidget(list_body)
+        self._tint_scroll(list_scroll, T["window"])
+        top_layout.addWidget(list_scroll, 1)
 
         self.log_box = QPlainTextEdit(self)
         self.log_box.setReadOnly(True)
@@ -360,7 +358,7 @@ class UsersPage(QWidget):
         empty = QWidget()
         empty_lay = QVBoxLayout(empty)
         empty_lay.addStretch(1)
-        empty_label = QLabel("选择左侧用户")
+        empty_label = QLabel("选择上方用户")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_label.setStyleSheet(f"color:{T['muted']}; font-size:16px; font-weight:600;")
         empty_lay.addWidget(empty_label)
@@ -373,9 +371,18 @@ class UsersPage(QWidget):
         self._stack.addWidget(self._detail_host)
         self._panel = None
         self._open_id = None
+        self._split_setting = False
+        self._split_ready = False
+        self._user_sized = False
 
-        layout.addWidget(rail)
-        layout.addWidget(self._stack, 1)
+        self._split = QSplitter(Qt.Orientation.Vertical)
+        self._split.setChildrenCollapsible(False)
+        self._split.addWidget(top)
+        self._split.addWidget(self._stack)
+        self._split.setStretchFactor(0, 0)
+        self._split.setStretchFactor(1, 1)
+        self._split.splitterMoved.connect(self._on_split_moved)
+        layout.addWidget(self._split, 1)
 
     def _tint_scroll(self, scroll: QScrollArea, color: str) -> None:
         """滚动区视口跟轨面同色，避免 Qt 用 window 色填出一块空洞。"""
@@ -401,7 +408,7 @@ class UsersPage(QWidget):
         except ApiError as e:
             self.stats_label.setText(f"加载失败：{e.message}")
             self.stats_label.setStyleSheet(f"color:{T['danger']}; font-size:11px;")
-            self._clear_rail()
+            self._clear_list()
             return
         self._assigns = assigns
         merged = merge_user_rows(users, assigns)
@@ -424,10 +431,12 @@ class UsersPage(QWidget):
         query = self.search.text() if hasattr(self, "search") else ""
         self._visible = filter_users(self._users, query, getattr(self, "_chip", "全部"), datetime.now())
         self._populate()
+        if self._split_ready and config.get("users_split_ratio") is None:
+            self._apply_split(use_saved=False)
 
-    def _clear_rail(self) -> None:
-        while self._rail_layout.count():
-            item = self._rail_layout.takeAt(0)
+    def _clear_list(self) -> None:
+        while self._list_layout.count():
+            item = self._list_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
@@ -437,7 +446,7 @@ class UsersPage(QWidget):
         visible = getattr(self, "_visible", None)
         if visible is None:
             visible = self._users
-        self._clear_rail()
+        self._clear_list()
         now = datetime.now()
         open_id = getattr(self, "_open_id", None)
         for u in visible:
@@ -449,41 +458,103 @@ class UsersPage(QWidget):
             else:
                 traffic = _fmt_flow(total_used)
             overview = line_overview(u, now)
-            self._rail_layout.addWidget(self._rail_row(u, overview, traffic, u.get("user_id") == open_id))
-        self._rail_layout.addStretch(1)
+            self._list_layout.addWidget(self._user_row(u, overview, traffic, u.get("user_id") == open_id))
+        self._list_layout.addStretch(1)
 
-    def _rail_row(self, u: dict, overview: dict, traffic: str, selected: bool) -> QWidget:
-        row = _RailRow(u, self._detail)
+    def _user_row(self, u: dict, overview: dict, traffic: str, selected: bool) -> QWidget:
+        row = _UserRow(u, self._detail)
         row.setProperty("selected", bool(selected))
-        lay = QVBoxLayout(row)
-        lay.setContentsMargins(12, 8, 10, 8)
-        lay.setSpacing(2)
-        top = QHBoxLayout()
-        top.setSpacing(8)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(12, 0, 8, 0)
+        lay.setSpacing(12)
         name = QLabel(u.get("username") or "")
+        name.setFixedWidth(180)
         name.setStyleSheet(f"color:{T['text']}; font-size:13px; font-weight:700;")
-        top.addWidget(name, 1)
+        lay.addWidget(name)
         active = u.get("status", "active") == "active"
         dot_color = T["success"] if active else T["muted"]
         dot = QLabel("● 正常" if active else "● 禁用")
-        dot.setStyleSheet(f"color:{dot_color}; font-size:11px; font-weight:600;")
-        top.addWidget(dot)
-        lay.addLayout(top)
-        bits = []
+        dot.setFixedWidth(84)
+        dot.setStyleSheet(f"color:{dot_color}; font-size:12px; font-weight:600;")
+        lay.addWidget(dot)
         if overview["active"] == 0 and overview["expired"] == 0:
-            bits.append("无线路")
+            overview_text = "无线路"
         else:
-            bits.append(f"在用 {overview['active']}")
+            overview_text = f"在用 {overview['active']}"
             if overview["expired"]:
-                bits.append(f"<span style='color:{T['warning']};'>已到期 {overview['expired']}</span>")
-        bits.append(traffic)
-        sub = QLabel(" · ".join(bits))
-        sub.setTextFormat(Qt.TextFormat.RichText)
-        sub.setStyleSheet(f"color:{T['muted']}; font-size:11px;")
-        lay.addWidget(sub)
+                overview_text += f"  ·  <span style='color:{T['warning']};'>已到期 {overview['expired']}</span>"
+        overview_lbl = QLabel(overview_text)
+        overview_lbl.setTextFormat(Qt.TextFormat.RichText)
+        overview_lbl.setStyleSheet(f"color:{T['text']}; font-size:12px;")
+        lay.addWidget(overview_lbl, 1)
+        flow = QLabel(traffic)
+        flow.setFixedWidth(160)
+        flow.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        flow.setStyleSheet(f"color:{T['muted']}; font-size:12px;")
+        lay.addWidget(flow)
+        more = QPushButton("⋯")
+        more.setProperty("mini", True)
+        more.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu = QMenu(more)
+        toggle_label = "禁用" if active else "启用"
+        menu.addAction(toggle_label, lambda user=u: self._toggle_status(user))
+        menu.addAction("删除", lambda user=u: self._delete_user(user))
+        more.clicked.connect(lambda _=False, b=more, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        lay.addWidget(more)
         for child in row.findChildren(QWidget):
+            if child is more:
+                continue
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         return row
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._split_ready = True
+        if not self._user_sized:
+            self._apply_split(use_saved=True)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._split_ready and not self._user_sized:
+            self._apply_split(use_saved=True)
+
+    def _fit_top(self, total: int) -> int:
+        """按行数收上半，最多占四成，把线路留在下面。"""
+        rows = len(getattr(self, "_visible", []) or [])
+        want = 64 + 28 + max(rows, 1) * 38 + 8
+        return min(want, int(total * 0.4))
+
+    def _apply_split(self, use_saved: bool) -> None:
+        total = self._split.height()
+        if total < 80:
+            return
+        top = None
+        if use_saved:
+            saved = config.get("users_split_ratio")
+            try:
+                if saved is not None:
+                    top = int(total * float(saved))
+            except (TypeError, ValueError):
+                top = None
+        if top is None:
+            top = self._fit_top(total)
+        top = max(120, min(top, total - 220))
+        current = self._split.sizes()
+        if current and abs(current[0] - top) < 4 and abs(sum(current) - total) < 4:
+            return
+        self._split_setting = True
+        self._split.setSizes([top, total - top])
+        self._split_setting = False
+
+    def _on_split_moved(self, _pos: int, _index: int) -> None:
+        if self._split_setting:
+            return
+        self._user_sized = True
+        sizes = self._split.sizes()
+        total = sum(sizes)
+        if total <= 0:
+            return
+        config.set_value("users_split_ratio", round(sizes[0] / total, 4))
 
     def _assign_to_user(self, a: dict) -> dict:
         """把分配行转换成 user dict（供用户操作按钮使用）。"""
@@ -838,9 +909,9 @@ class UsersPage(QWidget):
 
     def _mark_selected(self) -> None:
         open_id = getattr(self, "_open_id", None)
-        for i in range(self._rail_layout.count()):
-            widget = self._rail_layout.itemAt(i).widget()
-            if not isinstance(widget, _RailRow):
+        for i in range(self._list_layout.count()):
+            widget = self._list_layout.itemAt(i).widget()
+            if not isinstance(widget, _UserRow):
                 continue
             widget.setProperty("selected", widget._user.get("user_id") == open_id)
             widget.style().unpolish(widget)
@@ -1845,7 +1916,7 @@ class _IpPickerDialog(SizedDialog):
 
 
 class _UserLinesDialog(QWidget):
-    """右侧工作区：页眉、概览数字、备注、线路卡片行。"""
+    """下方全宽详情：页眉、概览数字、备注、线路卡片行。"""
 
     def __init__(self, page, u: dict) -> None:
         super().__init__(page)

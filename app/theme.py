@@ -158,6 +158,10 @@ QPushButton[iconbtn="true"] {{
     min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
     padding: 0; font-size: 18px;
 }}
+QPushButton[mini="true"] {{
+    min-width: 28px; max-width: 28px; min-height: 24px; max-height: 24px;
+    padding: 0; font-size: 14px;
+}}
 QPushButton[chip="true"] {{
     background-color: transparent;
     color: {t['muted']};
@@ -211,6 +215,7 @@ QTextEdit, QPlainTextEdit {{
 }}
 QSplitter::handle {{ background-color: {t['border']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
+QSplitter::handle:vertical {{ height: 6px; }}
 """
 
 
