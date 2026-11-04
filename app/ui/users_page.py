@@ -43,11 +43,14 @@ from ..api_client import ApiError
 from ..relay import norm_candidate
 from ..user_directory import (
     CHIPS,
+    effective_switch_limit,
     filter_users,
     free_line_choices,
     line_overview,
     merge_user_rows,
     order_users,
+    place_user,
+    switch_usage_label,
 )
 from .persist import SizedDialog, persist_col_widths
 from ..theme import TOKENS as T
@@ -266,20 +269,48 @@ class _UserSplit(QSplitter):
 
 
 class _UserRow(QFrame):
-    """上半列表的一行。点整行打开下方详情。"""
+    """上半列表的一行。点整行打开下方详情，拖过阈值则改顺序。"""
 
-    def __init__(self, user: dict, on_pick) -> None:
+    def __init__(self, user: dict, on_pick, on_drop) -> None:
         super().__init__()
         self._user = user
         self._on_pick = on_pick
+        self._on_drop = on_drop
+        self._press_pos = None
+        self._drag_active = False
         self.setObjectName("userRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(44)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._on_pick(self._user)
+            self._press_pos = event.position()
+            self._drag_active = False
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (
+            self._press_pos is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+            and not self._drag_active
+        ):
+            if (event.position() - self._press_pos).manhattanLength() > 12:
+                self._drag_active = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
+            dragged = self._drag_active
+            pos = event.globalPosition().toPoint()
+            self._press_pos = None
+            self._drag_active = False
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            if dragged:
+                self._on_drop(self._user, pos)
+            else:
+                self._on_pick(self._user)
+        super().mouseReleaseEvent(event)
 
 
 class UsersPage(QWidget):
@@ -498,7 +529,7 @@ class UsersPage(QWidget):
         self._list_layout.addStretch(1)
 
     def _user_row(self, u: dict, overview: dict, traffic: str, selected: bool) -> QWidget:
-        row = _UserRow(u, self._detail)
+        row = _UserRow(u, self._detail, self._drop_row)
         row.setProperty("selected", bool(selected))
         row.setFixedHeight(44)
         lay = QHBoxLayout(row)
@@ -520,6 +551,9 @@ class UsersPage(QWidget):
             overview_text = f"在用 {overview['active']}"
             if overview["expired"]:
                 overview_text += f"  ·  <span style='color:{T['warning']};'>已到期 {overview['expired']}</span>"
+            soon = overview.get("soon_text") or ""
+            if soon:
+                overview_text += f"  ·  最近 {soon}"
         overview_lbl = QLabel(overview_text)
         overview_lbl.setTextFormat(Qt.TextFormat.RichText)
         overview_lbl.setStyleSheet(f"color:{T['text']}; font-size:12px;")
@@ -940,6 +974,58 @@ class UsersPage(QWidget):
         except ApiError as e:
             self._log(f"❌ 删除失败：{e.message}")
             QMessageBox.warning(self, "删除失败", e.message)
+
+    def _shown_users(self) -> list:
+        visible = getattr(self, "_visible", None)
+        return self._users if visible is None else visible
+
+    def _drop_row(self, user: dict, global_pos) -> None:
+        target = self._user_at_global(global_pos)
+        if target is None or target.get("user_id") == user.get("user_id"):
+            return
+        visible = self._shown_users()
+        try:
+            src_row = next(
+                i for i, item in enumerate(visible) if item.get("user_id") == user.get("user_id")
+            )
+            dst_row = next(
+                i for i, item in enumerate(visible) if item.get("user_id") == target.get("user_id")
+            )
+        except StopIteration:
+            return
+        self._on_row_dropped(src_row, dst_row)
+
+    def _user_at_global(self, global_pos):
+        layout = getattr(self, "_list_layout", None)
+        body = layout.parentWidget() if layout is not None else None
+        if body is None:
+            return None
+        local = body.mapFromGlobal(global_pos)
+        nearest = None
+        nearest_dy = None
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
+            if not isinstance(widget, _UserRow):
+                continue
+            rect = widget.geometry()
+            if rect.contains(local):
+                return widget._user
+            dy = abs(local.y() - rect.center().y())
+            if nearest_dy is None or dy < nearest_dy:
+                nearest = widget._user
+                nearest_dy = dy
+        if nearest is not None and nearest_dy is not None and nearest_dy <= 30:
+            return nearest
+        return None
+
+    def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
+        """按可见行对应用户，在全量列表里移动，并写回 user_order。"""
+        ordered = place_user(self._users, self._shown_users(), src_row, dst_row)
+        if ordered is self._users:
+            return
+        self._users = ordered
+        config.set_value("user_order", [item.get("user_id") for item in self._users])
+        self._apply_view()
 
     def _detail(self, u: dict) -> None:
         self._open_id = u.get("user_id")
@@ -2076,6 +2162,32 @@ class _UserLinesDialog(QWidget):
         note_lay.addWidget(save_user)
         layout.addWidget(note)
 
+        limit = QFrame()
+        limit.setProperty("card", True)
+        limit_lay = QHBoxLayout(limit)
+        limit_lay.setContentsMargins(14, 10, 14, 10)
+        limit_lay.setSpacing(8)
+        limit_lbl = QLabel("每天 IP 上限")
+        limit_lbl.setStyleSheet(f"color:{T['muted']}; font-size:{T['font_small']}px;")
+        limit_lay.addWidget(limit_lbl)
+        self.switch_spin = QSpinBox()
+        self.switch_spin.setRange(0, 999)
+        self.switch_spin.setFixedHeight(32)
+        self.switch_spin.setFixedWidth(80)
+        self.switch_spin.setValue(int(self._u.get("switch_limit") or 5))
+        self.switch_spin.setToolTip(
+            "含初始 IP。只改用户级，已单独设过的线路不变。"
+        )
+        limit_lay.addWidget(self.switch_spin)
+        save_limit = QPushButton("保存上限")
+        save_limit.setObjectName("saveUserSwitch")
+        save_limit.setProperty("compact", True)
+        save_limit.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_limit.clicked.connect(self._save_switch_limit)
+        limit_lay.addWidget(save_limit)
+        limit_lay.addStretch(1)
+        layout.addWidget(limit)
+
         section = QLabel("线路")
         section.setProperty("sectionTitle", True)
         layout.addWidget(section)
@@ -2277,6 +2389,46 @@ class _UserLinesDialog(QWidget):
             btn.clicked.connect(slot)
             row.addWidget(btn)
         outer.addWidget(frame)
+
+        sw = QHBoxLayout()
+        sw.setContentsMargins(10, 0, 8, 0)
+        sw.setSpacing(8)
+        usage = QLabel(self._usage_text(a))
+        usage.setObjectName("switchCount")
+        usage.setStyleSheet(f"color:{T['muted']}; font-size:{T['font_small']}px;")
+        sw.addWidget(usage)
+        cap_lbl = QLabel("本线路上限")
+        cap_lbl.setStyleSheet(f"color:{T['faint']}; font-size:{T['font_small']}px;")
+        sw.addWidget(cap_lbl)
+        spin = QSpinBox()
+        spin.setObjectName("lineSwitchSpin")
+        spin.setRange(0, 999)
+        spin.setFixedHeight(28)
+        spin.setFixedWidth(72)
+        spin.setValue(effective_switch_limit(
+            a.get("node_switch_limit"),
+            getattr(self, "_switch_user_limit", None) or self._u.get("switch_limit"),
+        ))
+        spin.setToolTip(
+            "保存后写入这条线路，用户每天 IP 上限会一起改成这个数。"
+        )
+        sw.addWidget(spin)
+        save_line = QPushButton("保存本线路")
+        save_line.setObjectName("saveLineSwitch")
+        save_line.setProperty("compact", True)
+        save_line.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_line.clicked.connect(
+            lambda _=False, line=a, box=spin: self._save_line_limit(line, box)
+        )
+        sw.addWidget(save_line)
+        reset = QPushButton("重置切换次数")
+        reset.setObjectName("resetSwitch")
+        reset.setProperty("compact", True)
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.clicked.connect(lambda _=False, line=a: self._reset_line_switch(line))
+        sw.addWidget(reset)
+        sw.addStretch(1)
+        outer.addLayout(sw)
         return block
 
     def _park_form(self) -> None:
@@ -2291,6 +2443,33 @@ class _UserLinesDialog(QWidget):
         host.layout().addWidget(self._form)
         self._form.show()
 
+    def _fetch_switch_state(self) -> None:
+        """读用户上限和各线路今天的切换次数。失败时用打开详情时的数。"""
+        self._switch_user_limit = int(self._u.get("switch_limit") or 5)
+        self._switch_counts = {}
+        uid = self._u.get("user_id")
+        if uid is None:
+            return
+        try:
+            data = api_client.get_user(uid)
+        except ApiError:
+            return
+        raw = (data.get("user") or {}).get("switch_limit", self._switch_user_limit)
+        self._switch_user_limit = int(raw or self._switch_user_limit or 5)
+        self._u["switch_limit"] = self._switch_user_limit
+        for row in data.get("assignments") or []:
+            self._switch_counts[str(row.get("resource_id"))] = (
+                int(row.get("switch_count") or 0),
+                str(row.get("switch_date") or ""),
+            )
+
+    def _usage_text(self, a: dict) -> str:
+        rid = str(a.get("resource_id") or "")
+        count, date = self._switch_counts.get(rid, (0, ""))
+        limit = effective_switch_limit(a.get("node_switch_limit"), self._switch_user_limit)
+        today = datetime.now().strftime("%Y-%m-%d")
+        return switch_usage_label(count, date, today, limit)
+
     def _rebuild_lines(self) -> None:
         self._park_form()
         while self._lines_lay.count():
@@ -2299,6 +2478,9 @@ class _UserLinesDialog(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
+        self._fetch_switch_state()
+        if hasattr(self, "switch_spin") and not self.switch_spin.hasFocus():
+            self.switch_spin.setValue(int(self._switch_user_limit or 5))
         lines = self._u.get("lines") or []
         self._empty.setVisible(not lines)
         self._line_scroll.setVisible(bool(lines))
@@ -2390,6 +2572,63 @@ class _UserLinesDialog(QWidget):
 
     def _toggle_from_panel(self) -> None:
         self._page._toggle_status(self._u)
+
+    def _save_switch_limit(self) -> None:
+        value = int(self.switch_spin.value())
+        try:
+            api_client.update_user(self._u["user_id"], switch_limit=value)
+        except ApiError as e:
+            QMessageBox.warning(self, "保存失败", e.message)
+            return
+        self._u["switch_limit"] = value
+        self._switch_user_limit = value
+        name = self._u.get("username", "")
+        self._page._log(f"✅ 已更新「{name}」每天 IP 上限为 {value}")
+        self._page.refresh()
+
+    def _save_line_limit(self, a: dict, spin: QSpinBox) -> None:
+        """写入这条线路的上限。Worker 收到 resource_id 时会同步用户级上限。"""
+        value = int(spin.value())
+        rid = str(a.get("resource_id") or "")
+        try:
+            api_client.update_user(self._u["user_id"], switch_limit=value, resource_id=rid)
+        except ApiError as e:
+            QMessageBox.warning(self, "保存失败", e.message)
+            return
+        self._u["switch_limit"] = value
+        self._switch_user_limit = value
+        a["node_switch_limit"] = value
+        self.switch_spin.setValue(value)
+        name = self._u.get("username", "")
+        self._page._log(f"✅ 已把「{name}」线路 {rid} 的 IP 上限设为 {value}")
+        self._page.refresh()
+
+    def _reset_line_switch(self, a: dict) -> None:
+        username = self._u.get("username", "")
+        node = a.get("node_data") or {}
+        if isinstance(node, str):
+            import json as _json
+            try:
+                node = _json.loads(node)
+            except Exception:
+                node = {}
+        domain = node.get("domain") or node.get("host") or a.get("resource_id")
+        ret = QMessageBox.question(
+            self,
+            "确认重置",
+            f"确定重置用户「{username}」节点 {domain} 的切换次数吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            api_client.reset_user_switch(self._u["user_id"], str(a.get("resource_id") or ""))
+        except ApiError as e:
+            QMessageBox.warning(self, "重置失败", e.message)
+            return
+        self._page._log(f"✅ 已重置节点 {domain} 的切换次数")
+        self._page.refresh()
 
     def _save_account(self) -> None:
         note = self.note_edit.text().strip()

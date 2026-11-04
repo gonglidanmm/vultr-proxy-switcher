@@ -7,11 +7,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.user_directory import (  # noqa: E402
+    effective_switch_limit,
     filter_users,
     free_line_choices,
     line_overview,
     merge_user_rows,
     order_users,
+    place_user,
+    switch_usage_label,
 )
 
 NOW = datetime(2026, 6, 15, 12, 0, 0)
@@ -109,6 +112,38 @@ def test_filter_chips():
     assert [u["username"] for u in filter_users(rows, "", "即将到期", NOW)] == ["soon"]
     assert [u["username"] for u in filter_users(rows, "", "已过期", NOW)] == ["late"]
     assert [u["username"] for u in filter_users(rows, "", "正常", NOW)] == ["zero", "late", "soon"]
+
+
+def test_place_user_drops_onto_visible_row_and_keeps_hidden_rows():
+    """可见行拖到另一可见行上，全量列表里被挡住的人留在原相对位置。"""
+    users = [
+        {"user_id": i, "username": name}
+        for i, name in ((1, "a"), (2, "b"), (3, "c"), (4, "d"))
+    ]
+    visible = [users[0], users[2], users[3]]
+    ordered = place_user(users, visible, 0, 2)
+    assert [u["username"] for u in ordered] == ["b", "c", "d", "a"]
+    assert [u["username"] for u in users] == ["a", "b", "c", "d"]
+
+
+def test_place_user_move_up_takes_the_target_slot():
+    users = [{"user_id": i, "username": name} for i, name in ((1, "a"), (2, "b"), (3, "c"))]
+    ordered = place_user(users, users, 2, 0)
+    assert [u["username"] for u in ordered] == ["c", "a", "b"]
+
+
+def test_place_user_same_index_returns_the_same_list():
+    users = [{"user_id": 1, "username": "a"}, {"user_id": 2, "username": "b"}]
+    assert place_user(users, users, 0, 0) is users
+
+
+def test_switch_usage_counts_the_initial_ip_and_rolls_over_at_midnight():
+    assert switch_usage_label(2, "2026-06-15 09:00:00", "2026-06-15", 5) == "已用 IP：3/5"
+    assert switch_usage_label(4, "2026-06-14", "2026-06-15", 5) == "已用 IP：1/5"
+    assert switch_usage_label(0, "", "2026-06-15", 5) == "已用 IP：1/5"
+    assert effective_switch_limit(0, 8) == 8
+    assert effective_switch_limit(3, 8) == 3
+    assert effective_switch_limit(0, 0) == 5
 
 
 def test_order_users_appends_unknown_ids():

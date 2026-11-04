@@ -157,6 +157,47 @@ def merge_user_rows(api_users: list | None, assignments: list | None) -> list[di
     return [rows[key] for key in order]
 
 
+def place_user(users: list[dict], visible: list[dict], src_row: int, dst_row: int) -> list[dict]:
+    """把可见列表的 src_row 放到 dst_row 那一行。没动时返回原列表。"""
+    if (
+        src_row < 0
+        or dst_row < 0
+        or src_row >= len(visible)
+        or dst_row >= len(visible)
+        or src_row == dst_row
+    ):
+        return users
+    moved_id = visible[src_row].get("user_id")
+    target_id = visible[dst_row].get("user_id")
+    src = next((i for i, user in enumerate(users) if user.get("user_id") == moved_id), None)
+    dst = next((i for i, user in enumerate(users) if user.get("user_id") == target_id), None)
+    if src is None or dst is None or src == dst:
+        return users
+    items = list(users)
+    item = items.pop(src)
+    # pop 之后仍用原来的目标下标插入，拖到哪一行就落在哪一行。
+    items.insert(dst, item)
+    return items
+
+
+def effective_switch_limit(node_limit, user_limit) -> int:
+    """节点单独设过就用节点的，否则用用户的，都没有则每天 5。"""
+    node = int(node_limit or 0)
+    user = int(user_limit or 0)
+    if node > 0:
+        return node
+    return user if user > 0 else 5
+
+
+def switch_usage_label(count, switch_date, today, limit) -> str:
+    """已用 IP 含初始那一个。日期不是今天就从 0 计。"""
+    shown = int(count or 0)
+    date = str(switch_date or "")[:10]
+    if date and date != str(today):
+        shown = 0
+    return f"已用 IP：{shown + 1}/{int(limit)}"
+
+
 def order_users(users: list[dict], saved_ids: list | None) -> list[dict]:
     """按上次拖拽的 id 顺序排，新用户按原顺序接在后面。"""
     by_id = {str(user.get("user_id")): user for user in users}
