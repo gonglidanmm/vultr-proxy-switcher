@@ -1,7 +1,7 @@
-"""用户管理页：客户 CRUD + 分配视图。
+"""用户管理页：全部用户（含零线路）+ 一个详情面。
 
-列表展示用户；点「详情」看名下分配并取消；「编辑」改密码/到期/备注/状态。
-Vultr-IP 页面的「分配用户」通过 _AssignDialog 选择用户并写入节点快照。
+列表可搜索、筛选。打开用户后在同一窗口改账号、线路和分配。
+Vultr-IP 页面仍可通过 assign_dialog 把节点分给用户。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -35,6 +36,13 @@ from PySide6.QtWidgets import (
 from .. import api_client, config, webshare
 from ..api_client import ApiError
 from ..relay import norm_candidate
+from ..user_directory import (
+    CHIPS,
+    filter_users,
+    free_line_choices,
+    merge_user_rows,
+    order_users,
+)
 from .drag_table import DragTableWidget
 from .persist import SizedDialog, persist_col_widths
 
@@ -250,6 +258,9 @@ class UsersPage(QWidget):
         self.stats_label = QLabel("")
         self.stats_label.setStyleSheet("color:#98989d;")
         top.addWidget(self.stats_label, 1)
+        self.shown_label = QLabel("")
+        self.shown_label.setStyleSheet("color:#6c6c70;")
+        top.addWidget(self.shown_label)
 
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setProperty("compact", True)
@@ -261,6 +272,25 @@ class UsersPage(QWidget):
         self.add_btn.clicked.connect(self._add_user)
         top.addWidget(self.add_btn)
         layout.addLayout(top)
+
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索用户名 / 备注 / 出口 IP")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _t: self._apply_view())
+        filters.addWidget(self.search, 1)
+        self._chip = "全部"
+        self._chips = {}
+        for name in CHIPS:
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setProperty("chip", True)
+            btn.setChecked(name == "全部")
+            btn.clicked.connect(lambda _=False, n=name: self._set_chip(n))
+            self._chips[name] = btn
+            filters.addWidget(btn)
+        layout.addLayout(filters)
 
         self.table = DragTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
@@ -274,12 +304,11 @@ class UsersPage(QWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         for c in range(len(COLS) - 1):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 110)   # 用户名
-        self.table.setColumnWidth(1, 170)   # 线路名称
-        self.table.setColumnWidth(2, 130)   # 出口IP
-        self.table.setColumnWidth(3, 120)   # 剩余流量
-        self.table.setColumnWidth(4, 110)   # 分配时间
-        self.table.setColumnWidth(5, 130)   # 到期倒计时
+        self.table.setColumnWidth(0, 140)   # 用户名
+        self.table.setColumnWidth(1, 72)    # 状态
+        self.table.setColumnWidth(2, 72)    # 线路数
+        self.table.setColumnWidth(3, 180)   # 总流量
+        self.table.setColumnWidth(4, 150)   # 到期时间
         # 恢复上次保存的列宽（拖动后持久化）
         saved = config.get("users_table_column_widths", {})
         for c, w in saved.items():
@@ -301,10 +330,6 @@ class UsersPage(QWidget):
         layout.addWidget(self.log_box)
         set_global_echo(self._log)
 
-        hint = QLabel("提示：在 Vultr-IP 页面对资源点「分配用户」，即可把节点分给某个用户。")
-        hint.setStyleSheet("color:#6c6c70;font-size:12px;")
-        layout.addWidget(hint)
-
     def _log(self, msg: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_box.appendPlainText(f"[{ts}] {msg}")
@@ -313,42 +338,41 @@ class UsersPage(QWidget):
 
     def refresh(self) -> None:
         try:
+            users = api_client.list_users().get("users") or []
             assigns = api_client.list_all_assignments().get("assignments", [])
             st = api_client.stats()
-            self._assigns = assigns
-            self._build_users(assigns)
-            self.stats_label.setText(
-                f"共 {st.get('total_users', 0)} 个用户 · 活跃 {st.get('active_users', 0)} · "
-                f"已分配 {st.get('assigned_users', 0)} 人 · 分配项 {st.get('total_assignments', 0)}"
-            )
-            self._populate()
         except ApiError as e:
             self.stats_label.setText(f'<span style="color:#ff453a;">加载失败：{e.message}</span>')
             self.table.setRowCount(0)
+            return
+        self._assigns = assigns
+        merged = merge_user_rows(users, assigns)
+        self._users = order_users(merged, config.get("user_order") or [])
+        self.stats_label.setText(
+            f"共 {st.get('total_users', 0)} 个用户 · 活跃 {st.get('active_users', 0)} · "
+            f"已分配 {st.get('assigned_users', 0)} 人 · 分配项 {st.get('total_assignments', 0)}"
+        )
+        self._apply_view()
 
-    def _build_users(self, assigns: list[dict]) -> None:
-        """按 user_id 分组：一个用户一行，名下分配收进 lines。"""
-        users: dict[str, dict] = {}
-        for a in assigns:
-            uid = str(a.get("user_id", ""))
-            if not uid:
-                continue
-            if uid not in users:
-                users[uid] = {
-                    "user_id": a.get("user_id"),
-                    "username": a.get("username", ""),
-                    "status": a.get("user_status", "active"),
-                    "expires_at": a.get("user_expires_at"),
-                    "note": a.get("user_note", ""),
-                    "switch_limit": int(a.get("user_switch_limit", 5) or 5),
-                    "lines": [],
-                }
-            users[uid]["lines"].append(a)
-        self._users = list(users.values())
+    def _set_chip(self, name: str) -> None:
+        self._chip = name
+        for chip, btn in self._chips.items():
+            btn.setChecked(chip == name)
+        self._apply_view()
+
+    def _apply_view(self) -> None:
+        query = self.search.text() if hasattr(self, "search") else ""
+        self._visible = filter_users(self._users, query, getattr(self, "_chip", "全部"), datetime.now())
+        if hasattr(self, "shown_label"):
+            self.shown_label.setText(f"显示 {len(self._visible)} / {len(self._users)}")
+        self._populate()
 
     def _populate(self) -> None:
-        self.table.setRowCount(len(self._users))
-        for row, u in enumerate(self._users):
+        visible = getattr(self, "_visible", None)
+        if visible is None:
+            visible = self._users
+        self.table.setRowCount(len(visible))
+        for row, u in enumerate(visible):
             lines = u["lines"]
             n_lines = len(lines)
             is_active = u.get("status", "active") == "active"
@@ -408,28 +432,27 @@ class UsersPage(QWidget):
             self.table.setCellWidget(row, 5, self._ops(u, row))
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
-        """拖拽排序：把 self._users 里 src_row 的元素移到 dst_row 位置，持久化 + 重新渲染。"""
-        if src_row < 0 or dst_row < 0 or src_row >= len(self._users) or src_row == dst_row:
+        """拖拽排序：按当前可见行对应用户，在全量列表里移动。"""
+        visible = getattr(self, "_visible", self._users)
+        if src_row < 0 or dst_row < 0 or src_row >= len(visible) or dst_row >= len(visible) or src_row == dst_row:
             return
-        u = self._users.pop(src_row)
-        insert_at = dst_row if dst_row <= len(self._users) else len(self._users)
-        self._users.insert(insert_at, u)
+        moved = visible[src_row]
+        target = visible[dst_row]
+        src = next(i for i, u in enumerate(self._users) if u.get("user_id") == moved.get("user_id"))
+        dst = next(i for i, u in enumerate(self._users) if u.get("user_id") == target.get("user_id"))
+        user = self._users.pop(src)
+        if src < dst:
+            dst -= 1
+        self._users.insert(dst, user)
         config.set_value("user_order", [x.get("user_id") for x in self._users])
-        self._populate()
+        self._apply_view()
 
     def _on_cell_dbl(self, row: int, col: int) -> None:
-        """双击用户名 → 编辑该用户。"""
-        if col != 0 or row < 0 or row >= len(self._users):
+        """双击一行 → 打开该用户。"""
+        visible = getattr(self, "_visible", self._users)
+        if row < 0 or row >= len(visible):
             return
-        u = self._users[row]
-        user = {
-            "id": u.get("user_id"),
-            "username": u.get("username", ""),
-            "status": u.get("status", "active"),
-            "expires_at": u.get("expires_at"),
-            "note": u.get("note", ""),
-        }
-        self._edit_user(user)
+        self._detail(visible[row])
 
     def _on_col_resized(self, col: int, old: int, new: int) -> None:
         """列宽拖动后持久化（跳过 stretch 操作列）。"""
@@ -476,26 +499,26 @@ class UsersPage(QWidget):
     def _ops(self, u: dict, row: int) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(8, 0, 8, 0)
         lay.setSpacing(6)
 
-        detail = QPushButton("查看详情")
+        detail = QPushButton("打开")
         detail.setProperty("compact", True)
         detail.setFixedHeight(26)
+        detail.setMinimumWidth(72)
         detail.clicked.connect(lambda _=False, u=u: self._detail(u))
         lay.addWidget(detail)
 
-        toggle = QPushButton("禁用" if u.get("status", "active") == "active" else "启用")
-        toggle.setProperty("compact", True)
-        toggle.setFixedHeight(26)
-        toggle.clicked.connect(lambda _=False, u=u: self._toggle_status(u))
-        lay.addWidget(toggle)
-
-        delete = QPushButton("删除")
-        delete.setProperty("compact", True)
-        delete.setFixedHeight(26)
-        delete.clicked.connect(lambda _=False, u=u: self._delete_user(u))
-        lay.addWidget(delete)
+        more = QPushButton("⋯")
+        more.setProperty("compact", True)
+        more.setFixedHeight(26)
+        more.setMinimumWidth(36)
+        menu = QMenu(more)
+        toggle_label = "禁用" if u.get("status", "active") == "active" else "启用"
+        menu.addAction(toggle_label, lambda u=u: self._toggle_status(u))
+        menu.addAction("删除", lambda u=u: self._delete_user(u))
+        more.clicked.connect(lambda _=False, b=more, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        lay.addWidget(more)
         return w
 
     def _share_relay(self, a: dict) -> None:
@@ -1810,19 +1833,61 @@ class _UserLinesDialog(SizedDialog):
         self._u = u or {}
         lines = self._u.get("lines", [])
         status = self._u.get("status", "active")
-        self.setWindowTitle(f"「{self._u.get('username', '')}」的线路明细")
-        self.setMinimumSize(760, 520)
+        self.setWindowTitle(f"用户 · {self._u.get('username', '')}")
+        self.setMinimumSize(860, 640)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        head = QLabel(
-            f"用户名：<b>{self._u.get('username', '')}</b>　"
-            f"状态：<b style='color:{'#30d158' if status == 'active' else '#ff453a'}'>{'正常' if status == 'active' else '已禁用'}</b>　"
-            f"线路数：<b>{len(lines)}</b> 条"
-        )
-        head.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(head)
+        self._head = QLabel("")
+        self._head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._head)
+        self._refresh_head()
+
+        card = QFrame()
+        card.setProperty("card", True)
+        account = QHBoxLayout(card)
+        account.setContentsMargins(12, 10, 12, 10)
+        account.setSpacing(8)
+
+        def _dim(text: str) -> QLabel:
+            lab = QLabel(text)
+            lab.setStyleSheet("color:#98989d;")
+            return lab
+
+        account.addWidget(_dim("状态"))
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["正常", "已禁用"])
+        self.status_combo.setCurrentIndex(0 if status == "active" else 1)
+        account.addWidget(self.status_combo)
+        account.addWidget(_dim("账号到期"))
+        self.exp_edit = QLineEdit(str(self._u.get("expires_at") or ""))
+        self.exp_edit.setPlaceholderText("空 = 不过期，如 2026-12-31")
+        account.addWidget(self.exp_edit, 1)
+        account.addWidget(_dim("备注"))
+        self.note_edit = QLineEdit(self._u.get("note") or "")
+        account.addWidget(self.note_edit, 1)
+        account.addWidget(_dim("新密码"))
+        self.pass_edit = QLineEdit()
+        self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_edit.setPlaceholderText("空 = 不改")
+        account.addWidget(self.pass_edit)
+        save_user = QPushButton("保存账号")
+        save_user.setProperty("compact", True)
+        save_user.clicked.connect(self._save_account)
+        account.addWidget(save_user)
+        layout.addWidget(card)
+
+        line_bar = QHBoxLayout()
+        line_title = QLabel("线路")
+        line_title.setStyleSheet("color:#98989d;")
+        line_bar.addWidget(line_title)
+        line_bar.addStretch(1)
+        add_line = QPushButton("＋ 分配线路")
+        add_line.setProperty("primary", True)
+        add_line.clicked.connect(self._assign_line)
+        line_bar.addWidget(add_line)
+        layout.addLayout(line_bar)
 
         table = QTableWidget(len(lines), 8)
         table.setHorizontalHeaderLabels(["线路名称", "类型", "出口IP", "上游账号", "流量", "分配时间", "到期", "操作"])
@@ -1848,6 +1913,7 @@ class _UserLinesDialog(SizedDialog):
         table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.itemChanged.connect(self._on_line_name_changed)
+        table.cellDoubleClicked.connect(self._on_line_dbl)
         self._suppress = False
         self._table = table
         _hdr.sectionResized.connect(self._save_col_widths)  # 拖列宽实时持久化
@@ -1859,8 +1925,6 @@ class _UserLinesDialog(SizedDialog):
         self._suppress = False
 
         btns = QDialogButtonBox()
-        edit = btns.addButton("编辑用户", QDialogButtonBox.ButtonRole.ActionRole)
-        edit.clicked.connect(self._edit_user)
         close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(btns)
@@ -1934,7 +1998,7 @@ class _UserLinesDialog(SizedDialog):
         flow_it = QTableWidgetItem(traffic)
         flow_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         flow_it.setForeground(Qt.GlobalColor.white)
-        flow_it.setToolTip("配额/流量请在「管理 IP」里修改")
+        flow_it.setToolTip("双击改配额（会先重置流量）")
         table.setItem(row, 4, flow_it)
 
         # 到期列(6)：只读展示（修改统一在「管理 IP」里）
@@ -1944,7 +2008,7 @@ class _UserLinesDialog(SizedDialog):
             exp_it.setForeground(Qt.GlobalColor.red)
         else:
             exp_it.setForeground(Qt.GlobalColor.white)
-        exp_it.setToolTip("到期时间请在「管理 IP」里修改")
+        exp_it.setToolTip("双击改到期（会先重置流量）")
         table.setItem(row, 6, exp_it)
 
         op_w = QWidget()
@@ -1956,16 +2020,17 @@ class _UserLinesDialog(SizedDialog):
         manage.setFixedSize(64, 32)
         manage.clicked.connect(lambda _=False, a=a: self._manage_ips(a))
         op_lay.addWidget(manage)
-        share = QPushButton("复制节点")
-        share.setProperty("compact", True)
-        share.setFixedSize(84, 32)
-        share.clicked.connect(lambda _=False, a=a: self._page._share_relay(a))
-        op_lay.addWidget(share)
-        recycle = QPushButton("回收")
-        recycle.setProperty("compact", True)
-        recycle.setFixedSize(56, 32)
-        recycle.clicked.connect(lambda _=False, a=a, node=node, name=name: self._recycle(a, node, name))
-        op_lay.addWidget(recycle)
+        more = QPushButton("⋯")
+        more.setProperty("compact", True)
+        more.setFixedSize(36, 32)
+        menu = QMenu(more)
+        menu.addAction("续费", lambda a=a, node=node: self._edit_expiry(a, node))
+        menu.addAction("改到期", lambda a=a, node=node: self._edit_expiry(a, node))
+        menu.addAction("改配额", lambda a=a, node=node: self._edit_quota(a, node))
+        menu.addAction("复制节点", lambda a=a: self._page._share_relay(a))
+        menu.addAction("回收", lambda a=a, node=node, name=name: self._recycle(a, node, name))
+        more.clicked.connect(lambda _=False, b=more, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        op_lay.addWidget(more)
         table.setCellWidget(row, 7, op_w)
 
     def _reload(self) -> None:
@@ -1983,6 +2048,59 @@ class _UserLinesDialog(SizedDialog):
         for row, a in enumerate(lines):
             self._render_line(self._table, row, a)
         self._suppress = False
+        self._refresh_head()
+
+    def _refresh_head(self) -> None:
+        status = self._u.get("status", "active")
+        lines = self._u.get("lines") or []
+        color = "#30d158" if status == "active" else "#ff453a"
+        label = "正常" if status == "active" else "已禁用"
+        self._head.setText(
+            f"用户名：<b>{self._u.get('username', '')}</b>　"
+            f"状态：<b style='color:{color}'>{label}</b>　"
+            f"线路数：<b>{len(lines)}</b> 条"
+        )
+
+    def _save_account(self) -> None:
+        new_status = "active" if self.status_combo.currentIndex() == 0 else "disabled"
+        old_status = self._u.get("status", "active")
+        fields = {
+            "status": new_status,
+            "expires_at": self.exp_edit.text().strip() or None,
+            "note": self.note_edit.text().strip(),
+        }
+        password = self.pass_edit.text()
+        if password:
+            fields["password"] = password
+        try:
+            api_client.update_user(self._u["user_id"], **fields)
+        except ApiError as e:
+            QMessageBox.warning(self, "保存失败", e.message)
+            return
+        self._u["status"] = new_status
+        self._u["expires_at"] = fields["expires_at"]
+        self._u["note"] = fields["note"]
+        self.pass_edit.clear()
+        if new_status != old_status:
+            relay_lines = [a for a in (self._u.get("lines") or []) if a.get("resource_type") == "relay"]
+            for line in relay_lines:
+                if new_status == "disabled":
+                    self._page._ssh_stop_relay_line(line)
+                else:
+                    self._page._ssh_start_relay_line(line)
+        self._page._log(f"✅ 已更新用户「{self._u.get('username', '')}」" + ("（密码已修改）" if password else ""))
+        self._refresh_head()
+        self._page.refresh()
+
+    def _on_line_dbl(self, row: int, col: int) -> None:
+        lines = self._u.get("lines") or []
+        if row < 0 or row >= len(lines) or col not in (4, 6):
+            return
+        node = lines[row].get("node_data") or {}
+        if col == 4:
+            self._edit_quota(lines[row], node)
+        else:
+            self._edit_expiry(lines[row], node)
 
     def _on_line_name_changed(self, item: QTableWidgetItem) -> None:
         """线路名称双击编辑后：同步 config.relays + D1 node_data.name（复制节点/二维码跟随）。"""
@@ -2005,20 +2123,9 @@ class _UserLinesDialog(SizedDialog):
         except Exception:
             pass
 
-    def _edit_user(self) -> None:
-        user = {
-            "id": self._u.get("user_id"),
-            "username": self._u.get("username", ""),
-            "status": self._u.get("status", "active"),
-            "expires_at": self._u.get("expires_at"),
-            "note": self._u.get("note", ""),
-        }
-        self._page._edit_user(user)
-        self.accept()
-
     def _recycle(self, a: dict, node: dict, name: str) -> None:
         self._page._recycle_relay(a, node, name)
-        self.accept()
+        self._reload()
 
     def _reset_detail_or_stop(self, rid: str, candidate: dict) -> bool:
         """明细里改到期/配额：先重置流量。失败则不启用，调用方不保存、不部署。"""
@@ -2086,7 +2193,7 @@ class _UserLinesDialog(SizedDialog):
         # 之前可能因到期被停服务，重新部署恢复代理
         self._redeploy_relay(rid)
         self._page.refresh()
-        self.accept()
+        self._reload()
 
     def _edit_quota(self, a: dict, node: dict) -> None:
         """点击流量列：设置该线路的流量配额（GB，独立=线路级，合并=当前激活IP）。"""
@@ -2134,7 +2241,7 @@ class _UserLinesDialog(SizedDialog):
         # 之前可能因用尽被停服务，重新部署恢复代理
         self._redeploy_relay(rid)
         self._page.refresh()
-        self.accept()
+        self._reload()
 
     def _manage_ips(self, a: dict) -> None:
         if a.get("resource_type") != "relay":
@@ -2185,6 +2292,145 @@ class _UserLinesDialog(SizedDialog):
 
     def _save_col_widths(self, *args) -> None:
         config.set_value("user_lines_col_widths", [self._table.columnWidth(c) for c in range(8)])
+
+    def _ask_quota_expiry(self):
+        dlg = _DurationDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        quota, ok = QInputDialog.getDouble(
+            self, "流量配额", "配额（GB，0=不限）:", 10, 0, 1_000_000, 2,
+        )
+        if not ok:
+            return None
+        return dlg.expires_at, quota
+
+    def _assign_line(self) -> None:
+        try:
+            assignments = api_client.list_all_assignments().get("assignments") or []
+        except ApiError as e:
+            QMessageBox.warning(self, "分配线路", e.message)
+            return
+        vultr = []
+        key = config.get("vultr_api_key") or ""
+        if key:
+            try:
+                from ..vultr import VultrAPI
+                names = config.get("server_names") or {}
+                for inst in VultrAPI(key).list_instances() or []:
+                    iid = inst.get("id")
+                    if not iid:
+                        continue
+                    vultr.append({
+                        "id": iid,
+                        "name": names.get(iid) or inst.get("label") or iid,
+                        "ip": inst.get("main_ip") or "",
+                        "region": inst.get("region") or "",
+                    })
+            except Exception as exc:
+                self._page._log(f"Vultr 列表未加载：{exc}")
+        self._vultr_by_id = {str(item["id"]): item for item in vultr}
+        choices = free_line_choices(config.get("relays") or [], vultr, assignments)
+        if not choices:
+            QMessageBox.information(self, "分配线路", "没有未分配的中转或 Vultr。")
+            return
+        dlg = _LinePickerDialog(self, choices)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        choice = dlg.selected()
+        if not choice:
+            QMessageBox.information(self, "分配线路", "请先选一条线路。")
+            return
+        asked = self._ask_quota_expiry()
+        if not asked:
+            return
+        expires_at, quota = asked
+        if choice["resource_type"] == "relay":
+            self._assign_free_relay(choice["resource_id"], expires_at, quota)
+        else:
+            self._assign_free_vultr(choice["resource_id"], expires_at, quota)
+
+    def _assign_free_relay(self, rid: str, expires_at: str, quota: float) -> None:
+        from ..relay import relay_node_data
+        relay = next((r for r in (config.get("relays") or []) if str(r.get("id")) == str(rid)), None)
+        if not relay:
+            QMessageBox.warning(self, "分配线路", "这条中转已经不在列表里。")
+            return
+        _sid, srv_ip = self._page._resolve_server_conn(rid, {"server_id": relay.get("server_id", "")})
+        nd = relay_node_data(
+            relay, srv_ip or relay.get("entry_domain") or "", str(config.get("switch_api_key") or ""),
+        )
+        if expires_at:
+            nd["client_expiry"] = expires_at
+        nd["quota_gb"] = quota
+        creds = nd.get("_creds") or {}
+        for cand in creds.get("candidates") or []:
+            if not cand.get("quota_gb"):
+                cand["quota_gb"] = quota
+            if expires_at and not cand.get("expiry"):
+                cand["expiry"] = expires_at
+        nd["_creds"] = creds
+        try:
+            api_client.assign(self._u["user_id"], "relay", rid, nd, quota_gb=quota)
+        except ApiError as e:
+            QMessageBox.warning(self, "分配失败", e.message)
+            return
+        self._page._log(f"✅ 已把中转「{relay.get('name') or rid}」分给「{self._u.get('username', '')}」")
+        self._page.refresh()
+        self._reload()
+
+    def _assign_free_vultr(self, iid: str, expires_at: str, quota: float) -> None:
+        from .. import domain, gencreds
+        from ..share import hysteria2_link, socks5_link, ss_link, vless_reality_link
+        server = (getattr(self, "_vultr_by_id", {}) or {}).get(str(iid)) or {}
+        creds = gencreds.get_credentials(iid)
+        ip = server.get("ip") or ""
+        host = domain.server_domain(iid) or config.get("domain_name", "") or ip
+        port = int(creds.get("proxy_port", 1080) or 1080)
+        user = creds.get("proxy_user", "")
+        password = creds.get("proxy_pass", "")
+        ss_password = creds.get("ss_password", "")
+        ss_port = int(creds.get("ss_port", 45678) or 45678)
+        ruuid = creds.get("reality_uuid", "")
+        rpub = creds.get("reality_public_key", "")
+        rsid = creds.get("reality_short_id", "")
+        rsni = creds.get("reality_sni", "www.cloudflare.com")
+        rport = int(creds.get("reality_port", 443) or 443)
+        hy_password = creds.get("hysteria_password", "")
+        hy_port = int(creds.get("hysteria_port", 8443) or 8443)
+        hy_mport = creds.get("hysteria_mport", "")
+        name = server.get("name") or iid
+        nd = {
+            "host": host,
+            "socks5": {"port": port, "username": user, "password": password},
+            "ss": {"port": ss_port, "method": "aes-256-gcm", "password": ss_password},
+            "reality": {
+                "port": rport, "uuid": ruuid, "public_key": rpub, "short_id": rsid,
+                "sni": rsni, "flow": "xtls-rprx-vision", "fp": "chrome",
+            },
+            "hysteria2": {"port": hy_port, "password": hy_password, "mport": hy_mport},
+            "links": {
+                "socks5": socks5_link(host, port, user, password, "SOCKS5"),
+                "ss": ss_link(host, ss_port, "aes-256-gcm", ss_password, "SS"),
+                "reality": vless_reality_link(host, rport, ruuid, "xtls-rprx-vision", rsni, "chrome", rpub, rsid, "Reality"),
+                "hysteria2": hysteria2_link(host, hy_port, hy_password, hy_mport, "Hysteria2"),
+            },
+            "name": name,
+            "location": server.get("region") or "",
+            "ip": ip,
+            "domain": domain.server_domain(iid) or "",
+            "expiry": expires_at or config.get("server_expiry", {}).get(iid, ""),
+            "client_expiry": expires_at or "",
+            "quota_gb": quota,
+            "_creds": creds,
+        }
+        try:
+            api_client.assign(self._u["user_id"], "vultr", iid, nd, quota_gb=quota)
+        except ApiError as e:
+            QMessageBox.warning(self, "分配失败", e.message)
+            return
+        self._page._log(f"✅ 已把 Vultr「{name}」分给「{self._u.get('username', '')}」")
+        self._page.refresh()
+        self._reload()
 
 
 class _UserDetailDialog(SizedDialog):
@@ -2966,6 +3212,46 @@ class _UserPickerDialog(SizedDialog):
             self.expires_at = self._resource_expiry or None
         self.user_id = int(data)
         self.accept()
+
+
+class _LinePickerDialog(SizedDialog):
+    _size_key = "line_picker_dialog_size"
+    _default_w = 640
+    _default_h = 420
+    """从还没分出去的中转 / Vultr 里选一条。"""
+
+    def __init__(self, parent, choices: list[dict]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("分配线路")
+        self.setMinimumSize(560, 360)
+        self._choices = choices
+        layout = QVBoxLayout(self)
+        tip = QLabel("选择一条还没分给别人的线路。确定后会再问到期和配额。")
+        tip.setStyleSheet("color:#98989d;")
+        layout.addWidget(tip)
+        self.table = QTableWidget(len(choices), 3)
+        self.table.setHorizontalHeaderLabels(["类型", "名称", "IP"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for row, choice in enumerate(choices):
+            kind = "中转" if choice.get("resource_type") == "relay" else "Vultr"
+            for col, text in enumerate((kind, choice.get("name") or "", choice.get("ip") or "")):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, col, item)
+        self.table.resizeColumnsToContents()
+        layout.addWidget(self.table, 1)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def selected(self) -> dict | None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._choices):
+            return None
+        return self._choices[row]
 
 
 def assign_dialog(parent, resource_type: str, resource_id: str, node_data: dict, resource_expiry: str = "", total_quota_gb: float = 0.0, used_gb: float = 0.0) -> None:
