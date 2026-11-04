@@ -70,16 +70,49 @@ def _parse_dt(text) -> datetime | None:
     return None
 
 
-def earliest_expiry(user: dict) -> datetime | None:
-    found = []
-    account = _parse_dt(user.get("expires_at"))
-    if account:
-        found.append(account)
-    for line in user.get("lines") or []:
+def _rel_short(exp: datetime, now: datetime) -> str:
+    secs = int((exp - now).total_seconds())
+    if secs < 3600:
+        return f"{max(secs, 0) // 60}分钟"
+    if secs < 86400:
+        return f"{secs // 3600}小时"
+    return f"{secs // 86400}天"
+
+
+def line_overview(user: dict, now: datetime) -> dict:
+    """线路概况。账号状态不算进来。
+
+    已到期只统计线路。最近到期只看还没到期的线路。
+    没有线路时 text 是「无线路」，不要写成「已过期」。
+    """
+    lines = user.get("lines") or []
+    if not lines:
+        return {"text": "无线路", "active": 0, "expired": 0, "soonest": None, "soon_text": ""}
+    active = 0
+    expired = 0
+    active_expiries: list[datetime] = []
+    for line in lines:
         exp = _parse_dt(line_expiry(line))
-        if exp:
-            found.append(exp)
-    return min(found) if found else None
+        if exp is not None and exp < now:
+            expired += 1
+            continue
+        active += 1
+        if exp is not None:
+            active_expiries.append(exp)
+    soonest = min(active_expiries) if active_expiries else None
+    soon_text = _rel_short(soonest, now) if soonest else ""
+    parts = [f"在用 {active}"]
+    if expired:
+        parts.append(f"已到期 {expired}")
+    if soon_text:
+        parts.append(f"最近 {soon_text}")
+    return {
+        "text": " · ".join(parts),
+        "active": active,
+        "expired": expired,
+        "soonest": soonest,
+        "soon_text": soon_text,
+    }
 
 
 def merge_user_rows(api_users: list | None, assignments: list | None) -> list[dict]:
@@ -163,13 +196,14 @@ def _chip_hit(user: dict, chip: str, now: datetime) -> bool:
         return status != "active"
     if chip == "零线路":
         return len(lines) == 0
-    exp = earliest_expiry(user)
+    overview = line_overview(user, now)
     if chip == "已过期":
-        return exp is not None and exp < now
+        return overview["expired"] >= 1
     if chip == "即将到期":
-        if exp is None or exp < now:
+        soonest = overview["soonest"]
+        if soonest is None:
             return False
-        return exp <= now + timedelta(days=SOON_DAYS)
+        return soonest <= now + timedelta(days=SOON_DAYS)
     return True
 
 
