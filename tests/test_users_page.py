@@ -10,7 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QSpinBox, QWidget  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QWidget,
+)
 
 from app.ui import users_page  # noqa: E402
 from app.ui.users_page import UsersPage, _UserLinesDialog  # noqa: E402
@@ -83,7 +90,10 @@ def test_row_click_opens_detail_drag_reorders_instead():
 
 def test_row_drop_persists_full_list_order(monkeypatch):
     saved = {}
-    monkeypatch.setattr(users_page.config, "set_value", lambda key, value: saved.__setitem__(key, value))
+    monkeypatch.setattr(
+        users_page.config, "set_value",
+        lambda key, value: saved.__setitem__(key, value),
+    )
     page = UsersPage.__new__(UsersPage)
     original = [
         {"user_id": 1, "username": "a"},

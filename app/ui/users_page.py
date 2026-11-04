@@ -975,13 +975,15 @@ class UsersPage(QWidget):
             self._log(f"❌ 删除失败：{e.message}")
             QMessageBox.warning(self, "删除失败", e.message)
 
+    def _shown_users(self) -> list:
+        visible = getattr(self, "_visible", None)
+        return self._users if visible is None else visible
+
     def _drop_row(self, user: dict, global_pos) -> None:
         target = self._user_at_global(global_pos)
         if target is None or target.get("user_id") == user.get("user_id"):
             return
-        visible = getattr(self, "_visible", None)
-        if visible is None:
-            visible = self._users
+        visible = self._shown_users()
         try:
             src_row = next(
                 i for i, item in enumerate(visible) if item.get("user_id") == user.get("user_id")
@@ -1018,10 +1020,7 @@ class UsersPage(QWidget):
 
     def _on_row_dropped(self, src_row: int, dst_row: int) -> None:
         """按可见行对应用户，在全量列表里移动，并写回 user_order。"""
-        visible = getattr(self, "_visible", None)
-        if visible is None:
-            visible = self._users
-        ordered = place_user(self._users, visible, src_row, dst_row)
+        ordered = place_user(self._users, self._shown_users(), src_row, dst_row)
         if ordered is self._users:
             return
         self._users = ordered
@@ -2176,7 +2175,9 @@ class _UserLinesDialog(QWidget):
         self.switch_spin.setFixedHeight(32)
         self.switch_spin.setFixedWidth(80)
         self.switch_spin.setValue(int(self._u.get("switch_limit") or 5))
-        self.switch_spin.setToolTip("含初始 IP，可切换次数 = 上限 - 1。只改用户级，已单独设置的线路不变。")
+        self.switch_spin.setToolTip(
+            "含初始 IP。只改用户级，已单独设过的线路不变。"
+        )
         limit_lay.addWidget(self.switch_spin)
         save_limit = QPushButton("保存上限")
         save_limit.setObjectName("saveUserSwitch")
@@ -2399,15 +2400,18 @@ class _UserLinesDialog(QWidget):
         cap_lbl = QLabel("本线路上限")
         cap_lbl.setStyleSheet(f"color:{T['faint']}; font-size:{T['font_small']}px;")
         sw.addWidget(cap_lbl)
-        node_limit = int(a.get("node_switch_limit") or 0)
         spin = QSpinBox()
         spin.setObjectName("lineSwitchSpin")
         spin.setRange(0, 999)
         spin.setFixedHeight(28)
         spin.setFixedWidth(72)
-        user_limit = int(getattr(self, "_switch_user_limit", 0) or self._u.get("switch_limit") or 5)
-        spin.setValue(node_limit if node_limit > 0 else user_limit)
-        spin.setToolTip("保存写入这条线路。Worker 会把用户每天 IP 上限一并改成同一个数。")
+        spin.setValue(effective_switch_limit(
+            a.get("node_switch_limit"),
+            getattr(self, "_switch_user_limit", None) or self._u.get("switch_limit"),
+        ))
+        spin.setToolTip(
+            "保存后写入这条线路，用户每天 IP 上限会一起改成这个数。"
+        )
         sw.addWidget(spin)
         save_line = QPushButton("保存本线路")
         save_line.setObjectName("saveLineSwitch")
@@ -2440,7 +2444,7 @@ class _UserLinesDialog(QWidget):
         self._form.show()
 
     def _fetch_switch_state(self) -> None:
-        """读用户上限和各线路今天的切换次数。失败时沿用打开详情时带进来的数。"""
+        """读用户上限和各线路今天的切换次数。失败时用打开详情时的数。"""
         self._switch_user_limit = int(self._u.get("switch_limit") or 5)
         self._switch_counts = {}
         uid = self._u.get("user_id")
@@ -2578,7 +2582,8 @@ class _UserLinesDialog(QWidget):
             return
         self._u["switch_limit"] = value
         self._switch_user_limit = value
-        self._page._log(f"✅ 已更新「{self._u.get('username', '')}」每天 IP 上限为 {value}")
+        name = self._u.get("username", "")
+        self._page._log(f"✅ 已更新「{name}」每天 IP 上限为 {value}")
         self._page.refresh()
 
     def _save_line_limit(self, a: dict, spin: QSpinBox) -> None:
@@ -2595,7 +2600,7 @@ class _UserLinesDialog(QWidget):
         a["node_switch_limit"] = value
         self.switch_spin.setValue(value)
         name = self._u.get("username", "")
-        self._page._log(f"✅ 已把「{name}」线路 {rid} 的每天 IP 上限设为 {value}")
+        self._page._log(f"✅ 已把「{name}」线路 {rid} 的 IP 上限设为 {value}")
         self._page.refresh()
 
     def _reset_line_switch(self, a: dict) -> None:

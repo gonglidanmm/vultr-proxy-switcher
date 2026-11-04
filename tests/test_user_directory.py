@@ -116,7 +116,10 @@ def test_filter_chips():
 
 def test_place_user_drops_onto_visible_row_and_keeps_hidden_rows():
     """可见行拖到另一可见行上，全量列表里被挡住的人留在原相对位置。"""
-    users = [{"user_id": i, "username": name} for i, name in ((1, "a"), (2, "b"), (3, "c"), (4, "d"))]
+    users = [
+        {"user_id": i, "username": name}
+        for i, name in ((1, "a"), (2, "b"), (3, "c"), (4, "d"))
+    ]
     visible = [users[0], users[2], users[3]]
     ordered = place_user(users, visible, 0, 2)
     assert [u["username"] for u in ordered] == ["b", "c", "d", "a"]
